@@ -39,12 +39,62 @@ cd /proj02/liuheshan/llmnode
 
 环境变量仍然可以覆盖运行参数，但它们只是临时覆盖，不再单独维护根目录 `.env.example`。
 
+## 默认运行形态
+
+当前默认只收敛到一条正式路径：
+
+- 推理后端：`vLLM`
+- 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B-FP8`
+
+V2 管理台可以查看状态、维护模型路由和 API Key，但当前不负责多后端选择；V2 运行时仍固定为 `vLLM`。
+
 ## 启动
+
+推荐统一使用：
+
+```bash
+bash scripts/control.sh start
+bash scripts/control.sh status
+```
+
+执行 `bash scripts/control.sh start` 后，默认会同时拉起：
+
+- `node-agent`
+- `vLLM` 容器
+- `gateway-api`
+- `web-console` 前端开发服务，默认地址 `http://127.0.0.1:5173`
+
+停止或重启：
+
+```bash
+bash scripts/control.sh stop
+bash scripts/control.sh restart
+```
+
+统一脚本当前会按顺序管理：
+
+- `node-agent`
+- `vLLM` 容器
+- `gateway-api`
+- `web-console`
+
+如果只想单独调试某个进程，仍可继续使用原有脚本：
 
 ```bash
 bash scripts/start_gateway.sh
 bash scripts/start_agent.sh
 ```
+
+## 正式使用流程
+
+建议按下面的顺序使用这个项目：
+
+1. 在 `config/defaults.yaml` 中确认默认后端仍为 `vLLM`，模型目录仍为 `models/Qwen/Qwen3.6-35B-A3B-FP8`
+2. 执行 `bash scripts/control.sh start`
+3. 打开 `http://127.0.0.1:5173` 进入前端管理台
+4. 在管理台里查看状态、维护 API Key、模型路由和调度配置
+5. 用 `curl http://127.0.0.1:4000/v1/models -H 'Authorization: Bearer dev-key'` 或 Claude Code / OpenAI 客户端访问网关
+6. 停机时执行 `bash scripts/control.sh stop`
 
 ## V2 管理前端
 
@@ -74,6 +124,22 @@ npm run build
 - 最近请求表
 - 最近节点事件表
 - 队列长度 / 失败计数趋势图
+
+当前管理台更适合做：
+
+- 观察系统状态
+- 维护 API Key
+- 查看逻辑模型到后端模型的映射
+- 查看请求日志和节点事件
+- 承接统一脚本启动后的日常配置和控制入口
+
+当前不建议把它当成“运行时选择推理框架”的入口；V2 仍固定为 `vLLM`。
+
+注意：
+
+- 当前统一脚本默认启动的是 `Vite dev server`
+- 首次使用前需要先执行 `cd web-console && npm install`
+- 前端通过 Vite 代理访问 `http://127.0.0.1:4000` 的 `/admin` 和 `/v1` 接口
 
 ## 验证
 

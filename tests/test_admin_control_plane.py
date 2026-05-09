@@ -38,6 +38,15 @@ class FakeRestartClient:
         return self._response
 
 
+class FailingHealthClient(VLLMClient):
+    def __init__(self, error: Exception):
+        super().__init__(base_url="http://fake")
+        self._error = error
+
+    async def health(self) -> bool:
+        raise self._error
+
+
 def test_admin_events_endpoint_returns_rows():
     async def run():
         app = create_app()
@@ -133,5 +142,62 @@ def test_restart_agent_backend_helper_maps_connect_error_to_503():
                 assert exc.detail == "agent control unavailable"
             else:
                 raise AssertionError("expected HTTPException")
+
+    asyncio.run(run())
+
+
+def test_admin_status_degrades_when_backend_health_check_raises():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FailingHealthClient(httpx.ReadError("backend down"))
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/admin/status", headers={"Authorization": "Bearer dev-key"})
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["backend_ready"] is False
+            assert payload["backend_error"] == "ReadError: backend down"
+
+    asyncio.run(run())
+
+
+def test_admin_status_includes_agent_container_snapshot_when_available():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+
+        async def fake_fetch_agent_state():
+            return {
+                "status": "ready",
+                "backend_ready": True,
+                "failure_count": 0,
+                "checked_at": "2026-05-09T00:00:00Z",
+            }
+
+        async def fake_run_sync(fn, *args, **kwargs):
+            return {
+                "exists": True,
+                "running": True,
+                "status": "running",
+                "name": "qwen36-vllm",
+            }
+
+        class FakeDriver:
+            def snapshot(self):
+                return {}
+
+        app.state.fetch_agent_state = fake_fetch_agent_state
+        app.state.run_sync = fake_run_sync
+        app.state.backend_driver = FakeDriver()
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/admin/status", headers={"Authorization": "Bearer dev-key"})
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["agent_state"]["status"] == "ready"
+            assert payload["backend_container"]["running"] is True
+            assert payload["backend_container"]["name"] == "qwen36-vllm"
 
     asyncio.run(run())

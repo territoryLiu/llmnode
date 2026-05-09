@@ -93,6 +93,14 @@ export interface RuntimeModelRoute {
   enabled: boolean
 }
 
+export interface BackendContainerSnapshot {
+  exists: boolean
+  running: boolean
+  status: string
+  name?: string | null
+  image?: string | null
+}
+
 export interface RuntimeSnapshot {
   gateway: RuntimeGatewayConfig
   agent: RuntimeAgentConfig
@@ -104,6 +112,8 @@ export interface RuntimeSnapshot {
 export interface AdminSnapshot {
   backend_type: string
   backend_ready: boolean
+  backend_error?: string | null
+  backend_container?: BackendContainerSnapshot | null
   agent_state: AgentStateSnapshot | null
   require_agent_ready: boolean
   queue_length: number

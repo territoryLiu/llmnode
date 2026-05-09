@@ -9,6 +9,7 @@ const { snapshot } = storeToRefs(store)
 
 const events = computed(() => snapshot.value?.events ?? [])
 const runtime = computed(() => snapshot.value?.runtime ?? null)
+const backendContainer = computed(() => snapshot.value?.backend_container ?? null)
 const restarting = ref(false)
 const restartError = ref('')
 
@@ -38,6 +39,11 @@ async function restartBackend() {
         <span class="kpi-card__label">后端就绪</span>
         <strong>{{ snapshot?.backend_ready ? '在线' : '离线' }}</strong>
         <small>{{ snapshot?.backend_type ?? 'vllm' }}</small>
+      </article>
+      <article class="surface-card kpi-card">
+        <span class="kpi-card__label">容器状态</span>
+        <strong>{{ backendContainer?.status ?? 'unknown' }}</strong>
+        <small>{{ backendContainer?.name ?? 'container missing' }}</small>
       </article>
       <article class="surface-card kpi-card">
         <span class="kpi-card__label">调度开关</span>
@@ -129,6 +135,7 @@ async function restartBackend() {
         </div>
       </div>
 
+      <div v-if="snapshot?.backend_error" class="status-empty">{{ snapshot.backend_error }}</div>
       <div v-if="restartError" class="status-empty">{{ restartError }}</div>
 
       <div class="status-timeline">

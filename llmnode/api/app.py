@@ -279,11 +279,24 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail=f"agent not ready: {state.get('status', 'unknown')}")
 
     async def build_admin_snapshot() -> dict:
-        backend_ready = await app.state.ctx.backend_client.health()
+        backend_ready = False
+        backend_error: str | None = None
+        backend_container: dict[str, Any] | None = None
+        try:
+            backend_ready = await app.state.ctx.backend_client.health()
+        except Exception as exc:
+            backend_error = f"{type(exc).__name__}: {exc}"
         agent_state = await app.state.fetch_agent_state()
+        if hasattr(app.state, "backend_driver") and hasattr(app.state, "run_sync"):
+            try:
+                backend_container = await app.state.run_sync(app.state.backend_driver.snapshot)
+            except Exception:
+                backend_container = None
         return {
             "backend_type": app.state.ctx.backend_client.backend_type,
             "backend_ready": backend_ready,
+            "backend_error": backend_error,
+            "backend_container": backend_container,
             "agent_state": agent_state,
             "require_agent_ready": app.state.require_agent_ready,
             "queue_length": app.state.request_gate.waiting,

@@ -222,4 +222,57 @@ describe('overview store api key helpers', () => {
     expect(result.accepted).toBe(true)
     expect(result.agent_status).toBe('recovering')
   })
+
+  it('stores backend error from admin snapshot payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        backend_type: 'vllm',
+        backend_ready: false,
+        backend_error: 'ReadError: backend down',
+        agent_state: { status: 'degraded' },
+        require_agent_ready: false,
+        queue_length: 0,
+        models: [],
+        logs: [],
+        events: [],
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const store = useOverviewStore()
+    await store.fetchSnapshot()
+
+    expect(store.snapshot?.backend_error).toBe('ReadError: backend down')
+  })
+
+  it('stores backend container snapshot from admin snapshot payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        backend_type: 'vllm',
+        backend_ready: true,
+        backend_error: null,
+        backend_container: {
+          exists: true,
+          running: true,
+          status: 'running',
+          name: 'qwen36-vllm',
+        },
+        agent_state: { status: 'ready' },
+        require_agent_ready: false,
+        queue_length: 0,
+        models: [],
+        logs: [],
+        events: [],
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const store = useOverviewStore()
+    await store.fetchSnapshot()
+
+    expect(store.snapshot?.backend_container?.status).toBe('running')
+    expect(store.snapshot?.backend_container?.name).toBe('qwen36-vllm')
+  })
 })

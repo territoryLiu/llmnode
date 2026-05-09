@@ -84,6 +84,18 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
+      <section v-if="store.error || store.snapshot?.backend_error" class="surface-card status-panel">
+        <div class="status-panel__head">
+          <div>
+            <p class="table-card__eyebrow">状态提示</p>
+            <h3>当前有异常需要关注</h3>
+          </div>
+        </div>
+        <div class="status-empty">
+          {{ store.error || store.snapshot?.backend_error }}
+        </div>
+      </section>
+
       <main class="workspace-body">
         <RouterView />
       </main>
