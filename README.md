@@ -57,12 +57,25 @@ bash scripts/control.sh start
 bash scripts/control.sh status
 ```
 
+这四个命令现在都按“分段标题 + 关键信息摘要”的形式输出，适合直接当日常运维入口使用：
+
+- `start`：显示启动阶段、就绪结果、访问地址
+- `status`：显示总览结论、进程摘要和 HTTP 健康摘要
+- `stop`：显示按顺序停止的阶段结果
+- `restart`：先停后起，并保留完整阶段输出
+
 执行 `bash scripts/control.sh start` 后，默认会同时拉起：
 
 - `node-agent`
 - `vLLM` 容器
 - `gateway-api`
 - `web-console` 前端开发服务，默认地址 `http://127.0.0.1:5173`
+
+注意：
+
+- `web-console` 首次使用前需要先执行 `cd web-console && npm install`
+- `Qwen3.6-35B-A3B-FP8` 在当前默认参数下首次冷启动可能需要约 3-5 分钟，期间 `agent` 会保持 `starting`
+- 当 `http://127.0.0.1:8000/v1/models` 返回正常后，整栈才算真正 ready
 
 停止或重启：
 
@@ -138,7 +151,6 @@ npm run build
 注意：
 
 - 当前统一脚本默认启动的是 `Vite dev server`
-- 首次使用前需要先执行 `cd web-console && npm install`
 - 前端通过 Vite 代理访问 `http://127.0.0.1:4000` 的 `/admin` 和 `/v1` 接口
 
 ## 验证

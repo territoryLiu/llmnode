@@ -1,5 +1,6 @@
 import asyncio
 import warnings
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -101,3 +102,112 @@ def test_agent_create_app_emits_no_deprecation_warnings():
         asyncio.run(run())
 
     assert not any(issubclass(item.category, DeprecationWarning) for item in caught)
+
+
+def test_agent_state_exposes_started_at_after_manual_start():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+
+        def fake_start():
+            return {"action": "started_existing"}
+
+        async def run_sync(func):
+            return func()
+
+        app.state.backend_driver.start = fake_start
+        app.state.run_sync = run_sync
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            start_resp = await client.post("/manage/start")
+            assert start_resp.status_code == 200
+            state_resp = await client.get("/state")
+            assert state_resp.status_code == 200
+            payload = state_resp.json()
+            assert payload["started_at"]
+
+    asyncio.run(run())
+
+
+def test_agent_defers_auto_recovery_during_startup_grace():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+        app.state.agent.status = "starting"
+        app.state.agent.started_at = datetime.now(timezone.utc).isoformat()
+        app.state.agent.failure_count = app.state.recovery_threshold
+
+        async def fake_health(_):
+            return False
+
+        def fake_snapshot():
+            return {"exists": True, "status": "running"}
+
+        restart_calls = []
+
+        def fake_stop():
+            restart_calls.append("stop")
+
+        def fake_start():
+            restart_calls.append("start")
+
+        async def run_sync(func):
+            return func()
+
+        app.state.backend_driver.health = fake_health
+        app.state.backend_driver.snapshot = fake_snapshot
+        app.state.backend_driver.stop = fake_stop
+        app.state.backend_driver.start = fake_start
+        app.state.run_sync = run_sync
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/state")
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["status"] == "starting"
+            assert payload["last_error"] == "waiting for backend warmup"
+            assert restart_calls == []
+
+    asyncio.run(run())
+
+
+def test_agent_recovers_after_startup_grace_expires():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+        app.state.agent.status = "starting"
+        app.state.agent.started_at = (datetime.now(timezone.utc) - timedelta(seconds=400)).isoformat()
+        app.state.agent.failure_count = app.state.recovery_threshold
+
+        async def fake_health(_):
+            return False
+
+        def fake_snapshot():
+            return {"exists": True, "status": "running"}
+
+        restart_calls = []
+
+        def fake_stop():
+            restart_calls.append("stop")
+
+        def fake_start():
+            restart_calls.append("start")
+
+        async def run_sync(func):
+            return func()
+
+        app.state.backend_driver.health = fake_health
+        app.state.backend_driver.snapshot = fake_snapshot
+        app.state.backend_driver.stop = fake_stop
+        app.state.backend_driver.start = fake_start
+        app.state.run_sync = run_sync
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/state")
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["status"] == "starting"
+            assert payload["last_error"] == "recovery restart issued"
+            assert restart_calls == ["stop", "start"]
+
+    asyncio.run(run())

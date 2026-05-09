@@ -323,6 +323,7 @@ def create_app() -> FastAPI:
                     "poll_interval": settings.agent.poll_interval,
                     "auto_recover": settings.agent.auto_recover,
                     "recovery_threshold": settings.agent.recovery_threshold,
+                    "startup_grace_period": settings.agent.startup_grace_period,
                 },
                 "schedule": {
                     "timezone": app.state.schedule["timezone"],

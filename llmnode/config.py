@@ -35,6 +35,7 @@ class AgentSettings:
     poll_interval: int = 15
     auto_recover: bool = True
     recovery_threshold: int = 2
+    startup_grace_period: int = 300
 
 
 @dataclass
@@ -121,6 +122,9 @@ def load_settings(path: Path | None = None) -> AppSettings:
             in {"1", "true", "yes", "on"},
             recovery_threshold=int(
                 os.getenv("VLLM_CLAUDE_AGENT_RECOVERY_THRESHOLD", agent.get("recovery_threshold", 2))
+            ),
+            startup_grace_period=int(
+                os.getenv("VLLM_CLAUDE_AGENT_STARTUP_GRACE_PERIOD", agent.get("startup_grace_period", 300))
             ),
         ),
         schedule=ScheduleSettings(

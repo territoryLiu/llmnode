@@ -17,6 +17,7 @@ agent:
   poll_interval: 15
   auto_recover: true
   recovery_threshold: 2
+  startup_grace_period: 300
 
 schedule:
   timezone: Asia/Shanghai

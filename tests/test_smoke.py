@@ -17,6 +17,7 @@ def test_settings_loads_agent_control_defaults():
     settings = load_settings()
     assert settings.gateway.agent_base_url == "http://127.0.0.1:4010"
     assert settings.gateway.agent_status_url == "http://127.0.0.1:4010/state"
+    assert settings.agent.startup_grace_period == 300
 
 
 def test_settings_loads_schedule_defaults():

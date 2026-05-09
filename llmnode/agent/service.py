@@ -15,8 +15,25 @@ from .state import AgentState
 
 def create_agent_app(enable_monitor: bool = True) -> FastAPI:
     settings = load_settings()
+
     def _utc_now() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _seconds_since(timestamp: str) -> float | None:
+        if not timestamp:
+            return None
+        try:
+            return (datetime.now(timezone.utc) - datetime.fromisoformat(timestamp)).total_seconds()
+        except ValueError:
+            return None
+
+    def _within_startup_grace(snapshot: dict[str, object] | None) -> bool:
+        started_seconds_ago = _seconds_since(app.state.agent.started_at)
+        if started_seconds_ago is None or started_seconds_ago > app.state.startup_grace_period:
+            return False
+        if not snapshot:
+            return False
+        return bool(snapshot.get("exists")) and str(snapshot.get("status")) == "running"
 
     async def _refresh_state() -> bool:
         ready = await app.state.backend_driver.health(app.state.backend_url)
@@ -45,6 +62,10 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
         if app.state.agent.failure_count < app.state.recovery_threshold:
             return
         if app.state.recovery_lock.locked():
+            return
+        snapshot = await app.state.run_sync(app.state.backend_driver.snapshot)
+        if _within_startup_grace(snapshot):
+            app.state.agent.mark("starting", "waiting for backend warmup")
             return
         async with app.state.recovery_lock:
             if app.state.agent.status == "recovering":
@@ -109,6 +130,7 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
     app.state.poll_interval = int(getattr(settings.agent, "poll_interval", 15))
     app.state.auto_recover = bool(getattr(settings.agent, "auto_recover", True))
     app.state.recovery_threshold = int(getattr(settings.agent, "recovery_threshold", 2))
+    app.state.startup_grace_period = int(getattr(settings.agent, "startup_grace_period", 180))
     app.state.recovery_lock = asyncio.Lock()
     app.state.monitor_task = None
     app.state.run_sync = asyncio.to_thread
@@ -121,6 +143,8 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
     @app.get("/state")
     async def state():
         ready = await _refresh_state()
+        if not ready:
+            await _recover_if_needed()
         return {
             "status": app.state.agent.status,
             "backend_ready": ready,
@@ -128,6 +152,7 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
             "checked_at": app.state.agent.checked_at,
             "last_error": app.state.agent.last_error,
             "last_recovery_at": app.state.agent.last_recovery_at,
+            "started_at": app.state.agent.started_at,
         }
 
     @app.get("/container")
