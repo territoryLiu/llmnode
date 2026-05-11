@@ -1,0 +1,159 @@
+# 部署流程
+
+## 0. 文档定位
+
+这份文档只回答“当前项目支持哪些正式部署形态，以及各自边界是什么”。  
+它负责：
+
+- 当前正式支持的部署模板
+- 每种模板的最小前置条件、启动方式与检查点
+- 当前真实已落地行为与未来部署方向的边界
+
+它不负责：
+
+- 解释开发节奏，那是 `docs/process/development-workflow.md`
+- 解释系统现状全貌，那是 `docs/blueprint/current.md`
+- 展开三后端 Docker 方案细节，那是相关 `docs/superpowers/specs/*.md`
+
+## 1. 当前部署总原则
+
+当前项目的真实部署前提是：
+
+- 正式控制入口统一为 `python -m llmnode.control`
+- 当前正式默认后端仍然是 `vLLM`
+- 当前正式运行形态仍然是单机部署
+- 控制面运行在本地 Python 环境中
+- 推理后端由控制面通过 Docker 拉起和管理
+
+当前最小依赖通常包括：
+
+- Python 环境：`/home/heshan/.conda/envs/paper2any/bin/python`
+- Docker
+- 已准备好的模型目录
+- `config/defaults.yaml`
+- 如果需要默认整栈，则还需要 `web-console` 前端依赖
+
+## 2. 当前正式支持的部署模板
+
+## 2.1 模板 A：本地单机默认整栈部署
+
+适用场景：
+
+- 日常本机使用
+- 需要同时使用控制面、网关和前端管理台
+- 需要一条最完整、最接近正式默认体验的运行路径
+
+最小前置条件：
+
+- 已激活 `paper2any` 环境
+- Docker 可用
+- `models/Qwen/Qwen3.6-35B-A3B-FP8` 或配置中的目标模型目录已准备好
+- `web-console` 依赖已安装
+
+最小启动方式：
+
+```bash
+python -m llmnode.control start
+```
+
+启动后检查：
+
+- `http://127.0.0.1:8000/v1/models` 正常，表示 `vLLM` 后端 ready
+- `http://127.0.0.1:4000/v1/models` 正常，表示对外主链路 ready
+- `http://127.0.0.1:5173` 可访问，表示默认前端入口 ready
+- `python -m llmnode.control status` 能看到整栈摘要
+
+它不适用于：
+
+- 只想调试控制面或网关，不想拉起前端
+- 前端依赖未安装的环境
+- 想把未来三后端能力误当成已落地能力的场景
+
+## 2.2 模板 B：本地后端 / 控制面优先部署
+
+适用场景：
+
+- 调试 `node-agent`、`gateway-api`、`vLLM` 这条后端主链路
+- 暂时不依赖 `web-console`
+- 需要分服务排障或逐段验证启动问题
+
+最小前置条件：
+
+- 已激活 `paper2any` 环境
+- Docker 可用
+- 模型目录已准备好
+- 不要求前端 ready
+
+最小启动方式：
+
+```bash
+python -m llmnode.control start --service agent --daemon
+python -m llmnode.control start --service vllm --daemon
+python -m llmnode.control start --service gateway --daemon
+```
+
+启动后检查：
+
+- `python -m llmnode.control doctor`
+- `python -m llmnode.control status`
+- `http://127.0.0.1:8000/v1/models`
+- `http://127.0.0.1:4000/v1/models`
+
+它不适用于：
+
+- 需要管理台交互配置的场景
+- 需要验证默认整栈体验的场景
+- 需要把“网关可用”误判为“整个默认栈都 ready”的场景
+
+## 2.3 模板 C：未来三后端 Docker 化部署方向
+
+适用场景：
+
+- 规划未来运行形态
+- 为 `vLLM / llama.cpp / SGLang` 的统一控制面做设计展开
+- 讨论 Python 控制面如何与多个官方 Docker 后端交互
+
+当前方向：
+
+- 三个后端分别使用各自官方 Docker 镜像或官方容器方案
+- Python 控制面负责容器启停、状态读取、健康检查、日志与路由治理
+- 当前目标仍然是单机三后端 Docker 化，不是多节点编排
+
+当前边界：
+
+- 这是未来方向，不是当前已经正式落地的部署模板
+- 当前正式默认后端仍然只有 `vLLM`
+- 当前不应把 `llama.cpp` 与 `SGLang` 误写成“已正式支持”
+
+它不适用于：
+
+- 把 roadmap 直接当成交付现状
+- 假设系统已经具备多后端切换与统一健康检查能力
+- 假设当前已经有 K8s 或多机部署方案
+
+## 3. 当前部署边界
+
+当前明确不负责：
+
+- 模型自动下载
+- 多节点编排
+- K8s 部署体系
+- 自动格式转换流水线
+- 云上集群治理
+
+用户仍需自行负责：
+
+- 准备模型目录
+- 准备本机 Python 与 Docker 环境
+- 按模板选择是否安装并启用前端依赖
+
+## 4. 部署形态变化后的回流要求
+
+如果部署形态、默认启动对象或正式边界发生变化，至少要同步检查：
+
+- 本文
+- `docs/process/run.md`
+- `docs/contracts/control-plane.md`
+- `docs/blueprint/current.md`
+
+如果变化已经影响项目总入口、最小启动方式或文档阅读顺序，再额外同步 `README.md`。

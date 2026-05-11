@@ -1,3 +1,7 @@
+# V1 完整蓝图
+
+> 说明：这是 V1 阶段的历史完整设计快照。它保留当时语境，不作为当前真相源。当前请优先阅读 `README.md`、`docs/blueprint/current.md` 和 `docs/blueprint/roadmap.md`。
+
 # blueprintV1
 
 ## 1. 目标
