@@ -148,7 +148,7 @@ python -m llmnode.control <action>
 - `agent`
 - `gateway`
 - `web-console`
-- `vllm`
+- `vllm`（固定别名，指向当前激活的推理后端日志，不论实际 `backend_type` 是 `vllm / llama.cpp / sglang`）
 - `all`
 
 ### 必须提供

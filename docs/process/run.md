@@ -41,22 +41,28 @@ python -m llmnode.control stop
 ## 4. 默认启动对象
 
 - `node-agent`
-- `vLLM`
+- 推理后端（默认 `vLLM`，可通过 `config/defaults.yaml` 的 `vllm.backend_type` 字段切换为 `llama.cpp` 或 `sglang`）
 - `gateway-api`
 - `web-console`
 
 ## 5. ready 判定
 
-不要把“某个进程活着”直接等同于“系统 ready”。  
+不要把”某个进程活着”直接等同于”系统 ready”。  
 当前更稳妥的判断应拆成三层：
 
 ### 5.1 推理后端 ready
 
 至少满足：
 
-- `http://127.0.0.1:8000/v1/models` 返回正常
+- `http://127.0.0.1:<host_port>/v1/models` 返回正常
 
-这说明 `vLLM` 侧已经可服务，但还不等于整个对外入口都已可用。
+其中 `<host_port>` 由当前激活后端决定：
+
+- `vLLM`：默认 `8000`
+- `llama.cpp`：默认 `8080`
+- `sglang`：默认 `30000`
+
+这说明推理后端已可服务，但还不等于整个对外入口都已可用。
 
 ### 5.2 对外主链路 ready
 
@@ -78,7 +84,7 @@ python -m llmnode.control stop
 
 因此更稳妥的理解是：
 
-- `8000` 正常：后端 ready
+- `<host_port>` 正常（按当前后端类型确认）：后端 ready
 - `4000` 正常：对外主链路 ready
 - `5173` 也正常：默认整栈入口基本齐备
 

@@ -45,7 +45,7 @@
 - `llmnode/api/app.py`
   - 启动时把模型目录写入运行态
   - `/admin/models` 读取与更新入口
-  - V2 对 `backend_type` 的运行时限制
+  - `/admin/models` 管理接口的三后端路由支持
 - `llmnode/storage/db.py`
   - `model_routes` 表结构与持久化字段
 
@@ -55,8 +55,8 @@
 
 - 当前正式运行路径默认仍为 `vLLM`
 - 路由配置以 `config/models.yaml` 为主
-- 当前实现中 `backend_type` 仍主要围绕 `vllm`
-- V2 管理面当前不接受非 `vllm` 的 `backend_type`
+- `backend_type` 现已正式支持 `vllm / llama.cpp / sglang` 三个值，三后端均已完成线上联调验证（2026-05-12）
+- `/admin/models/{name}` 管理接口已接受三个值（`_VALID_BACKEND_TYPES`）
 
 ## 5. 正式字段
 
@@ -87,10 +87,7 @@
 
 ### 当前正式值
 - `vllm`
-
-### V3 目标值
-- `vllm`
-- `llama_cpp`
+- `llama.cpp`
 - `sglang`
 
 ### 约束
@@ -110,9 +107,9 @@
 - 如果配置里未显式写 `backend_type`，加载后会默认落成 `vllm`
 - 启动后，模型路由会进入 SQLite 的 `model_routes` 表作为运行态存储
 - 管理面可以更新 `display_name / backend_model / backend_type / enabled`
-- 但在当前 V2 实现中，`/admin/models/{name}` 会拒绝 `backend_type != "vllm"` 的更新请求
+- `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值（`_VALID_BACKEND_TYPES`）
 
-因此当前结论不是“系统已经正式支持多后端路由”，而是“正式字段已经预留了多后端方向，但当前正式运行值仍然锁定在 `vllm`”。
+因此当前结论是：字段层面与运行时均已支持三后端，控制面（`control.py`、`service.py`）和管理接口均已按 `backend_type` 动态路由。
 
 ## 8. 运行时约束 / 校验入口
 
@@ -123,14 +120,14 @@
 - 存储约束
   - `llmnode/storage/db.py` 中 `model_routes.backend_type` 为 `NOT NULL`
 - 管理面约束
-  - `llmnode/api/app.py` 的 `/admin/models/{name}` 当前明确拒绝非 `vllm` 值
+  - `llmnode/api/app.py` 的 `/admin/models/{name}` 接受 `vllm / llama.cpp / sglang`
 - API 暴露约束
   - `enabled=false` 的逻辑模型不应出现在正式模型列表里
 
 这些约束意味着：
 
-- 字段层面已经为多后端留口
-- 运行时正式行为仍然只承认 `vllm`
+- 字段层面与运行时均已支持三后端
+- `backend_type` 决定 ContainerSpec、BackendDriver、健康检查和状态展示的全链路行为
 
 ## 9. 路由职责
 
@@ -143,16 +140,14 @@
 当前正式状态：
 
 - 正式默认后端：`vllm`
-- 正式可写运行值：`vllm`
-- 正式控制面与网关实现：围绕 `vLLM` 路径
+- 正式可写运行值：`vllm / llama.cpp / sglang`
+- 控制面（`control.py`、`service.py`）与网关管理接口均已完整支持三后端
+- 三后端均已完成线上联调验证（2026-05-12）：推理链路打通，`reasoning_content / content` 干净分离已确认
 
-未来目标状态：
+未来仍需补厚的方向：
 
-- `vllm / llama_cpp / sglang` 都成为正式后端类型
-- 控制面能够按 `backend_type` 调度不同官方 Docker 后端
-- 健康检查、日志和状态展示按后端类型分化但对外契约保持稳定
-
-只有当代码、控制面和运行链路都真正支持这些值时，本文的“当前正式值”才能扩展。
+- 管理台状态展示与三后端类型对齐（当前后端类型、容器状态、推理参数）
+- 健康检查和日志采集在三后端下的覆盖面验证
 
 ## 11. 长期扩展方向
 

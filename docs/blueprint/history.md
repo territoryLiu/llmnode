@@ -86,7 +86,7 @@
 ### 当前阶段
 
 - 阶段判断：
-  单后端正式路径已经形成，控制入口已经统一，但多后端扩展仍在设计推进中。
+  三后端正式路径均已完成线上联调验证，控制入口已统一，当前重点转向平台化控制面与管理台补厚。
 - 关键变化：
   `python -m llmnode.control` 已成为正式控制入口；
   shell 脚本兼容层被移除；
@@ -96,9 +96,13 @@
   这标志着项目开始具备更清晰的长期维护形态，而不是继续叠加临时入口。
 - 对后续意味着什么：
   后续重点转向：
-  - 三后端设计与实现对齐
+  - 管理台与三后端状态展示对齐
+  - 控制面诊断能力提升（`doctor / logs / status`）
   - 文档系统继续补厚
-  - 管理台、契约、控制面三者协同收敛
+- 补充里程碑（2026-05）：
+  三后端代码实现全部落地：`ContainerSpec / BackendDriver / service.py / control.py / api/app.py` 均已按 `backend_type` 动态路由；`gpu_memory_utilization` 改为 `0.9`；默认模型目录切换至 `Qwen3.6-35B-A3B`（非 FP8）；GGUF 转换链路（f16 → Q4_K_M）已完成。
+- 补充里程碑（2026-05-12）：
+  **三后端线上联调验证全部完成**：vLLM / llama.cpp / SGLang 各自跑通推理链路，`reasoning_content` / `content` 干净分离已确认。主要发现：llama.cpp 须用 `full-cuda` 镜像（`:full` 为纯 CPU），验证约 68 token/s / 26GB VRAM；SGLang 需 `--reasoning-parser qwen3` 参数（非特性缺失，仅启动命令遗漏）；旧容器复用会导致启动参数变更不生效（需先 `docker rm`）。详见 [docs/knowledge/backend_integration_qa.md](../knowledge/backend_integration_qa.md)。
 - 对应历史蓝图：
   未来方向已回流到 [roadmap.md](roadmap.md)，设计展开转入 [docs/superpowers/specs/2026-05-11-v3-v4-platform-direction.md](../superpowers/specs/2026-05-11-v3-v4-platform-direction.md)
 

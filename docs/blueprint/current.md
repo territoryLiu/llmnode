@@ -29,7 +29,7 @@
 
 一句话判断：
 
-- `llmnode` 已经不是“能不能起服务”的原型，而是“单后端正式路径已形成、控制面已收口，但多后端架构和管理面仍在扩展中的单机推理网关”。
+- `llmnode` 已经不是”能不能起服务”的原型，而是”三后端正式路径均已完成线上联调验证、控制面已收口，当前重点转向平台化控制面与管理台补厚的单机推理网关”。
 
 这意味着当前阶段的真实特点是：
 
@@ -148,17 +148,18 @@
 当前默认正式运行路径仍然是：
 
 - 推理后端：`vLLM`
-- 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B-FP8`
+- 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B`
 
 当前现实包括：
 
-- `vLLM` 是正式主路径
-- `llama.cpp` 与 `SGLang` 已经进入未来规划，但尚未落地为正式实现
-- 后续三后端方向明确要求每个后端一个官方 Docker，控制面主要通过 Python 与 Docker 交互
+- `vLLM` 是正式主路径（默认 `backend_type: vllm`）
+- 三后端均已完成线上联调验证（2026-05-12）：
+  - `vLLM`：正常推理，`reasoning_content` / `content` 干净分离
+  - `llama.cpp`：须使用 `full-cuda` 镜像，约 68 token/s，显存占用约 26GB，`reasoning_content` 正常
+  - `SGLang`：需 `--reasoning-parser qwen3` 参数（`distro` 模块补丁已合入），`reasoning_content` 正常分离
+- 三后端统一由 Python 控制面通过 Docker 编排，`control.py` 已完整感知三后端
 - `web-console` 当前主要承担状态查看和日常配置入口
 - 当前控制面已经具备 start/status/doctor/logs 的基础诊断闭环
-
-因此当前运行形态的结论不是“已经完成多后端”，而是“已经具备单后端正式运行 + 多后端扩展骨架”。
 
 ## 7. 当前配置与真相源边界
 
@@ -179,22 +180,18 @@
 
 ## 8. 当前后端边界
 
-当前正式支持：
+当前代码实现支持：
 
-- `vLLM`
-
-当前设计目标：
-
-- `vLLM`
-- `llama.cpp`
-- `SGLang`
+- `vLLM`（默认，`backend_type: vllm`）
+- `llama.cpp`（`backend_type: llama.cpp`）
+- `SGLang`（`backend_type: sglang`）
 
 当前明确边界：
 
-- V2 当前正式支持仍然只有 `vLLM`
-- 后续目标是三后端统一 Docker 化
-- 当前实现尚未完成三后端落地
-- 当前不应把未来规划误读成“已经支持三后端”
+- 三后端的 ContainerSpec 与 BackendDriver 均已落地
+- 切换后端通过 `config/defaults.yaml` 的 `vllm.backend_type` 字段或对应环境变量控制
+- 三后端均已完成线上联调验证（2026-05-12），详见 [docs/knowledge/backend_integration_qa.md](../knowledge/backend_integration_qa.md)
+- 管理面 `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值
 
 ## 9. 当前文档系统状态
 
@@ -231,8 +228,15 @@
 
 ## 10. 当前最该优先补的点
 
+已完成：
+
+- 三后端代码实现全部落地（ContainerSpec / BackendDriver / service.py / control.py / api/app.py 均已按 `backend_type` 动态路由）
+- 多后端配置与实现之间的一致性已收敛（`config/defaults.yaml` 与代码路由行为对齐）
+- 对外 API 已扩展支持三种接口协议：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`
+- **三后端线上联调验证已完成（2026-05-12）**：vLLM / llama.cpp / SGLang 各自跑通推理链路，`reasoning_content` / `content` 干净分离已确认
+
 当前最值得继续补厚的方向包括：
 
-- 旧蓝图文档的归档或降权说明
-- 多后端配置与实现之间的一致性收敛
-- 管理台、契约和控制面围绕三后端目标的逐步对齐
+- 管理台与三后端状态展示的对齐
+- 文档系统第二轮收口（`docs/knowledge/*`、`docs/superpowers/*` 的定位与清理）
+- 控制面诊断能力提升（`doctor / logs / status` 对真实问题的定位能力）
