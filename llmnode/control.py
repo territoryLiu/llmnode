@@ -827,6 +827,31 @@ def _print_process_status(name: str, pid_file: Path, port: int | None, url: str 
     print(f"  {name:<12} stopped")
 
 
+def _format_uptime(started_at: str) -> str:
+    """计算容器运行时长"""
+    if not started_at or started_at == "0001-01-01T00:00:00Z":
+        return "not started"
+
+    try:
+        from datetime import datetime, timezone
+        start_time = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta = now - start_time
+
+        days = delta.days
+        hours = delta.seconds // 3600
+        minutes = (delta.seconds % 3600) // 60
+
+        if days > 0:
+            return f"{days}d {hours}h"
+        elif hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m"
+    except (ValueError, AttributeError):
+        return "unknown"
+
+
 def _status_stack(config: RuntimeConfig) -> int:
     _print_header("llmnode status")
     _print_kv("project", str(config.project_dir))
@@ -847,22 +872,85 @@ def _status_stack(config: RuntimeConfig) -> int:
     _print_process_status("agent", config.agent_pid_file, settings.agent.port, f"{config.agent_url}/state")
     _print_process_status("web_console", config.web_pid_file, config.web_console_port, config.web_console_url)
 
+    # 容器详细信息和推理参数展示
+    _print_header(f"backend ({config.backend_type})")
+
+    backend_container_running = _docker_container_running(config.backend_container_name)
+    backend_container_exists = _docker_container_exists(config.backend_container_name)
+
+    if backend_container_exists:
+        container_info = _inspect_container(config.backend_container_name)
+        if container_info:
+            status = container_info.get("status", "unknown")
+            uptime = _format_uptime(container_info.get("started_at", ""))
+            restart_count = container_info.get("restart_count", 0)
+
+            _print_kv("container", f"{config.backend_container_name} ({status}, uptime: {uptime}, restarts: {restart_count})")
+            _print_kv("image", config.backend_image_name)
+            _print_kv("model", config.backend_model_name)
+
+            # 根据后端类型展示推理参数
+            if config.backend_type == "vllm":
+                _print_kv("gpu_memory_util", str(config.vllm_gpu_memory_utilization))
+                _print_kv("tensor_parallel", str(config.vllm_tensor_parallel_size))
+                _print_kv("max_model_len", str(config.vllm_max_model_len))
+                _print_kv("max_num_seqs", str(config.vllm_max_num_seqs))
+                if config.vllm_reasoning_parser:
+                    _print_kv("reasoning_parser", config.vllm_reasoning_parser)
+                if config.vllm_tool_call_parser:
+                    _print_kv("tool_call_parser", config.vllm_tool_call_parser)
+            elif config.backend_type == "llama.cpp":
+                _print_kv("model_file", config.llamacpp_model_file)
+                _print_kv("n_gpu_layers", str(config.llamacpp_n_gpu_layers))
+                _print_kv("ctx_size", str(config.llamacpp_ctx_size))
+                _print_kv("n_parallel", str(config.llamacpp_n_parallel))
+            elif config.backend_type == "sglang":
+                _print_kv("tp_size", str(config.sglang_tp_size))
+                _print_kv("mem_fraction", str(config.sglang_mem_fraction_static))
+                _print_kv("max_requests", str(config.sglang_max_running_requests))
+                if config.sglang_reasoning_parser:
+                    _print_kv("reasoning_parser", config.sglang_reasoning_parser)
+
+            # 健康检查
+            backend_http_state = "ok" if _http_ok(config.backend_url) else "unreachable"
+            _print_kv("health", f"{backend_http_state} ({config.backend_url})")
+        else:
+            _print_kv("container", f"{config.backend_container_name} (exists but cannot inspect)")
+    else:
+        _print_kv("container", f"{config.backend_container_name} (not found)")
+
+    # HTTP 健康检查
     gateway_http_state = "ok" if _http_ok(f"{config.gateway_url}/health/liveliness") else "unreachable"
     agent_http_state = "ok" if _http_ok(f"{config.agent_url}/state") else "unreachable"
     backend_http_state = "ok" if _http_ok(config.backend_url) else "unreachable"
     web_console_http_state = "ok" if _http_ok(config.web_console_url) else "unreachable"
 
+    # 栈状态细化（6 种状态）
     stack_state = "partial"
     stack_detail = "Some services are available, but the stack is not fully ready yet."
+
     if all(state == "unreachable" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_http_state)):
         stack_state = "stopped"
         stack_detail = "No managed services are currently reachable."
-    elif all(state == "ok" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_http_state)):
-        stack_state = "ready"
-        stack_detail = f"Gateway, agent, {config.backend_type}, and web-console are all reachable."
-    elif gateway_http_state == "ok" and agent_http_state == "ok" and web_console_http_state == "ok" and backend_http_state == "unreachable":
+    elif agent_http_state == "ok" and not backend_container_exists:
+        stack_state = "starting"
+        stack_detail = f"Agent is up, but {config.backend_type} container does not exist yet."
+    elif agent_http_state == "ok" and backend_container_running and backend_http_state == "unreachable":
         stack_state = "warming"
-        stack_detail = f"Control plane is up, and {config.backend_type} is still warming up or loading the model."
+        stack_detail = f"Control plane is up, and {config.backend_type} is warming up or loading the model."
+    elif all(state == "ok" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_http_state)):
+        # 检查是否有警告（容器重启次数 > 0）
+        if backend_container_exists:
+            container_info = _inspect_container(config.backend_container_name)
+            if container_info and container_info.get("restart_count", 0) > 0:
+                stack_state = "degraded"
+                stack_detail = f"All services are reachable, but {config.backend_type} container has restarted {container_info['restart_count']} time(s)."
+            else:
+                stack_state = "ready"
+                stack_detail = f"Gateway, agent, {config.backend_type}, and web-console are all reachable."
+        else:
+            stack_state = "ready"
+            stack_detail = f"Gateway, agent, {config.backend_type}, and web-console are all reachable."
 
     _print_header("summary")
     _print_kv("stack_state", stack_state)
