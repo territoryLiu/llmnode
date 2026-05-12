@@ -143,13 +143,31 @@
 - 正式可写运行值：`vllm / llama.cpp / sglang`
 - 控制面（`control.py`、`service.py`）与网关管理接口均已完整支持三后端
 - 三后端均已完成线上联调验证（2026-05-12）：推理链路打通，`reasoning_content / content` 干净分离已确认
+- 控制面诊断能力已增强（2026-05-12）：
+  - `doctor` 命令支持三后端特定检查、GPU 信息、模型格式检测、智能建议
+  - `status` 命令支持容器详细信息、推理参数展示、6 种栈状态
+  - `logs` 命令支持实时跟踪、错误高亮、关键词搜索
+  - Agent 服务暴露诊断 API 端点（`/admin/diagnostics/*`）
+  - 管理台前端已对齐三后端状态展示
 
 未来仍需补厚的方向：
 
-- 管理台状态展示与三后端类型对齐（当前后端类型、容器状态、推理参数）
-- 健康检查和日志采集在三后端下的覆盖面验证
+- 诊断建议的持续优化（新增错误模式识别）
+- 性能指标采集（请求总数、延迟、吞吐量）
 
-## 11. 长期扩展方向
+## 11. 诊断 API 端点
+
+Agent 服务（`llmnode/agent/service.py`）暴露以下诊断 API 端点：
+
+- `GET /admin/diagnostics/gpu` - 获取 GPU 信息和 CUDA 版本
+- `GET /admin/diagnostics/container` - 获取容器详细信息（状态、运行时长、重启次数）
+- `GET /admin/diagnostics/model` - 获取模型信息（格式、配置）
+- `GET /admin/diagnostics/suggestions` - 获取智能建议（基于日志分析和系统状态）
+- `GET /admin/diagnostics/status` - 获取完整诊断状态（聚合所有诊断信息）
+
+这些端点供管理台前端和外部监控系统使用，返回 JSON 格式数据。
+
+## 12. 长期扩展方向
 
 后续三后端落地后，本契约应继续扩展：
 
@@ -160,7 +178,7 @@
 - `tool_calling_capability`
 - `streaming_capability`
 
-## 12. 文档回流要求
+## 13. 文档回流要求
 
 如果路由字段或后端类型发生变化，应至少检查是否同步更新：
 
