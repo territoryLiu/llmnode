@@ -64,10 +64,10 @@ def test_agent_manage_start_stop_use_docker_controls():
         calls = []
 
         def fake_start():
-            calls.append(("start", app.state.vllm_spec.container_name))
+            calls.append("start")
 
         def fake_stop():
-            calls.append(("stop", app.state.vllm_spec.container_name))
+            calls.append("stop")
 
         async def run_sync(func):
             return func()
@@ -83,8 +83,8 @@ def test_agent_manage_start_stop_use_docker_controls():
             r2 = await client.post("/manage/stop")
             assert r1.status_code == 200
             assert r2.status_code == 200
-            assert calls[0][0] == "start"
-            assert calls[1][0] == "stop"
+            assert calls[0] == "start"
+            assert calls[1] == "stop"
 
     asyncio.run(run())
 

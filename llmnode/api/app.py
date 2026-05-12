@@ -28,6 +28,8 @@ from ..proxy.router import (
     stream_anthropic_messages,
     stream_openai_chat,
 )
+
+_VALID_BACKEND_TYPES = {"vllm", "llama.cpp", "sglang"}
 from ..runtime import QueueFullError, QueueTimeoutError, RequestGate
 from ..runtime import ApiKeyConcurrencyError, ApiKeyGate, ApiKeyRateLimitError
 from ..security import generate_api_key, hash_api_key
@@ -201,7 +203,7 @@ def create_app() -> FastAPI:
     if schedule_state is None:
         schedule_state = asdict(settings.schedule)
         upsert_schedule_config(db, schedule_state)
-    backend_client = VLLMBackendClient(base_url=settings.gateway.backend_url)
+    backend_client = VLLMBackendClient(base_url=settings.gateway.backend_url, backend_type=settings.vllm.backend_type)
     ctx = GatewayContext(
         api_key=settings.gateway.api_key,
         backend_client=backend_client,
@@ -278,6 +280,43 @@ def create_app() -> FastAPI:
         if state.get("status") != "ready":
             raise HTTPException(status_code=503, detail=f"agent not ready: {state.get('status', 'unknown')}")
 
+    def _build_backend_runtime_info(s) -> dict[str, Any]:
+        bt = s.vllm.backend_type
+        info: dict[str, Any] = {
+            "backend_type": bt,
+            "container_name": s.vllm.container_name,
+            "image_name": s.vllm.image_name,
+            "model_dir": s.vllm.model_dir,
+            "model_name": s.vllm.model_name,
+            "host_port": s.vllm.host_port,
+            "shm_size": s.vllm.shm_size,
+        }
+        if bt == "llama.cpp":
+            info.update({
+                "model_file": s.vllm.model_file,
+                "n_gpu_layers": s.vllm.n_gpu_layers,
+                "ctx_size": s.vllm.ctx_size,
+                "n_parallel": s.vllm.n_parallel,
+            })
+        elif bt == "sglang":
+            info.update({
+                "tensor_parallel_size": s.vllm.tensor_parallel_size,
+                "mem_fraction_static": s.vllm.mem_fraction_static,
+                "max_running_requests": s.vllm.max_running_requests,
+                "reasoning_parser": s.vllm.reasoning_parser,
+            })
+        else:
+            info.update({
+                "gpu_memory_utilization": s.vllm.gpu_memory_utilization,
+                "tensor_parallel_size": s.vllm.tensor_parallel_size,
+                "max_model_len": s.vllm.max_model_len,
+                "max_num_seqs": s.vllm.max_num_seqs,
+                "enable_auto_tool_choice": s.vllm.enable_auto_tool_choice,
+                "reasoning_parser": s.vllm.reasoning_parser,
+                "tool_call_parser": s.vllm.tool_call_parser,
+            })
+        return info
+
     async def build_admin_snapshot() -> dict:
         backend_ready = False
         backend_error: str | None = None
@@ -334,22 +373,7 @@ def create_app() -> FastAPI:
                     "auto_start_enabled": app.state.schedule["auto_start_enabled"],
                     "cooldown_minutes": app.state.schedule["cooldown_minutes"],
                 },
-                "vllm": {
-                    "backend_type": settings.vllm.backend_type,
-                    "container_name": settings.vllm.container_name,
-                    "image_name": settings.vllm.image_name,
-                    "model_dir": settings.vllm.model_dir,
-                    "model_name": settings.vllm.model_name,
-                    "host_port": settings.vllm.host_port,
-                    "gpu_memory_utilization": settings.vllm.gpu_memory_utilization,
-                    "tensor_parallel_size": settings.vllm.tensor_parallel_size,
-                    "max_model_len": settings.vllm.max_model_len,
-                    "max_num_seqs": settings.vllm.max_num_seqs,
-                    "shm_size": settings.vllm.shm_size,
-                    "enable_auto_tool_choice": settings.vllm.enable_auto_tool_choice,
-                    "reasoning_parser": settings.vllm.reasoning_parser,
-                    "tool_call_parser": settings.vllm.tool_call_parser,
-                },
+                "backend": _build_backend_runtime_info(settings),
                 "model_routes": model_routes_for_admin(app.state.ctx.models),
             },
         }
@@ -491,8 +515,8 @@ def create_app() -> FastAPI:
         if route is None:
             raise HTTPException(status_code=404, detail=f"unknown model: {name}")
         backend_type = payload.get("backend_type", route.backend_type)
-        if backend_type != "vllm":
-            raise HTTPException(status_code=400, detail="V2 only supports vllm backend_type")
+        if backend_type not in _VALID_BACKEND_TYPES:
+            raise HTTPException(status_code=400, detail=f"unsupported backend_type: {backend_type}")
         updated = replace(
             route,
             display_name=payload.get("display_name", route.display_name),

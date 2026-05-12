@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from llmnode.control import RuntimeConfig, _build_vllm_spec, _default_python_bin, _probe_process_state, _resolve_log_targets, _tail_lines, build_parser
+from llmnode.control import RuntimeConfig, _build_backend_spec, _default_python_bin, _probe_process_state, _resolve_log_targets, _tail_lines, build_parser
 
 
 def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
@@ -18,7 +18,7 @@ def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
         run_dir=run_dir,
         gateway_url="http://127.0.0.1:4000",
         agent_url="http://127.0.0.1:4010",
-        vllm_url="http://127.0.0.1:8000/v1/models",
+        backend_url="http://127.0.0.1:8000/v1/models",
         web_console_dir=tmp_path / "web-console",
         web_console_port=5173,
         web_console_url="http://127.0.0.1:5173",
@@ -28,22 +28,31 @@ def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
         gateway_pid_file=run_dir / "gateway.pid",
         agent_pid_file=run_dir / "agent.pid",
         web_pid_file=run_dir / "web-console.pid",
-        vllm_logger_pid_file=run_dir / "qwen36-vllm.logger.pid",
-        vllm_latest_log_link=log_dir / "qwen36-vllm.latest.log",
+        backend_logger_pid_file=run_dir / "qwen36-vllm.logger.pid",
+        backend_latest_log_link=log_dir / "qwen36-vllm.latest.log",
         gateway_log_file=log_dir / "gateway.log",
         agent_log_file=log_dir / "agent.log",
-        vllm_container_name="qwen36-vllm",
-        vllm_image_name="vllm/vllm-openai:nightly",
-        vllm_model_name="qwen36-35b-a3b",
-        vllm_host_port=8000,
-        vllm_gpu_memory_utilization=0.6,
+        backend_type="vllm",
+        backend_container_name="qwen36-vllm",
+        backend_image_name="vllm/vllm-openai:nightly",
+        backend_model_name="qwen36-35b-a3b",
+        backend_host_port=8000,
+        backend_shm_size="16g",
+        vllm_gpu_memory_utilization=0.9,
         vllm_tensor_parallel_size=1,
-        vllm_max_model_len=262144,
+        vllm_max_model_len=32768,
         vllm_max_num_seqs=4,
-        vllm_shm_size="16g",
         vllm_enable_auto_tool_choice=True,
         vllm_reasoning_parser="qwen3",
         vllm_tool_call_parser="qwen3_coder",
+        llamacpp_model_file="",
+        llamacpp_n_gpu_layers=-1,
+        llamacpp_ctx_size=8192,
+        llamacpp_n_parallel=4,
+        sglang_tp_size=1,
+        sglang_mem_fraction_static=0.85,
+        sglang_max_running_requests=4,
+        sglang_reasoning_parser="qwen3",
     )
 
 
@@ -94,12 +103,31 @@ def test_default_python_bin_prefers_configured_env(monkeypatch):
     assert _default_python_bin() == "/tmp/custom-python"
 
 
-def test_build_vllm_spec_uses_runtime_config(tmp_path: Path):
+def test_build_backend_spec_vllm_uses_runtime_config(tmp_path: Path):
     config = make_runtime_config(tmp_path)
-    spec = _build_vllm_spec(config)
+    spec = _build_backend_spec(config)
     assert spec.container_name == "qwen36-vllm"
     assert spec.model_dir == config.model_dir
     assert spec.host_port == 8000
+
+
+def test_build_backend_spec_llamacpp(tmp_path: Path):
+    config = make_runtime_config(tmp_path)
+    object.__setattr__(config, "backend_type", "llama.cpp") if hasattr(config, "__dataclass_fields__") else None
+    from dataclasses import replace
+    config = replace(config, backend_type="llama.cpp", llamacpp_model_file="model.gguf")
+    spec = _build_backend_spec(config)
+    assert spec.container_name == "qwen36-vllm"
+    assert spec.model_file == "model.gguf"
+
+
+def test_build_backend_spec_sglang(tmp_path: Path):
+    from dataclasses import replace
+    config = make_runtime_config(tmp_path)
+    config = replace(config, backend_type="sglang")
+    spec = _build_backend_spec(config)
+    assert spec.container_name == "qwen36-vllm"
+    assert spec.tp_size == 1
 
 
 def test_tail_lines_returns_last_n_lines(tmp_path: Path):

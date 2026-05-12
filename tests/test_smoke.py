@@ -35,5 +35,5 @@ def test_settings_uses_models_directory_for_vllm():
 def test_settings_default_vllm_model_dir_and_name():
     settings = load_settings()
     assert settings.vllm.backend_type == "vllm"
-    assert settings.vllm.model_dir.endswith("models/Qwen/Qwen3.6-35B-A3B-FP8")
+    assert settings.vllm.model_dir.endswith("models/Qwen/Qwen3.6-35B-A3B")
     assert settings.vllm.model_name == "qwen36-35b-a3b"

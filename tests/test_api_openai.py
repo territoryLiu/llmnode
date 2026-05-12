@@ -64,7 +64,7 @@ def test_admin_status_includes_runtime_config():
             assert resp.status_code == 200
             payload = resp.json()
             assert payload["runtime"]["schedule"]["timezone"] == "Asia/Shanghai"
-            assert payload["runtime"]["vllm"]["backend_type"] == "vllm"
+            assert payload["runtime"]["backend"]["backend_type"] == "vllm"
 
     asyncio.run(run())
 
