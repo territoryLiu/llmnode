@@ -99,14 +99,18 @@ python -m llmnode.control <action>
 ### 必须提供
 - 当前项目路径
 - 当前 Python 环境
-- 当前后端摘要
+- 当前后端类型（vllm / llama.cpp / sglang）
 - 关键 HTTP 健康状态
 - 关键进程摘要
+- 容器详细信息（名称、镜像、状态、运行时长、重启次数）
+- 推理参数（根据 backend_type 动态展示）
 - 总结态：
-  - `ready`
-  - `warming`
-  - `partial`
-  - `stopped`
+  - `stopped` - 所有服务都不可达
+  - `starting` - agent 可达，但 backend 容器不存在
+  - `warming` - agent 可达，backend 容器运行中，但 HTTP 不可达（模型加载中）
+  - `partial` - 部分服务可达，但不是全部
+  - `ready` - 所有服务可达
+  - `degraded` - 所有服务可达，但有警告（如容器重启次数 > 0）
 
 ## 8. `env`
 
@@ -129,15 +133,26 @@ python -m llmnode.control <action>
 ### 必须提供
 - Python / Docker / npm / `ss` 可用性
 - 模型目录与前端目录检查
+- GPU 信息（GPU 数量、型号、显存、利用率、CUDA 版本）
+- 模型格式检测（HuggingFace / GGUF / unknown）
+- 模型配置解析（model_type / num_hidden_layers / hidden_size）
 - 端口检查
 - HTTP 健康检查
 - 运行产物检查
 - Docker 容器 / 镜像检查
-- 下一步建议动作
+- 容器详细诊断（状态、重启次数、资源限制、最近日志）
+- 三后端特定检查（根据 backend_type 动态调整）
+- 智能建议（识别常见错误模式，给出可执行命令）
 
 ### 输出目标
 - 用户不需要再自己把检查结果翻译成命令
 - 应尽量直接告诉用户下一步最值得执行什么
+- 使用视觉符号（✓/✗/⚠/ℹ）提升可读性
+
+### 三后端特定检查
+- **vLLM**: GPU 可用性、显存容量、模型格式（HuggingFace）、镜像版本
+- **llama.cpp**: 镜像类型（full-cuda）、模型文件存在性、模型格式（GGUF）、n_gpu_layers 合理性
+- **SGLang**: reasoning_parser 参数、tp_size 与 GPU 数量匹配、镜像版本
 
 ## 10. `logs`
 
@@ -149,6 +164,7 @@ python -m llmnode.control <action>
 - `gateway`
 - `web-console`
 - `vllm`（固定别名，指向当前激活的推理后端日志，不论实际 `backend_type` 是 `vllm / llama.cpp / sglang`）
+- `backend`（通用别名，根据实际 backend_type 自动映射）
 - `all`
 
 ### 必须提供
@@ -156,8 +172,16 @@ python -m llmnode.control <action>
 - 日志文件路径
 - 最近若干行内容
 
+### 增强功能
+- `--follow` / `-f`: 实时跟踪日志（类似 tail -f）
+- `--grep <pattern>`: 按关键词或正则表达式过滤日志行
+- `--ignore-case` / `-i`: 忽略大小写搜索
+- `--no-highlight`: 禁用错误高亮
+- 错误高亮：自动识别并高亮 ERROR/WARN/INFO 关键词（红色/黄色/绿色）
+
 ### 当前原则
-- 默认更适合“快速定位和预览”
+- 默认更适合”快速定位和预览”
+- 支持实时跟踪用于调试场景
 - 不是长时间驻留式日志查看器
 
 ## 11. 单服务控制
