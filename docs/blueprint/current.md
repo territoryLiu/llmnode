@@ -159,7 +159,12 @@
   - `SGLang`：需 `--reasoning-parser qwen3` 参数（`distro` 模块补丁已合入），`reasoning_content` 正常分离
 - 三后端统一由 Python 控制面通过 Docker 编排，`control.py` 已完整感知三后端
 - `web-console` 当前主要承担状态查看和日常配置入口
-- 当前控制面已经具备 start/status/doctor/logs 的基础诊断闭环
+- 控制面诊断能力已增强（2026-05-12）：
+  - `doctor` 命令支持三后端特定检查、GPU 信息、模型格式检测、智能建议
+  - `status` 命令支持容器详细信息、推理参数展示、6 种栈状态
+  - `logs` 命令支持实时跟踪、错误高亮、关键词搜索
+  - Agent 服务暴露诊断 API 端点（`/admin/diagnostics/*`）
+  - 管理台前端已对齐三后端状态展示
 
 ## 7. 当前配置与真相源边界
 
@@ -234,9 +239,15 @@
 - 多后端配置与实现之间的一致性已收敛（`config/defaults.yaml` 与代码路由行为对齐）
 - 对外 API 已扩展支持三种接口协议：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`
 - **三后端线上联调验证已完成（2026-05-12）**：vLLM / llama.cpp / SGLang 各自跑通推理链路，`reasoning_content` / `content` 干净分离已确认
+- **控制面诊断能力增强已完成（2026-05-12）**：
+  - `doctor` 命令支持三后端特定检查、GPU 信息、模型格式检测、智能建议
+  - `status` 命令支持容器详细信息、推理参数展示、6 种栈状态
+  - `logs` 命令支持实时跟踪、错误高亮、关键词搜索
+  - Agent 服务暴露诊断 API 端点（`/admin/diagnostics/*`）
+  - 管理台前端已对齐三后端状态展示
 
 当前最值得继续补厚的方向包括：
 
-- 管理台与三后端状态展示的对齐
 - 文档系统第二轮收口（`docs/knowledge/*`、`docs/superpowers/*` 的定位与清理）
-- 控制面诊断能力提升（`doctor / logs / status` 对真实问题的定位能力）
+- 诊断建议的持续优化（新增错误模式识别）
+- 性能指标采集（请求总数、延迟、吞吐量）
