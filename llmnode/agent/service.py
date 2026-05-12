@@ -8,8 +8,8 @@ from fastapi import FastAPI
 
 from ..config import PROJECT_ROOT, load_settings
 from ..storage.db import init_db, list_agent_events, write_agent_event
-from .backend import VLLMBackendDriver
-from .docker_control import VLLMContainerSpec
+from .backend import LlamaCppBackendDriver, SGLangBackendDriver, VLLMBackendDriver
+from .docker_control import LlamaCppContainerSpec, SGLangContainerSpec, VLLMContainerSpec
 from .state import AgentState
 
 
@@ -110,23 +110,53 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
     app = FastAPI(title="llmnode_agent", version="0.1.0", lifespan=lifespan)
     app.state.agent = AgentState(status=settings.agent.state)
     app.state.backend_url = settings.gateway.backend_url
-    app.state.vllm_spec = VLLMContainerSpec(
-        container_name=settings.vllm.container_name,
-        image_name=settings.vllm.image_name,
-        model_dir=settings.vllm.model_dir,
-        model_name=settings.vllm.model_name,
-        host_port=settings.vllm.host_port,
-        gpu_memory_utilization=settings.vllm.gpu_memory_utilization,
-        tensor_parallel_size=settings.vllm.tensor_parallel_size,
-        max_model_len=settings.vllm.max_model_len,
-        max_num_seqs=settings.vllm.max_num_seqs,
-        shm_size=settings.vllm.shm_size,
-        enable_auto_tool_choice=settings.vllm.enable_auto_tool_choice,
-        reasoning_parser=settings.vllm.reasoning_parser,
-        tool_call_parser=settings.vllm.tool_call_parser,
-    )
-    app.state.backend_type = getattr(settings.vllm, "backend_type", "vllm")
-    app.state.backend_driver = VLLMBackendDriver(spec=app.state.vllm_spec)
+    bt = settings.vllm.backend_type
+    if bt == "llama.cpp":
+        spec = LlamaCppContainerSpec(
+            container_name=settings.vllm.container_name,
+            image_name=settings.vllm.image_name,
+            model_dir=settings.vllm.model_dir,
+            model_file=settings.vllm.model_file,
+            model_name=settings.vllm.model_name,
+            host_port=settings.vllm.host_port,
+            n_gpu_layers=settings.vllm.n_gpu_layers,
+            ctx_size=settings.vllm.ctx_size,
+            n_parallel=settings.vllm.n_parallel,
+            shm_size=settings.vllm.shm_size,
+        )
+        app.state.backend_driver = LlamaCppBackendDriver(spec=spec)
+    elif bt == "sglang":
+        spec = SGLangContainerSpec(
+            container_name=settings.vllm.container_name,
+            image_name=settings.vllm.image_name,
+            model_dir=settings.vllm.model_dir,
+            model_name=settings.vllm.model_name,
+            host_port=settings.vllm.host_port,
+            tp_size=settings.vllm.tensor_parallel_size,
+            mem_fraction_static=settings.vllm.mem_fraction_static,
+            max_running_requests=settings.vllm.max_running_requests,
+            shm_size=settings.vllm.shm_size,
+            reasoning_parser=settings.vllm.reasoning_parser,
+        )
+        app.state.backend_driver = SGLangBackendDriver(spec=spec)
+    else:
+        spec = VLLMContainerSpec(
+            container_name=settings.vllm.container_name,
+            image_name=settings.vllm.image_name,
+            model_dir=settings.vllm.model_dir,
+            model_name=settings.vllm.model_name,
+            host_port=settings.vllm.host_port,
+            gpu_memory_utilization=settings.vllm.gpu_memory_utilization,
+            tensor_parallel_size=settings.vllm.tensor_parallel_size,
+            max_model_len=settings.vllm.max_model_len,
+            max_num_seqs=settings.vllm.max_num_seqs,
+            shm_size=settings.vllm.shm_size,
+            enable_auto_tool_choice=settings.vllm.enable_auto_tool_choice,
+            reasoning_parser=settings.vllm.reasoning_parser,
+            tool_call_parser=settings.vllm.tool_call_parser,
+        )
+        app.state.backend_driver = VLLMBackendDriver(spec=spec)
+    app.state.backend_type = bt
     app.state.poll_interval = int(getattr(settings.agent, "poll_interval", 15))
     app.state.auto_recover = bool(getattr(settings.agent, "auto_recover", True))
     app.state.recovery_threshold = int(getattr(settings.agent, "recovery_threshold", 2))

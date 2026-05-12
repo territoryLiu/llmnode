@@ -14,8 +14,8 @@ from typing import Iterable
 from urllib.request import Request, urlopen
 
 from .config import LOG_DIR, PROJECT_ROOT, RUN_DIR, load_settings
-from .agent.backend import VLLMBackendDriver
-from .agent.docker_control import VLLMContainerSpec
+from .agent.backend import LlamaCppBackendDriver, SGLangBackendDriver, VLLMBackendDriver
+from .agent.docker_control import LlamaCppContainerSpec, SGLangContainerSpec, VLLMContainerSpec
 
 
 def _load_dotenv() -> None:
@@ -45,7 +45,7 @@ class RuntimeConfig:
     run_dir: Path
     gateway_url: str
     agent_url: str
-    vllm_url: str
+    backend_url: str
     web_console_dir: Path
     web_console_port: int
     web_console_url: str
@@ -55,22 +55,31 @@ class RuntimeConfig:
     gateway_pid_file: Path
     agent_pid_file: Path
     web_pid_file: Path
-    vllm_logger_pid_file: Path
-    vllm_latest_log_link: Path
+    backend_logger_pid_file: Path
+    backend_latest_log_link: Path
     gateway_log_file: Path
     agent_log_file: Path
-    vllm_container_name: str
-    vllm_image_name: str
-    vllm_model_name: str
-    vllm_host_port: int
+    backend_type: str
+    backend_container_name: str
+    backend_image_name: str
+    backend_model_name: str
+    backend_host_port: int
+    backend_shm_size: str
     vllm_gpu_memory_utilization: float
     vllm_tensor_parallel_size: int
     vllm_max_model_len: int
     vllm_max_num_seqs: int
-    vllm_shm_size: str
     vllm_enable_auto_tool_choice: bool
     vllm_reasoning_parser: str
     vllm_tool_call_parser: str
+    llamacpp_model_file: str
+    llamacpp_n_gpu_layers: int
+    llamacpp_ctx_size: int
+    llamacpp_n_parallel: int
+    sglang_tp_size: int
+    sglang_mem_fraction_static: float
+    sglang_max_running_requests: int
+    sglang_reasoning_parser: str
 
 
 def _default_python_bin() -> str:
@@ -116,7 +125,7 @@ def _runtime_config() -> RuntimeConfig:
         run_dir=run_dir,
         gateway_url=gateway_url,
         agent_url=agent_url,
-        vllm_url=f"http://127.0.0.1:{settings.vllm.host_port}/v1/models",
+        backend_url=f"http://127.0.0.1:{settings.vllm.host_port}/v1/models",
         web_console_dir=web_console_dir,
         web_console_port=web_console_port,
         web_console_url=web_console_url,
@@ -126,22 +135,31 @@ def _runtime_config() -> RuntimeConfig:
         gateway_pid_file=run_dir / "gateway.pid",
         agent_pid_file=run_dir / "agent.pid",
         web_pid_file=run_dir / "web-console.pid",
-        vllm_logger_pid_file=run_dir / f"{settings.vllm.container_name}.logger.pid",
-        vllm_latest_log_link=log_dir / f"{settings.vllm.container_name}.latest.log",
+        backend_logger_pid_file=run_dir / f"{settings.vllm.container_name}.logger.pid",
+        backend_latest_log_link=log_dir / f"{settings.vllm.container_name}.latest.log",
         gateway_log_file=log_dir / "gateway.log",
         agent_log_file=log_dir / "agent.log",
-        vllm_container_name=settings.vllm.container_name,
-        vllm_image_name=settings.vllm.image_name,
-        vllm_model_name=settings.vllm.model_name,
-        vllm_host_port=settings.vllm.host_port,
+        backend_type=settings.vllm.backend_type,
+        backend_container_name=settings.vllm.container_name,
+        backend_image_name=settings.vllm.image_name,
+        backend_model_name=settings.vllm.model_name,
+        backend_host_port=settings.vllm.host_port,
+        backend_shm_size=settings.vllm.shm_size,
         vllm_gpu_memory_utilization=settings.vllm.gpu_memory_utilization,
         vllm_tensor_parallel_size=settings.vllm.tensor_parallel_size,
         vllm_max_model_len=settings.vllm.max_model_len,
         vllm_max_num_seqs=settings.vllm.max_num_seqs,
-        vllm_shm_size=settings.vllm.shm_size,
         vllm_enable_auto_tool_choice=settings.vllm.enable_auto_tool_choice,
         vllm_reasoning_parser=settings.vllm.reasoning_parser,
         vllm_tool_call_parser=settings.vllm.tool_call_parser,
+        llamacpp_model_file=settings.vllm.model_file,
+        llamacpp_n_gpu_layers=settings.vllm.n_gpu_layers,
+        llamacpp_ctx_size=settings.vllm.ctx_size,
+        llamacpp_n_parallel=settings.vllm.n_parallel,
+        sglang_tp_size=settings.vllm.tensor_parallel_size,
+        sglang_mem_fraction_static=settings.vllm.mem_fraction_static,
+        sglang_max_running_requests=settings.vllm.max_running_requests,
+        sglang_reasoning_parser=settings.vllm.reasoning_parser,
     )
 
 
@@ -322,101 +340,134 @@ def _find_process_by_pattern(pattern: str) -> str:
     return ""
 
 
-def _build_vllm_spec(config: RuntimeConfig) -> VLLMContainerSpec:
+def _build_backend_spec(config: RuntimeConfig):
+    bt = config.backend_type
+    if bt == "llama.cpp":
+        return LlamaCppContainerSpec(
+            container_name=config.backend_container_name,
+            image_name=config.backend_image_name,
+            model_dir=config.model_dir,
+            model_file=config.llamacpp_model_file,
+            model_name=config.backend_model_name,
+            host_port=config.backend_host_port,
+            n_gpu_layers=config.llamacpp_n_gpu_layers,
+            ctx_size=config.llamacpp_ctx_size,
+            n_parallel=config.llamacpp_n_parallel,
+            shm_size=config.backend_shm_size,
+        )
+    if bt == "sglang":
+        return SGLangContainerSpec(
+            container_name=config.backend_container_name,
+            image_name=config.backend_image_name,
+            model_dir=config.model_dir,
+            model_name=config.backend_model_name,
+            host_port=config.backend_host_port,
+            tp_size=config.sglang_tp_size,
+            mem_fraction_static=config.sglang_mem_fraction_static,
+            max_running_requests=config.sglang_max_running_requests,
+            shm_size=config.backend_shm_size,
+            reasoning_parser=config.sglang_reasoning_parser,
+        )
     return VLLMContainerSpec(
-        container_name=config.vllm_container_name,
-        image_name=config.vllm_image_name,
+        container_name=config.backend_container_name,
+        image_name=config.backend_image_name,
         model_dir=config.model_dir,
-        model_name=config.vllm_model_name,
-        host_port=config.vllm_host_port,
+        model_name=config.backend_model_name,
+        host_port=config.backend_host_port,
         gpu_memory_utilization=config.vllm_gpu_memory_utilization,
         tensor_parallel_size=config.vllm_tensor_parallel_size,
         max_model_len=config.vllm_max_model_len,
         max_num_seqs=config.vllm_max_num_seqs,
-        shm_size=config.vllm_shm_size,
+        shm_size=config.backend_shm_size,
         enable_auto_tool_choice=config.vllm_enable_auto_tool_choice,
         reasoning_parser=config.vllm_reasoning_parser,
         tool_call_parser=config.vllm_tool_call_parser,
     )
 
 
-def _vllm_log_file(config: RuntimeConfig) -> Path:
+def _backend_log_file(config: RuntimeConfig) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return config.log_dir / f"{config.vllm_container_name}-{timestamp}.log"
+    return config.log_dir / f"{config.backend_container_name}-{timestamp}.log"
 
 
-def _ensure_vllm_prerequisites(config: RuntimeConfig) -> None:
+def _ensure_backend_prerequisites(config: RuntimeConfig) -> None:
     if not Path(config.model_dir).is_dir():
         raise RuntimeError(f"Model directory not found: {config.model_dir}")
-    result = _run_command_capture(["docker", "image", "inspect", config.vllm_image_name])
+    result = _run_command_capture(["docker", "image", "inspect", config.backend_image_name])
     if result.returncode != 0:
-        raise RuntimeError(f"Docker image not found: {config.vllm_image_name}")
+        raise RuntimeError(f"Docker image not found: {config.backend_image_name}")
 
 
-def _start_vllm_log_tailer(config: RuntimeConfig, log_file: Path) -> None:
-    if _is_pid_file_running(config.vllm_logger_pid_file):
-        _stop_pid_file(config.vllm_logger_pid_file, "vLLM log tailer")
+def _start_backend_log_tailer(config: RuntimeConfig, log_file: Path) -> None:
+    if _is_pid_file_running(config.backend_logger_pid_file):
+        _stop_pid_file(config.backend_logger_pid_file, "backend log tailer")
     process = subprocess.Popen(  # noqa: S603
-        ["stdbuf", "-oL", "-eL", "docker", "logs", "-f", config.vllm_container_name],
+        ["stdbuf", "-oL", "-eL", "docker", "logs", "-f", config.backend_container_name],
         stdout=log_file.open("a", encoding="utf-8"),
         stderr=subprocess.STDOUT,
         start_new_session=True,
         env=os.environ.copy(),
     )
-    config.vllm_logger_pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
+    config.backend_logger_pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
 
 
-def _start_vllm_direct(config: RuntimeConfig) -> int:
-    _ensure_vllm_prerequisites(config)
-    spec = _build_vllm_spec(config)
-    driver = VLLMBackendDriver(spec=spec)
+def _start_backend_direct(config: RuntimeConfig) -> int:
+    _ensure_backend_prerequisites(config)
+    spec = _build_backend_spec(config)
+    bt = config.backend_type
+    if bt == "llama.cpp":
+        driver = LlamaCppBackendDriver(spec=spec)
+    elif bt == "sglang":
+        driver = SGLangBackendDriver(spec=spec)
+    else:
+        driver = VLLMBackendDriver(spec=spec)
     result = driver.start()
-    log_file = _vllm_log_file(config)
+    log_file = _backend_log_file(config)
     log_file.write_text(
         "\n".join(
             [
                 "=== llmnode startup ===",
                 f"timestamp={datetime.now().strftime('%Y%m%d-%H%M%S')}",
-                f"container_name={config.vllm_container_name}",
-                f"image_name={config.vllm_image_name}",
+                f"backend_type={bt}",
+                f"container_name={config.backend_container_name}",
+                f"image_name={config.backend_image_name}",
                 f"model_dir={config.model_dir}",
-                f"model_name={config.vllm_model_name}",
-                f"host_port={config.vllm_host_port}",
-                f"gpu_memory_utilization={config.vllm_gpu_memory_utilization}",
-                f"tensor_parallel_size={config.vllm_tensor_parallel_size}",
-                f"max_model_len={config.vllm_max_model_len}",
-                f"max_num_seqs={config.vllm_max_num_seqs}",
-                f"shm_size={config.vllm_shm_size}",
-                f"enable_auto_tool_choice={str(config.vllm_enable_auto_tool_choice).lower()}",
-                f"reasoning_parser={config.vllm_reasoning_parser}",
-                f"tool_call_parser={config.vllm_tool_call_parser}",
+                f"model_name={config.backend_model_name}",
+                f"host_port={config.backend_host_port}",
+                f"shm_size={config.backend_shm_size}",
                 "==========================",
                 "",
             ]
         ),
         encoding="utf-8",
     )
-    if config.vllm_latest_log_link.exists() or config.vllm_latest_log_link.is_symlink():
-        config.vllm_latest_log_link.unlink()
-    config.vllm_latest_log_link.symlink_to(log_file.name)
-    _start_vllm_log_tailer(config, log_file)
+    if config.backend_latest_log_link.exists() or config.backend_latest_log_link.is_symlink():
+        config.backend_latest_log_link.unlink()
+    config.backend_latest_log_link.symlink_to(log_file.name)
+    _start_backend_log_tailer(config, log_file)
     snapshot = result.get("snapshot", {})
-    _print_success(f"vLLM container ready for warmup: {snapshot.get('name', config.vllm_container_name)}")
+    _print_success(f"{bt} container ready for warmup: {snapshot.get('name', config.backend_container_name)}")
     _print_info("log", str(log_file))
-    _print_info("health", f"curl http://127.0.0.1:{config.vllm_host_port}/v1/models")
+    _print_info("health", f"curl http://127.0.0.1:{config.backend_host_port}/v1/models")
     return 0
 
 
-def _stop_vllm_direct(config: RuntimeConfig) -> int:
-    _stop_pid_file(config.vllm_logger_pid_file, "vLLM log tailer")
-    spec = _build_vllm_spec(config)
-    driver = VLLMBackendDriver(spec=spec)
+def _stop_backend_direct(config: RuntimeConfig) -> int:
+    _stop_pid_file(config.backend_logger_pid_file, "backend log tailer")
+    spec = _build_backend_spec(config)
+    bt = config.backend_type
+    if bt == "llama.cpp":
+        driver = LlamaCppBackendDriver(spec=spec)
+    elif bt == "sglang":
+        driver = SGLangBackendDriver(spec=spec)
+    else:
+        driver = VLLMBackendDriver(spec=spec)
     result = driver.stop()
     action = result.get("action", "stopped")
     if action == "missing":
-        _print_info("vLLM", f"container {config.vllm_container_name} is not running")
+        _print_info(bt, f"container {config.backend_container_name} is not running")
     else:
-        _print_success(f"vLLM container stop sequence completed ({config.vllm_container_name})")
+        _print_success(f"{bt} container stop sequence completed ({config.backend_container_name})")
     return 0
 
 
@@ -538,8 +589,8 @@ def _start_web_console(config: RuntimeConfig) -> None:
 def _start_single_service(config: RuntimeConfig, service: str, daemon: bool) -> int:
     if service == "vllm":
         if not daemon:
-            raise RuntimeError("vLLM only supports daemon-style service control")
-        return _start_vllm_direct(config)
+            raise RuntimeError("backend only supports daemon-style service control")
+        return _start_backend_direct(config)
     if service == "agent":
         if daemon:
             _spawn_python_module(config, "llmnode.agent", config.agent_pid_file, config.agent_log_file, "Agent")
@@ -553,7 +604,7 @@ def _start_single_service(config: RuntimeConfig, service: str, daemon: bool) -> 
 
 def _stop_single_service(config: RuntimeConfig, service: str) -> int:
     if service == "vllm":
-        return _stop_vllm_direct(config)
+        return _stop_backend_direct(config)
     if service == "agent":
         _stop_python_service(config.agent_pid_file, "Agent", r"python(3)? -m llmnode\.agent$")
         return 0
@@ -599,7 +650,7 @@ def _print_process_status(name: str, pid_file: Path, port: int | None, url: str 
 def _status_stack(config: RuntimeConfig) -> int:
     _print_header("llmnode status")
     _print_kv("project", str(config.project_dir))
-    _print_kv("backend", "vLLM")
+    _print_kv("backend", config.backend_type)
     _print_kv("python", config.python_bin)
     _print_kv("model_dir", config.model_dir)
     _print_kv("web_console", config.web_console_url)
@@ -618,20 +669,20 @@ def _status_stack(config: RuntimeConfig) -> int:
 
     gateway_http_state = "ok" if _http_ok(f"{config.gateway_url}/health/liveliness") else "unreachable"
     agent_http_state = "ok" if _http_ok(f"{config.agent_url}/state") else "unreachable"
-    vllm_http_state = "ok" if _http_ok(config.vllm_url) else "unreachable"
+    backend_http_state = "ok" if _http_ok(config.backend_url) else "unreachable"
     web_console_http_state = "ok" if _http_ok(config.web_console_url) else "unreachable"
 
     stack_state = "partial"
     stack_detail = "Some services are available, but the stack is not fully ready yet."
-    if all(state == "unreachable" for state in (gateway_http_state, agent_http_state, vllm_http_state, web_console_http_state)):
+    if all(state == "unreachable" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_http_state)):
         stack_state = "stopped"
         stack_detail = "No managed services are currently reachable."
-    elif all(state == "ok" for state in (gateway_http_state, agent_http_state, vllm_http_state, web_console_http_state)):
+    elif all(state == "ok" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_http_state)):
         stack_state = "ready"
-        stack_detail = "Gateway, agent, vLLM, and web-console are all reachable."
-    elif gateway_http_state == "ok" and agent_http_state == "ok" and web_console_http_state == "ok" and vllm_http_state == "unreachable":
+        stack_detail = f"Gateway, agent, {config.backend_type}, and web-console are all reachable."
+    elif gateway_http_state == "ok" and agent_http_state == "ok" and web_console_http_state == "ok" and backend_http_state == "unreachable":
         stack_state = "warming"
-        stack_detail = "Control plane is up, and vLLM is still warming up or loading the model."
+        stack_detail = f"Control plane is up, and {config.backend_type} is still warming up or loading the model."
 
     _print_header("summary")
     _print_kv("stack_state", stack_state)
@@ -640,7 +691,7 @@ def _status_stack(config: RuntimeConfig) -> int:
     _print_header("http health")
     _print_kv("gateway_http", f"{gateway_http_state} ({config.gateway_url}/health/liveliness)")
     _print_kv("agent_http", f"{agent_http_state} ({config.agent_url}/state)")
-    _print_kv("vllm_http", f"{vllm_http_state} ({config.vllm_url})")
+    _print_kv("backend_http", f"{backend_http_state} ({config.backend_url})")
     _print_kv("web_console_http", f"{web_console_http_state} ({config.web_console_url})")
     return 0
 
@@ -653,9 +704,10 @@ def _env_report(config: RuntimeConfig) -> int:
     _print_kv("log_dir", str(config.log_dir))
     _print_kv("run_dir", str(config.run_dir))
     _print_kv("model_dir", config.model_dir)
+    _print_kv("backend_type", config.backend_type)
     _print_kv("gateway_url", config.gateway_url)
     _print_kv("agent_url", config.agent_url)
-    _print_kv("vllm_url", config.vllm_url)
+    _print_kv("backend_url", config.backend_url)
     _print_kv("web_console_url", config.web_console_url)
     _print_kv("web_console_dir", str(config.web_console_dir))
     return 0
@@ -665,6 +717,7 @@ def _doctor(config: RuntimeConfig) -> int:
     _print_header("llmnode doctor")
     _print_kv("project", str(config.project_dir))
     _print_kv("python", config.python_bin)
+    _print_kv("backend_type", config.backend_type)
     _print_kv("model_dir", config.model_dir)
     _print_kv("web_console", config.web_console_url)
 
@@ -690,7 +743,7 @@ def _doctor(config: RuntimeConfig) -> int:
     _print_header("ports")
     _print_check("gateway_port", "in_use" if _port_in_use(4000) else "free", "4000")
     _print_check("agent_port", "in_use" if _port_in_use(4010) else "free", "4010")
-    _print_check("vllm_port", "in_use" if _port_in_use(config.vllm_host_port) else "free", str(config.vllm_host_port))
+    _print_check("backend_port", "in_use" if _port_in_use(config.backend_host_port) else "free", str(config.backend_host_port))
     _print_check(
         "web_console_port",
         "in_use" if _port_in_use(config.web_console_port) else "free",
@@ -700,7 +753,7 @@ def _doctor(config: RuntimeConfig) -> int:
     _print_header("http")
     _print_check("gateway_http", "ok" if _http_ok(f"{config.gateway_url}/health/liveliness") else "down", f"{config.gateway_url}/health/liveliness")
     _print_check("agent_http", "ok" if _http_ok(f"{config.agent_url}/state") else "down", f"{config.agent_url}/state")
-    _print_check("vllm_http", "ok" if _http_ok(config.vllm_url) else "down", config.vllm_url)
+    _print_check("backend_http", "ok" if _http_ok(config.backend_url) else "down", config.backend_url)
     _print_check("web_console_http", "ok" if _http_ok(config.web_console_url) else "down", config.web_console_url)
 
     _print_header("artifacts")
@@ -708,47 +761,47 @@ def _doctor(config: RuntimeConfig) -> int:
     _print_check("agent_pid", "present" if config.agent_pid_file.exists() else "missing", str(config.agent_pid_file))
     _print_check("web_pid", "present" if config.web_pid_file.exists() else "missing", str(config.web_pid_file))
     _print_check(
-        "vllm_logger_pid",
-        "present" if config.vllm_logger_pid_file.exists() else "missing",
-        str(config.vllm_logger_pid_file),
+        "backend_logger_pid",
+        "present" if config.backend_logger_pid_file.exists() else "missing",
+        str(config.backend_logger_pid_file),
     )
     _print_check(
-        "vllm_latest_log",
-        "present" if config.vllm_latest_log_link.exists() or config.vllm_latest_log_link.is_symlink() else "missing",
-        str(config.vllm_latest_log_link),
+        "backend_latest_log",
+        "present" if config.backend_latest_log_link.exists() or config.backend_latest_log_link.is_symlink() else "missing",
+        str(config.backend_latest_log_link),
     )
 
     _print_header("docker state")
     if _command_exists("docker"):
-        vllm_container_state = "running" if _docker_container_running(config.vllm_container_name) else (
-            "present" if _docker_container_exists(config.vllm_container_name) else "missing"
+        backend_container_state = "running" if _docker_container_running(config.backend_container_name) else (
+            "present" if _docker_container_exists(config.backend_container_name) else "missing"
         )
         _print_check(
-            "vllm_container",
-            vllm_container_state,
-            config.vllm_container_name,
+            "backend_container",
+            backend_container_state,
+            config.backend_container_name,
         )
-        vllm_image_state = "ok" if _run_command_capture(["docker", "image", "inspect", config.vllm_image_name]).returncode == 0 else "missing"
-        _print_check("vllm_image", vllm_image_state, config.vllm_image_name)
+        backend_image_state = "ok" if _run_command_capture(["docker", "image", "inspect", config.backend_image_name]).returncode == 0 else "missing"
+        _print_check("backend_image", backend_image_state, config.backend_image_name)
     else:
-        vllm_container_state = "unknown"
-        vllm_image_state = "unknown"
-        _print_check("vllm_container", "unknown", "docker unavailable")
-        _print_check("vllm_image", "unknown", "docker unavailable")
+        backend_container_state = "unknown"
+        backend_image_state = "unknown"
+        _print_check("backend_container", "unknown", "docker unavailable")
+        _print_check("backend_image", "unknown", "docker unavailable")
 
     suggestions: list[str] = []
     if not (config.web_console_dir / "node_modules").is_dir():
         suggestions.append("安装前端依赖：cd web-console && npm install")
     if not _command_exists("docker"):
         suggestions.append("安装并启动 Docker，确认 `docker --version` 可用")
-    elif vllm_image_state == "missing":
-        suggestions.append(f"准备 vLLM 镜像：docker pull {config.vllm_image_name}")
+    elif backend_image_state == "missing":
+        suggestions.append(f"准备后端镜像：docker pull {config.backend_image_name}")
     if not Path(config.model_dir).is_dir():
         suggestions.append(f"检查模型目录是否存在：{config.model_dir}")
     if not _http_ok(f"{config.agent_url}/state") and not _http_ok(f"{config.gateway_url}/health/liveliness"):
         suggestions.append("尝试启动整栈：python -m llmnode.control start")
-    elif not _http_ok(config.vllm_url):
-        suggestions.append("查看 vLLM 暖机日志：python -m llmnode.control logs --target vllm --lines 50")
+    elif not _http_ok(config.backend_url):
+        suggestions.append(f"查看后端暖机日志：python -m llmnode.control logs --target vllm --lines 50")
     if not _http_ok(config.web_console_url) and (config.web_console_dir / "node_modules").is_dir():
         suggestions.append("单独查看前端日志：python -m llmnode.control logs --target web-console --lines 50")
 
@@ -767,10 +820,7 @@ def _resolve_log_targets(config: RuntimeConfig, target: str) -> list[tuple[str, 
         ("gateway", config.gateway_log_file),
         ("web-console", config.web_console_log_file),
     ]
-    if config.vllm_latest_log_link.exists() or config.vllm_latest_log_link.is_symlink():
-        targets.append(("vllm", config.vllm_latest_log_link))
-    else:
-        targets.append(("vllm", config.vllm_latest_log_link))
+    targets.append(("vllm", config.backend_latest_log_link))
 
     if target == "all":
         return targets
@@ -813,15 +863,15 @@ def _logs(config: RuntimeConfig, target: str, lines: int) -> int:
 def _stop_stack(config: RuntimeConfig) -> int:
     _print_header("llmnode stop")
     if _http_ok(f"{config.agent_url}/health/liveliness"):
-        _print_step("requesting vLLM stop through agent")
+        _print_step(f"requesting {config.backend_type} stop through agent")
         try:
             _http_post(f"{config.agent_url}/manage/stop")
         except Exception:
             pass
-        _print_success("vLLM stop requested through agent")
+        _print_success(f"{config.backend_type} stop requested through agent")
     else:
-        _print_step("stopping vLLM directly")
-        _stop_vllm_direct(config)
+        _print_step(f"stopping {config.backend_type} directly")
+        _stop_backend_direct(config)
 
     _print_step("stopping web-console")
     _adopt_web_console_pid_if_needed(config)
@@ -834,7 +884,7 @@ def _stop_stack(config: RuntimeConfig) -> int:
     _stop_python_service(config.agent_pid_file, "Node agent", r"python(3)? -m llmnode\.agent$")
 
     _print_header("stack stopped")
-    _print_kv("result", "agent, gateway, vLLM, and web-console stop sequence completed")
+    _print_kv("result", f"agent, gateway, {config.backend_type}, and web-console stop sequence completed")
     return 0
 
 
@@ -842,7 +892,7 @@ def _start_stack(config: RuntimeConfig) -> int:
     started = False
     try:
         _print_header("llmnode start")
-        _print_kv("backend", "vLLM")
+        _print_kv("backend", config.backend_type)
         _print_kv("python", config.python_bin)
         _print_kv("model_dir", config.model_dir)
         _print_kv("gateway", config.gateway_url)
@@ -854,9 +904,9 @@ def _start_stack(config: RuntimeConfig) -> int:
         started = True
         _wait_for_http(f"{config.agent_url}/health/liveliness", "Agent")
 
-        _print_step("requesting vLLM start through agent")
+        _print_step(f"requesting {config.backend_type} start through agent")
         _http_post(f"{config.agent_url}/manage/start")
-        _print_success("vLLM start requested through agent")
+        _print_success(f"{config.backend_type} start requested through agent")
 
         _print_step("starting gateway-api")
         _spawn_python_module(config, "llmnode", config.gateway_pid_file, config.gateway_log_file, "Gateway")

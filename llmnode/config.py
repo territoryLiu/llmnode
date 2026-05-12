@@ -10,7 +10,7 @@ RUNTIME_DIR = PROJECT_ROOT / "runtime"
 DATA_DIR = RUNTIME_DIR / "data"
 RUN_DIR = RUNTIME_DIR / "run"
 LOG_DIR = RUNTIME_DIR / "logs"
-DEFAULT_MODEL_DIR = PROJECT_ROOT / "models" / "Qwen" / "Qwen3.6-35B-A3B-FP8"
+DEFAULT_MODEL_DIR = PROJECT_ROOT / "models" / "Qwen" / "Qwen3.6-35B-A3B"
 
 
 @dataclass
@@ -50,11 +50,12 @@ class ScheduleSettings:
 
 
 @dataclass
-class VLLMSettings:
+class BackendSettings:
     backend_type: str = "vllm"
     container_name: str = "qwen36-vllm"
     image_name: str = "vllm/vllm-openai:nightly"
     model_dir: str = str(DEFAULT_MODEL_DIR)
+    model_file: str = ""
     model_name: str = "qwen36-35b-a3b"
     host_port: int = 8000
     gpu_memory_utilization: float = 0.6
@@ -65,6 +66,12 @@ class VLLMSettings:
     enable_auto_tool_choice: bool = True
     reasoning_parser: str = "qwen3"
     tool_call_parser: str = "qwen3_coder"
+    n_gpu_layers: int = -1
+    ctx_size: int = 4096
+    n_parallel: int = 1
+    mem_fraction_static: float = 0.9
+    max_running_requests: int = 4
+
 
 
 @dataclass
@@ -72,7 +79,7 @@ class AppSettings:
     gateway: GatewaySettings
     agent: AgentSettings
     schedule: ScheduleSettings
-    vllm: VLLMSettings
+    vllm: BackendSettings
 
 
 def load_settings(path: Path | None = None) -> AppSettings:
@@ -146,17 +153,18 @@ def load_settings(path: Path | None = None) -> AppSettings:
                 os.getenv("VLLM_CLAUDE_SCHEDULE_COOLDOWN_MINUTES", schedule.get("cooldown_minutes", 10))
             ),
         ),
-        vllm=VLLMSettings(
+        vllm=BackendSettings(
             backend_type=os.getenv("VLLM_CLAUDE_VLLM_BACKEND_TYPE", vllm.get("backend_type", "vllm")),
             container_name=os.getenv("VLLM_CLAUDE_VLLM_CONTAINER", vllm.get("container_name", "qwen36-vllm")),
             image_name=os.getenv("VLLM_CLAUDE_VLLM_IMAGE", vllm.get("image_name", "vllm/vllm-openai:nightly")),
             model_dir=_resolve_path(
                 os.getenv(
                 "VLLM_CLAUDE_VLLM_MODEL_DIR",
-                vllm.get("model_dir", str(Path("models") / "Qwen" / "Qwen3.6-35B-A3B-FP8")),
+                vllm.get("model_dir", str(Path("models") / "Qwen" / "Qwen3.6-35B-A3B")),
             ),
                 DEFAULT_MODEL_DIR,
             ),
+            model_file=os.getenv("LLMNODE_LLAMACPP_MODEL_FILE", vllm.get("model_file", "")),
             model_name=os.getenv("VLLM_CLAUDE_VLLM_MODEL_NAME", vllm.get("model_name", "qwen36-35b-a3b")),
             host_port=int(os.getenv("VLLM_CLAUDE_VLLM_PORT", vllm.get("host_port", 8000))),
             gpu_memory_utilization=float(os.getenv("VLLM_CLAUDE_VLLM_GPU_MEMORY_UTILIZATION", vllm.get("gpu_memory_utilization", 0.6))),
@@ -170,5 +178,10 @@ def load_settings(path: Path | None = None) -> AppSettings:
             ).lower() in {"1", "true", "yes", "on"},
             reasoning_parser=os.getenv("VLLM_CLAUDE_VLLM_REASONING_PARSER", vllm.get("reasoning_parser", "qwen3")),
             tool_call_parser=os.getenv("VLLM_CLAUDE_VLLM_TOOL_CALL_PARSER", vllm.get("tool_call_parser", "qwen3_coder")),
+            n_gpu_layers=int(os.getenv("LLMNODE_LLAMACPP_N_GPU_LAYERS", vllm.get("n_gpu_layers", -1))),
+            ctx_size=int(os.getenv("LLMNODE_LLAMACPP_CTX_SIZE", vllm.get("ctx_size", 4096))),
+            n_parallel=int(os.getenv("LLMNODE_LLAMACPP_N_PARALLEL", vllm.get("n_parallel", 1))),
+            mem_fraction_static=float(os.getenv("LLMNODE_SGLANG_MEM_FRACTION_STATIC", vllm.get("mem_fraction_static", 0.9))),
+            max_running_requests=int(os.getenv("LLMNODE_SGLANG_MAX_RUNNING_REQUESTS", vllm.get("max_running_requests", 4))),
         ),
     )

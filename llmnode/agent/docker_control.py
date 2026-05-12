@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 import docker
 from docker.errors import APIError, NotFound
@@ -62,6 +62,10 @@ class VLLMContainerSpec:
         return args
 
     @property
+    def entrypoint(self) -> list[str] | None:
+        return None
+
+    @property
     def volumes(self) -> dict[str, dict[str, str]]:
         return {self.model_dir: {"bind": "/model", "mode": "ro"}}
 
@@ -77,11 +81,109 @@ class VLLMContainerSpec:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class LlamaCppContainerSpec:
+    container_name: str
+    image_name: str
+    model_dir: str
+    model_file: str
+    model_name: str
+    host_port: int
+    n_gpu_layers: int
+    ctx_size: int
+    n_parallel: int
+    shm_size: str
+
+    @property
+    def entrypoint(self) -> list[str] | None:
+        return ["/app/llama-server"]
+
+    @property
+    def command(self) -> list[str]:
+        return [
+            "--model", f"/model/{self.model_file}",
+            "--host", "0.0.0.0",
+            "--port", "8080",
+            "--n-gpu-layers", str(self.n_gpu_layers),
+            "--ctx-size", str(self.ctx_size),
+            "--parallel", str(self.n_parallel),
+        ]
+
+    @property
+    def volumes(self) -> dict[str, dict[str, str]]:
+        return {self.model_dir: {"bind": "/model", "mode": "ro"}}
+
+    @property
+    def ports(self) -> dict[str, int]:
+        return {"8080/tcp": self.host_port}
+
+    @property
+    def device_requests(self) -> list[DeviceRequest]:
+        return [DeviceRequest(count=-1, capabilities=[["gpu"]])]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SGLangContainerSpec:
+    container_name: str
+    image_name: str
+    model_dir: str
+    model_name: str
+    host_port: int
+    tp_size: int
+    mem_fraction_static: float
+    max_running_requests: int
+    shm_size: str
+    reasoning_parser: str
+
+    @property
+    def entrypoint(self) -> list[str] | None:
+        return ["/bin/sh", "-c"]
+
+    @property
+    def command(self) -> list[str]:
+        parts = [
+            "pip install -q distro &&",
+            "python", "-m", "sglang.launch_server",
+            "--model-path", "/model",
+            "--served-model-name", self.model_name,
+            "--host", "0.0.0.0",
+            "--port", "30000",
+            "--tp", str(self.tp_size),
+            "--mem-fraction-static", str(self.mem_fraction_static),
+            "--max-running-requests", str(self.max_running_requests),
+            "--trust-remote-code",
+        ]
+        if self.reasoning_parser:
+            parts += ["--reasoning-parser", self.reasoning_parser]
+        return [" ".join(parts)]
+
+    @property
+    def volumes(self) -> dict[str, dict[str, str]]:
+        return {self.model_dir: {"bind": "/model", "mode": "ro"}}
+
+    @property
+    def ports(self) -> dict[str, int]:
+        return {"30000/tcp": self.host_port}
+
+    @property
+    def device_requests(self) -> list[DeviceRequest]:
+        return [DeviceRequest(count=-1, capabilities=[["gpu"]])]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+AnyContainerSpec = Union[VLLMContainerSpec, LlamaCppContainerSpec, SGLangContainerSpec]
+
+
 def docker_client() -> docker.DockerClient:
     return docker.from_env()
 
 
-def container_snapshot(spec: VLLMContainerSpec) -> dict[str, Any]:
+def container_snapshot(spec: AnyContainerSpec) -> dict[str, Any]:
     client = docker_client()
     try:
         container = client.containers.get(spec.container_name)
@@ -98,7 +200,7 @@ def container_snapshot(spec: VLLMContainerSpec) -> dict[str, Any]:
     }
 
 
-def ensure_container_running(spec: VLLMContainerSpec) -> dict[str, Any]:
+def ensure_container_running(spec: AnyContainerSpec) -> dict[str, Any]:
     client = docker_client()
     try:
         container = client.containers.get(spec.container_name)
@@ -108,8 +210,7 @@ def ensure_container_running(spec: VLLMContainerSpec) -> dict[str, Any]:
         return {"action": "started_existing", "snapshot": container_snapshot(spec)}
     except NotFound:
         try:
-            client.containers.run(
-                spec.image_name,
+            kwargs: dict[str, Any] = dict(
                 command=spec.command,
                 name=spec.container_name,
                 detach=True,
@@ -120,12 +221,15 @@ def ensure_container_running(spec: VLLMContainerSpec) -> dict[str, Any]:
                 shm_size=spec.shm_size,
                 device_requests=spec.device_requests,
             )
+            if spec.entrypoint is not None:
+                kwargs["entrypoint"] = spec.entrypoint
+            client.containers.run(spec.image_name, **kwargs)
         except APIError as exc:
-            raise RuntimeError(f"failed to start vllm container: {exc}") from exc
+            raise RuntimeError(f"failed to start container: {exc}") from exc
         return {"action": "started_new", "snapshot": container_snapshot(spec)}
 
 
-def stop_container(spec: VLLMContainerSpec) -> dict[str, Any]:
+def stop_container(spec: AnyContainerSpec) -> dict[str, Any]:
     client = docker_client()
     try:
         container = client.containers.get(spec.container_name)
@@ -138,7 +242,7 @@ def stop_container(spec: VLLMContainerSpec) -> dict[str, Any]:
     return {"action": "stopped", "snapshot": container_snapshot(spec)}
 
 
-def restart_container(spec: VLLMContainerSpec) -> dict[str, Any]:
+def restart_container(spec: AnyContainerSpec) -> dict[str, Any]:
     client = docker_client()
     try:
         container = client.containers.get(spec.container_name)
@@ -157,5 +261,18 @@ async def backend_health(url: str) -> bool:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(f"{url.rstrip('/')}/v1/models")
         return response.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+async def llamacpp_health(url: str) -> bool:
+    base = url.rstrip('/')
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{base}/v1/models")
+            if resp.status_code == 200:
+                return True
+            resp2 = await client.get(f"{base}/health")
+            return resp2.status_code == 200
     except httpx.HTTPError:
         return False
