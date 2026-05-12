@@ -3,10 +3,21 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI
 
 from ..config import PROJECT_ROOT, load_settings
+from ..diagnostics import (
+    analyze_logs_for_errors,
+    collect_cuda_version,
+    collect_gpu_info,
+    detect_model_format,
+    format_uptime,
+    get_container_logs,
+    inspect_container,
+    parse_model_config,
+)
 from ..storage.db import init_db, list_agent_events, write_agent_event
 from .backend import LlamaCppBackendDriver, SGLangBackendDriver, VLLMBackendDriver
 from .docker_control import LlamaCppContainerSpec, SGLangContainerSpec, VLLMContainerSpec
@@ -214,5 +225,155 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
         app.state.agent.mark("recovering", "manual restart requested")
         write_agent_event(app.state.db, "recovering", "manual restart requested")
         return {"status": app.state.agent.status}
+
+    @app.get("/admin/diagnostics/gpu")
+    async def diagnostics_gpu():
+        """获取 GPU 信息"""
+        gpus = await app.state.run_sync(collect_gpu_info)
+        cuda_version = await app.state.run_sync(collect_cuda_version)
+        return {
+            "gpus": gpus,
+            "cuda_version": cuda_version,
+        }
+
+    @app.get("/admin/diagnostics/container")
+    async def diagnostics_container():
+        """获取容器详细信息"""
+        snapshot = await app.state.run_sync(app.state.backend_driver.snapshot)
+        container_name = snapshot.get("name", "")
+
+        if not container_name:
+            return {"error": "Container not found"}
+
+        container_info = await app.state.run_sync(inspect_container, container_name)
+        if container_info:
+            container_info["uptime"] = format_uptime(container_info.get("started_at", ""))
+
+        return {
+            "backend_type": app.state.backend_type,
+            "container": container_info,
+            "snapshot": snapshot,
+        }
+
+    @app.get("/admin/diagnostics/model")
+    async def diagnostics_model():
+        """获取模型信息"""
+        settings = load_settings()
+        model_dir = Path(settings.vllm.model_dir)
+
+        model_format = await app.state.run_sync(detect_model_format, model_dir)
+        model_config = {}
+        if model_format == "huggingface":
+            model_config = await app.state.run_sync(parse_model_config, model_dir)
+
+        return {
+            "model_dir": str(model_dir),
+            "model_name": settings.vllm.model_name,
+            "model_format": model_format,
+            "model_config": model_config,
+        }
+
+    @app.get("/admin/diagnostics/suggestions")
+    async def diagnostics_suggestions():
+        """获取智能建议"""
+        settings = load_settings()
+        suggestions = []
+
+        # 检查容器日志
+        snapshot = await app.state.run_sync(app.state.backend_driver.snapshot)
+        container_name = snapshot.get("name", "")
+
+        if container_name and snapshot.get("exists"):
+            container_logs = await app.state.run_sync(get_container_logs, container_name, 20)
+            log_suggestions = await app.state.run_sync(analyze_logs_for_errors, container_logs)
+            suggestions.extend(log_suggestions)
+
+        # 检查模型格式匹配
+        model_dir = Path(settings.vllm.model_dir)
+        model_format = await app.state.run_sync(detect_model_format, model_dir)
+        backend_type = app.state.backend_type
+
+        if backend_type == "vllm" and model_format == "gguf":
+            suggestions.append("切换到 llama.cpp 后端或转换模型为 HuggingFace 格式")
+        elif backend_type == "llama.cpp" and model_format == "huggingface":
+            suggestions.append("切换到 vLLM 后端或转换模型为 GGUF 格式")
+
+        # 检查 GPU
+        gpus = await app.state.run_sync(collect_gpu_info)
+        if not gpus and backend_type in ("vllm", "sglang"):
+            suggestions.append("检查 GPU 驱动和 CUDA 安装，确认 nvidia-smi 可用")
+            suggestions.append("检查 Docker 是否配置 nvidia-runtime")
+
+        return {"suggestions": suggestions}
+
+    @app.get("/admin/diagnostics/status")
+    async def diagnostics_status():
+        """获取完整诊断状态"""
+        settings = load_settings()
+
+        # GPU 信息
+        gpus = await app.state.run_sync(collect_gpu_info)
+        cuda_version = await app.state.run_sync(collect_cuda_version)
+
+        # 容器信息
+        snapshot = await app.state.run_sync(app.state.backend_driver.snapshot)
+        container_name = snapshot.get("name", "")
+        container_info = {}
+        if container_name:
+            container_info = await app.state.run_sync(inspect_container, container_name)
+            if container_info:
+                container_info["uptime"] = format_uptime(container_info.get("started_at", ""))
+
+        # 模型信息
+        model_dir = Path(settings.vllm.model_dir)
+        model_format = await app.state.run_sync(detect_model_format, model_dir)
+        model_config = {}
+        if model_format == "huggingface":
+            model_config = await app.state.run_sync(parse_model_config, model_dir)
+
+        # 推理参数
+        inference_params = {}
+        if app.state.backend_type == "vllm":
+            inference_params = {
+                "gpu_memory_utilization": settings.vllm.gpu_memory_utilization,
+                "tensor_parallel_size": settings.vllm.tensor_parallel_size,
+                "max_model_len": settings.vllm.max_model_len,
+                "max_num_seqs": settings.vllm.max_num_seqs,
+                "reasoning_parser": settings.vllm.reasoning_parser,
+                "tool_call_parser": settings.vllm.tool_call_parser,
+            }
+        elif app.state.backend_type == "llama.cpp":
+            inference_params = {
+                "model_file": settings.vllm.model_file,
+                "n_gpu_layers": settings.vllm.n_gpu_layers,
+                "ctx_size": settings.vllm.ctx_size,
+                "n_parallel": settings.vllm.n_parallel,
+            }
+        elif app.state.backend_type == "sglang":
+            inference_params = {
+                "tp_size": settings.vllm.tensor_parallel_size,
+                "mem_fraction_static": settings.vllm.mem_fraction_static,
+                "max_running_requests": settings.vllm.max_running_requests,
+                "reasoning_parser": settings.vllm.reasoning_parser,
+            }
+
+        return {
+            "backend_type": app.state.backend_type,
+            "gpu": {
+                "gpus": gpus,
+                "cuda_version": cuda_version,
+            },
+            "container": {
+                "info": container_info,
+                "snapshot": snapshot,
+            },
+            "model": {
+                "model_dir": str(model_dir),
+                "model_name": settings.vllm.model_name,
+                "model_format": model_format,
+                "model_config": model_config,
+            },
+            "inference_params": inference_params,
+        }
 
     return app

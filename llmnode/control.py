@@ -18,6 +18,16 @@ from urllib.request import Request, urlopen
 from .config import LOG_DIR, PROJECT_ROOT, RUN_DIR, load_settings
 from .agent.backend import LlamaCppBackendDriver, SGLangBackendDriver, VLLMBackendDriver
 from .agent.docker_control import LlamaCppContainerSpec, SGLangContainerSpec, VLLMContainerSpec
+from .diagnostics import (
+    analyze_logs_for_errors,
+    collect_cuda_version,
+    collect_gpu_info,
+    detect_model_format,
+    format_uptime,
+    get_container_logs,
+    inspect_container,
+    parse_model_config,
+)
 
 
 def _load_dotenv() -> None:
