@@ -1,5 +1,5 @@
-import React, {useState} from 'react';
-import {Activity, Box, RefreshCw, Terminal} from 'lucide-react';
+import React, {useState, useEffect} from 'react';
+import {Activity, Box, RefreshCw, Terminal, Cpu, HardDrive} from 'lucide-react';
 import {useAppContext} from '../store';
 
 function formatClock(value: string | null | undefined) {
@@ -15,21 +15,44 @@ function formatClock(value: string | null | undefined) {
 
 function stringifyJson(value: unknown) {
   try {
-    return JSON.stringify(value ?? {}, null, 2);
+    return JSON.stringify(value ?? , null, 2);
   } catch {
     return '{}';
   }
 }
 
 export function SystemStatusView() {
-  const {snapshot, loading, refreshSnapshot, restartBackend} = useAppContext();
+  const {snapshot, diagnostics, loading, refreshSnapshot, refreshDiagnostics, restartBackend} = useAppContext();
   const [isRestarting, setIsRestarting] = useState(false);
+
+  useEffect(() => {
+    void refreshDiagnostics();
+    const interval = setInterval(() => {
+      void refreshDiagnostics();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [refreshDiagnostics]);
 
   const agentStatus = String(snapshot?.agent_state?.status || 'unknown');
   const backendContainer = snapshot?.backend_container;
+  const backendType = snapshot?.backend_type || diagnostics?.backend_type || 'vllm';
   const runtime = snapshot?.runtime;
   const events = snapshot?.events ?? [];
   const schedule = runtime?.schedule;
+
+  const getBackendTypeBadge = () => {
+    const badges: Record<string, {label: string; color: string}> = {
+      vllm: {label: 'vLLM', color: 'bg-blue-500/20 text-blue-600 border-blue-300'},
+      'llama.cpp': {label: 'llama.cpp', color: 'bg-green-500/20 text-green-600 border-green-300'},
+      sglang: {label: 'SGLang', color: 'bg-purple-500/20 text-purple-600 border-purple-300'},
+    };
+    const badge = badges[backendType] || {label: backendType, color: 'bg-gray-500/20 text-gray-600 border-gray-300'};
+    return (
+      <span className={`px-2 py-1 rounded text-xs font-medium border ${badge.color}`}>
+        {badge.label}
+      </span>
+    );
+  };
 
   async function handleRestart() {
     setIsRestarting(true);
@@ -52,9 +75,9 @@ export function SystemStatusView() {
             color: snapshot?.backend_ready ? 'text-emerald-600' : 'text-red-600',
           },
           {
-            label: 'Container',
-            val: backendContainer ? 'Exists' : 'N/A',
-            color: backendContainer ? 'text-blue-600' : 'text-slate-500',
+            label: 'Backend Type',
+            val: getBackendTypeBadge(),
+            color: 'text-blue-600',
           },
           {
             label: 'Auto Schedule',
@@ -65,10 +88,163 @@ export function SystemStatusView() {
         ].map((kpi) => (
           <div key={kpi.label} className="glass-panel p-6 flex flex-col justify-between">
             <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{kpi.label}</div>
-            <div className={`text-2xl font-bold ${kpi.color}`}>{kpi.val}</div>
+            <div className={`text-2xl font-bold ${kpi.color}`}>{typeof kpi.val === 'string' ? kpi.val : kpi.val}</div>
           </div>
         ))}
       </div>
+
+      {/* 容器详细信息 */}
+      {diagnostics?.container && (
+        <div className="glass-panel p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Box className="w-5 h-5 text-blue-500" />
+            <h3 className="text-lg font-semibold text-slate-800">容器信息</h3>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <div className="text-xs font-bold text-slate-500 uppercase mb-1">容器名称</div>
+              <div className="font-mono text-sm text-slate-700 bg-white/50 px-3 py-2 rounded border border-white/60 truncate">
+                {diagnostics.container.snapshot.name || 'N/A'}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs font-bold text-slate-500 uppercase mb-1">状态</div>
+              <div className="font-mono text-sm text-slate-700 bg-white/50 px-3 py-2 rounded border border-white/60">
+                {diagnostics.container.info.running ? (
+                  <span className="text-green-600">运行中</span>
+                ) : (
+                  <span className="text-gray-600">{diagnostics.container.info.status}</span>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs font-bold text-slate-500 uppercase mb-1">运行时长</div>
+              <div className="font-mono text-sm text-slate-700 bg-white/50 px-3 py-2 rounded border border-white/60">
+                {diagnostics.container.info.uptime || 'N/A'}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs font-bold text-slate-500 uppercase mb-1">重启次数</div>
+              <div className="font-mono text-sm text-slate-700 bg-white/50 px-3 py-2 rounded border border-white/60">
+                {diagnostics.container.info.restart_count > 0 ? (
+                  <span className="text-orange-600">{diagnostics.container.info.restart_count}</span>
+                ) : (
+                  <span className="text-green-600">0</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 推理参数 */}
+      {diagnostics?.inference_params && Object.keys(diagnostics.inference_params).length > 0 && (
+        <div className="glass-panel p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Terminal className="w-5 h-5 text-purple-500" />
+            <h3 className="text-lg font-semibold text-slate-800">推理参数</h3>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {Object.entries(diagnostics.inference_params).map(([key, value]) => (
+              <div key={key}>
+                <div className="text-xs font-bold text-slate-500 uppercase mb-1">{key}</div>
+                <div className="font-mono text-sm text-slate-700 bg-white/50 px-3 py-2 rounded border border-white/60">
+                  {typeof value === 'boolean' ? (value ? 'true' : 'false') : String(value)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* GPU 信息 */}
+      {diagnostics?.gpu && diagnostics.gpu.gpus.length > 0 && (
+        <div className="glass-panel p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Cpu className="w-5 h-5 text-green-500" />
+            <h3 className="text-lg font-semibold text-slate-800">GPU 信息</h3>
+            <span className="text-xs text-slate-500 ml-auto">CUDA {diagnostics.gpu.cuda_version}</span>
+          </div>
+          <div className="space-y-3">
+            {diagnostics.gpu.gpus.map((gpu) => {
+              const memUsedGB = (gpu.memory_used_mb / 1024).toFixed(1);
+              const memTotalGB = (gpu.memory_total_mb / 1024).toFixed(0);
+              const memPercent = ((gpu.memory_used_mb / gpu.memory_total_mb) * 100).toFixed(0);
+              return (
+                <div key={gpu.index} className="bg-white/50 border border-white/60 rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="font-semibold text-slate-800">GPU {gpu.index}</div>
+                    <div className="text-sm text-slate-600">{gpu.name}</div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4 text-sm">
+                    <div>
+                      <div className="text-xs text-slate-500">显存</div>
+                      <div className="font-mono text-slate-700">
+                        {memUsedGB} / {memTotalGB} GB
+                      </div>
+                      <div className="text-xs text-slate-500">({memPercent}%)</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">利用率</div>
+                      <div className="font-mono text-slate-700">{gpu.utilization_percent}%</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">状态</div>
+                      <div className="font-mono text-slate-700">
+                        {gpu.utilization_percent > 0 ? (
+                          <span className="text-green-600">使用中</span>
+                        ) : (
+                          <span className="text-slate-500">空闲</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* 模型信息 */}
+      {diagnostics?.model && (
+        <div className="glass-panel p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <HardDrive className="w-5 h-5 text-orange-500" />
+            <h3 className="text-lg font-semibold text-slate-800">模型信息</h3>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <div>
+              <div className="text-xs font-bold text-slate-500 uppercase mb-1">模型名称</div>
+              <div className="font-mono text-sm text-slate-700 bg-white/50 px-3 py-2 rounded border border-white/60 truncate">
+                {diagnostics.model.model_name}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs font-bold text-slate-500 uppercase mb-1">模型格式</div>
+              <div className="font-mono text-sm text-slate-700 bg-white/50 px-3 py-2 rounded border border-white/60">
+                {diagnostics.model.model_format}
+              </div>
+            </div>
+            {diagnostics.model.model_config.model_type && (
+              <div>
+                <div className="text-xs font-bold text-slate-500 uppercase mb-1">模型类型</div>
+                <div className="font-mono text-sm text-slate-700 bg-white/50 px-3 py-2 rounded border border-white/60">
+                  {diagnostics.model.model_config.model_type}
+                </div>
+              </div>
+            )}
+            {diagnostics.model.model_config.num_hidden_layers && (
+              <div>
+                <div className="text-xs font-bold text-slate-500 uppercase mb-1">层数</div>
+                <div className="font-mono text-sm text-slate-700 bg-white/50 px-3 py-2 rounded border border-white/60">
+                  {diagnostics.model.model_config.num_hidden_layers}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 flex-1">
         <div className="md:col-span-2 flex flex-col gap-6">
