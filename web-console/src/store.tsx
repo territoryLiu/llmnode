@@ -100,6 +100,51 @@ interface RuntimeVllmConfig {
   tool_call_parser: string | null;
 }
 
+export interface DiagnosticsStatus {
+  backend_type: string;
+  gpu: {
+    gpus: Array<{
+      index: number;
+      name: string;
+      memory_total_mb: number;
+      memory_used_mb: number;
+      utilization_percent: number;
+    }>;
+    cuda_version: string;
+  };
+  container: {
+    info: {
+      status: string;
+      running: boolean;
+      exit_code: number;
+      started_at: string;
+      restart_count: number;
+      image: string;
+      memory_limit: number;
+      shm_size: number;
+      uptime?: string;
+    };
+    snapshot: {
+      exists: boolean;
+      name: string;
+      status: string;
+      image: string;
+    };
+  };
+  model: {
+    model_dir: string;
+    model_name: string;
+    model_format: string;
+    model_config: {
+      model_type?: string;
+      hidden_size?: number;
+      num_hidden_layers?: number;
+      vocab_size?: number;
+    };
+  };
+  inference_params: Record<string, string | number | boolean>;
+}
+
 export interface AdminSnapshot {
   backend_type: string;
   backend_ready: boolean;
@@ -174,6 +219,7 @@ interface AppState {
   apiKeys: ApiKeyRow[];
   modelRoutes: ModelRouteRow[];
   schedule: ScheduleConfig | null;
+  diagnostics: DiagnosticsStatus | null;
   loading: LoadingState;
   refreshAll: () => Promise<void>;
   refreshSnapshot: () => Promise<void>;
@@ -181,6 +227,7 @@ interface AppState {
   refreshApiKeys: () => Promise<void>;
   refreshModelRoutes: () => Promise<void>;
   refreshSchedule: () => Promise<void>;
+  refreshDiagnostics: () => Promise<void>;
   createApiKey: (payload: CreateApiKeyPayload) => Promise<{secret: string; key: ApiKeyRow}>;
   updateApiKey: (id: number, payload: UpdateApiKeyPayload) => Promise<ApiKeyRow>;
   deleteApiKey: (id: number) => Promise<void>;
@@ -249,6 +296,7 @@ export function AppProvider({children}: {children: ReactNode}) {
   const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
   const [modelRoutes, setModelRoutes] = useState<ModelRouteRow[]>([]);
   const [schedule, setSchedule] = useState<ScheduleConfig | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [loading, setLoading] = useState<LoadingState>({
     snapshot: true,
     requestLogs: true,
@@ -383,6 +431,21 @@ export function AppProvider({children}: {children: ReactNode}) {
     }
   }
 
+  async function refreshDiagnostics() {
+    try {
+      const agentBase = apiBase.replace(/\/+$/, '').replace(/:\d+$/, ':4010');
+      const payload = await fetch(`${agentBase}/admin/diagnostics/status`, {
+        headers: {Accept: 'application/json'},
+      });
+      if (payload.ok) {
+        const data = await payload.json() as DiagnosticsStatus;
+        setDiagnostics(data);
+      }
+    } catch {
+      // Silently fail diagnostics fetch
+    }
+  }
+
   async function refreshAll() {
     await Promise.allSettled([
       refreshSnapshot(),
@@ -390,6 +453,7 @@ export function AppProvider({children}: {children: ReactNode}) {
       refreshApiKeys(),
       refreshModelRoutes(),
       refreshSchedule(),
+      refreshDiagnostics(),
     ]);
   }
 
@@ -579,6 +643,7 @@ export function AppProvider({children}: {children: ReactNode}) {
         apiKeys,
         modelRoutes,
         schedule,
+        diagnostics,
         loading,
         refreshAll,
         refreshSnapshot,
@@ -586,6 +651,7 @@ export function AppProvider({children}: {children: ReactNode}) {
         refreshApiKeys,
         refreshModelRoutes,
         refreshSchedule,
+        refreshDiagnostics,
         createApiKey,
         updateApiKey,
         deleteApiKey,
