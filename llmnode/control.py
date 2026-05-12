@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -192,7 +194,23 @@ def _print_error(message: str) -> None:
 
 
 def _print_check(name: str, status: str, detail: str) -> None:
-    print(f"  {name:<18} {status:<12} {detail}")
+    """打印检查结果，带状态符号"""
+    # 状态符号映射
+    symbol_map = {
+        "ok": "✓",
+        "missing": "✗",
+        "warn": "⚠",
+        "info": "ℹ",
+        "down": "✗",
+        "present": "✓",
+        "running": "✓",
+        "free": "○",
+        "in_use": "●",
+        "exited": "○",
+    }
+
+    symbol = symbol_map.get(status, "·")
+    print(f"  {symbol} {name:<18} {status:<12} {detail}")
 
 
 def _http_ok(url: str, method: str = "GET") -> bool:
@@ -282,6 +300,168 @@ def _docker_container_exists(container_name: str) -> bool:
 def _docker_container_running(container_name: str) -> bool:
     result = _run_command_capture(["docker", "ps", "-q", "-f", f"name=^{container_name}$"])
     return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _collect_gpu_info() -> list[dict]:
+    """采集 GPU 信息，返回 GPU 列表"""
+    if not _command_exists("nvidia-smi"):
+        return []
+
+    result = _run_command_capture([
+        "nvidia-smi",
+        "--query-gpu=index,name,memory.total,memory.used,utilization.gpu",
+        "--format=csv,noheader,nounits"
+    ])
+
+    if result.returncode != 0:
+        return []
+
+    gpus = []
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 5:
+            continue
+        try:
+            gpus.append({
+                "index": int(parts[0]),
+                "name": parts[1],
+                "memory_total_mb": int(parts[2]),
+                "memory_used_mb": int(parts[3]),
+                "utilization_percent": int(parts[4]),
+            })
+        except (ValueError, IndexError):
+            continue
+
+    return gpus
+
+
+def _collect_cuda_version() -> str:
+    """采集 CUDA 版本"""
+    if not _command_exists("nvidia-smi"):
+        return "unavailable"
+
+    result = _run_command_capture(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"])
+    if result.returncode != 0:
+        return "unavailable"
+
+    driver_version = result.stdout.strip().splitlines()[0] if result.stdout.strip() else "unknown"
+
+    # 尝试获取 CUDA 版本
+    result = _run_command_capture(["nvidia-smi"])
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            if "CUDA Version:" in line:
+                parts = line.split("CUDA Version:")
+                if len(parts) > 1:
+                    cuda_version = parts[1].strip().split()[0]
+                    return f"{cuda_version} (driver: {driver_version})"
+
+    return f"driver: {driver_version}"
+
+
+def _inspect_container(container_name: str) -> dict:
+    """获取容器详细信息"""
+    result = _run_command_capture(["docker", "inspect", container_name])
+    if result.returncode != 0:
+        return {}
+
+    import json
+    try:
+        data = json.loads(result.stdout)[0]
+        state = data.get("State", {})
+        config = data.get("Config", {})
+        host_config = data.get("HostConfig", {})
+
+        return {
+            "status": state.get("Status", "unknown"),
+            "running": state.get("Running", False),
+            "exit_code": state.get("ExitCode", 0),
+            "started_at": state.get("StartedAt", ""),
+            "restart_count": data.get("RestartCount", 0),
+            "image": config.get("Image", ""),
+            "memory_limit": host_config.get("Memory", 0),
+            "shm_size": host_config.get("ShmSize", 0),
+        }
+    except (json.JSONDecodeError, KeyError, IndexError):
+        return {}
+
+
+def _get_container_logs(container_name: str, lines: int = 20) -> list[str]:
+    """获取容器最近日志"""
+    result = _run_command_capture(["docker", "logs", "--tail", str(lines), container_name])
+    if result.returncode != 0:
+        return []
+    return (result.stdout + result.stderr).splitlines()
+
+
+def _detect_model_format(model_dir: Path) -> str:
+    """检测模型格式"""
+    if not model_dir.is_dir():
+        return "unknown"
+
+    if (model_dir / "config.json").exists():
+        return "huggingface"
+
+    if any(model_dir.glob("*.gguf")):
+        return "gguf"
+
+    return "unknown"
+
+
+def _parse_model_config(model_dir: Path) -> dict:
+    """解析模型配置"""
+    config_file = model_dir / "config.json"
+    if not config_file.exists():
+        return {}
+
+    try:
+        with config_file.open("r", encoding="utf-8") as f:
+            config = json.load(f)
+        return {
+            "model_type": config.get("model_type", "unknown"),
+            "hidden_size": config.get("hidden_size", 0),
+            "num_hidden_layers": config.get("num_hidden_layers", 0),
+            "vocab_size": config.get("vocab_size", 0),
+        }
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+# 错误模式配置
+ERROR_PATTERNS = {
+    "cuda_oom": {
+        "pattern": r"CUDA out of memory|OutOfMemoryError|out of memory",
+        "suggestion": "降低 gpu_memory_utilization 或 max_model_len 参数",
+    },
+    "model_not_found": {
+        "pattern": r"Model .* not found|No such file or directory.*model|FileNotFoundError.*model",
+        "suggestion": "检查 model_dir 和 model_name 配置是否正确",
+    },
+    "port_in_use": {
+        "pattern": r"Address already in use|port .* is already allocated|bind.*failed",
+        "suggestion": "检查端口占用，使用 lsof -i :<port> 或 ss -ltn 查看",
+    },
+    "permission_denied": {
+        "pattern": r"Permission denied|PermissionError",
+        "suggestion": "检查 Docker 权限和目录权限，可能需要 sudo 或加入 docker 组",
+    },
+    "gpu_not_found": {
+        "pattern": r"No CUDA-capable device|CUDA driver version is insufficient|nvidia-smi not found",
+        "suggestion": "检查 GPU 驱动和 CUDA 是否正确安装，Docker 是否配置 nvidia-runtime",
+    },
+}
+
+
+def _analyze_logs_for_errors(logs: list[str]) -> list[str]:
+    """分析日志，识别错误模式并返回建议"""
+    suggestions = []
+    log_text = "\n".join(logs)
+
+    for error_type, config in ERROR_PATTERNS.items():
+        if re.search(config["pattern"], log_text, re.IGNORECASE):
+            suggestions.append(config["suggestion"])
+
+    return suggestions
 
 
 def _spawn_python_module(config: RuntimeConfig, module_name: str, pid_file: Path, log_file: Path, label: str) -> None:
@@ -740,6 +920,47 @@ def _doctor(config: RuntimeConfig) -> int:
         str(config.web_console_dir / "node_modules"),
     )
 
+    # GPU 信息检查
+    gpus = _collect_gpu_info()
+    if gpus:
+        _print_header("gpu")
+        _print_check("gpu_count", "ok", f"{len(gpus)} GPU(s) detected")
+        for gpu in gpus:
+            mem_used_gb = gpu["memory_used_mb"] / 1024
+            mem_total_gb = gpu["memory_total_mb"] / 1024
+            mem_percent = (gpu["memory_used_mb"] / gpu["memory_total_mb"] * 100) if gpu["memory_total_mb"] > 0 else 0
+            _print_check(
+                f"gpu_{gpu['index']}",
+                "info",
+                f"{gpu['name']} ({mem_total_gb:.0f}GB, {mem_percent:.0f}% used, {mem_used_gb:.1f}GB occupied, util: {gpu['utilization_percent']}%)"
+            )
+        cuda_version = _collect_cuda_version()
+        _print_check("cuda", "ok" if cuda_version != "unavailable" else "missing", cuda_version)
+    elif _command_exists("nvidia-smi"):
+        _print_header("gpu")
+        _print_check("gpu_count", "warn", "nvidia-smi available but no GPUs detected")
+    else:
+        _print_header("gpu")
+        _print_check("nvidia-smi", "missing", "GPU support unavailable")
+
+    # 模型文件检查
+    model_dir_path = Path(config.model_dir)
+    if model_dir_path.is_dir():
+        _print_header("model")
+        model_format = _detect_model_format(model_dir_path)
+        _print_check("model_format", "ok" if model_format != "unknown" else "warn", model_format)
+
+        if model_format == "huggingface":
+            model_config = _parse_model_config(model_dir_path)
+            if model_config:
+                _print_check("model_type", "info", model_config.get("model_type", "unknown"))
+                _print_check("num_layers", "info", str(model_config.get("num_hidden_layers", "unknown")))
+                _print_check("hidden_size", "info", str(model_config.get("hidden_size", "unknown")))
+        elif model_format == "gguf":
+            gguf_files = list(model_dir_path.glob("*.gguf"))
+            if gguf_files:
+                _print_check("gguf_files", "info", f"{len(gguf_files)} GGUF file(s) found")
+
     _print_header("ports")
     _print_check("gateway_port", "in_use" if _port_in_use(4000) else "free", "4000")
     _print_check("agent_port", "in_use" if _port_in_use(4010) else "free", "4010")
@@ -771,25 +992,44 @@ def _doctor(config: RuntimeConfig) -> int:
         str(config.backend_latest_log_link),
     )
 
-    _print_header("docker state")
+    # Docker 状态和容器详细诊断
+    _print_header(f"backend ({config.backend_type})")
     if _command_exists("docker"):
         backend_container_state = "running" if _docker_container_running(config.backend_container_name) else (
             "present" if _docker_container_exists(config.backend_container_name) else "missing"
         )
         _print_check(
-            "backend_container",
+            "container_state",
             backend_container_state,
             config.backend_container_name,
         )
         backend_image_state = "ok" if _run_command_capture(["docker", "image", "inspect", config.backend_image_name]).returncode == 0 else "missing"
-        _print_check("backend_image", backend_image_state, config.backend_image_name)
+        _print_check("image", backend_image_state, config.backend_image_name)
+
+        # 容器详细信息
+        if backend_container_state in ("running", "present"):
+            container_info = _inspect_container(config.backend_container_name)
+            if container_info:
+                _print_check("container_status", "info", container_info.get("status", "unknown"))
+                _print_check("restart_count", "info", str(container_info.get("restart_count", 0)))
+                if container_info.get("shm_size", 0) > 0:
+                    shm_gb = container_info["shm_size"] / (1024 ** 3)
+                    _print_check("shm_size", "info", f"{shm_gb:.1f}GB")
     else:
         backend_container_state = "unknown"
         backend_image_state = "unknown"
-        _print_check("backend_container", "unknown", "docker unavailable")
-        _print_check("backend_image", "unknown", "docker unavailable")
+        _print_check("docker", "missing", "docker unavailable")
 
+    # 三后端特定检查
+    if config.backend_type == "vllm" and model_format == "gguf":
+        _print_check("format_mismatch", "warn", "vLLM requires HuggingFace format, but GGUF detected")
+    elif config.backend_type == "llama.cpp" and model_format == "huggingface":
+        _print_check("format_mismatch", "warn", "llama.cpp requires GGUF format, but HuggingFace detected")
+
+    # 智能建议系统
     suggestions: list[str] = []
+
+    # 基础环境建议
     if not (config.web_console_dir / "node_modules").is_dir():
         suggestions.append("安装前端依赖：cd web-console && npm install")
     if not _command_exists("docker"):
@@ -798,19 +1038,38 @@ def _doctor(config: RuntimeConfig) -> int:
         suggestions.append(f"准备后端镜像：docker pull {config.backend_image_name}")
     if not Path(config.model_dir).is_dir():
         suggestions.append(f"检查模型目录是否存在：{config.model_dir}")
+
+    # 容器日志分析建议
+    if backend_container_state == "present" and not _http_ok(config.backend_url):
+        container_logs = _get_container_logs(config.backend_container_name, 20)
+        log_suggestions = _analyze_logs_for_errors(container_logs)
+        suggestions.extend(log_suggestions)
+
+    # 服务状态建议
     if not _http_ok(f"{config.agent_url}/state") and not _http_ok(f"{config.gateway_url}/health/liveliness"):
         suggestions.append("尝试启动整栈：python -m llmnode.control start")
     elif not _http_ok(config.backend_url):
-        suggestions.append(f"查看后端暖机日志：python -m llmnode.control logs --target vllm --lines 50")
+        suggestions.append(f"查看后端日志：python -m llmnode.control logs --target vllm --lines 50")
     if not _http_ok(config.web_console_url) and (config.web_console_dir / "node_modules").is_dir():
         suggestions.append("单独查看前端日志：python -m llmnode.control logs --target web-console --lines 50")
+
+    # 模型格式不匹配建议
+    if config.backend_type == "vllm" and model_format == "gguf":
+        suggestions.append("切换到 llama.cpp 后端或转换模型为 HuggingFace 格式")
+    elif config.backend_type == "llama.cpp" and model_format == "huggingface":
+        suggestions.append("切换到 vLLM 后端或转换模型为 GGUF 格式")
+
+    # GPU 建议
+    if not gpus and config.backend_type in ("vllm", "sglang"):
+        suggestions.append("检查 GPU 驱动和 CUDA 安装，确认 nvidia-smi 可用")
+        suggestions.append("检查 Docker 是否配置 nvidia-runtime：docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi")
 
     _print_header("suggestions")
     if suggestions:
         for index, item in enumerate(suggestions, start=1):
             print(f"  {index}. {item}")
     else:
-        _print_info("next", "No obvious setup gaps detected. Use status/logs for deeper inspection.")
+        _print_info("next", "No obvious issues detected. Use status/logs for deeper inspection.")
     return 0
 
 
