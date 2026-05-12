@@ -1162,16 +1162,28 @@ def _doctor(config: RuntimeConfig) -> int:
 
 
 def _resolve_log_targets(config: RuntimeConfig, target: str) -> list[tuple[str, Path]]:
+    """解析日志目标，支持后端类型感知"""
     targets: list[tuple[str, Path]] = [
         ("agent", config.agent_log_file),
         ("gateway", config.gateway_log_file),
         ("web-console", config.web_console_log_file),
     ]
-    targets.append(("vllm", config.backend_latest_log_link))
+
+    # 后端类型感知：根据实际 backend_type 映射
+    backend_name = config.backend_type
+    targets.append((backend_name, config.backend_latest_log_link))
+
+    # 兼容旧的 vllm 别名和新的 backend 通用别名
+    if target in ("vllm", "backend"):
+        target = backend_name
 
     if target == "all":
         return targets
+
     normalized = {name: path for name, path in targets}
+    if target not in normalized:
+        raise ValueError(f"Unknown log target: {target}. Available: {', '.join(normalized.keys())}, all")
+
     return [(target, normalized[target])]
 
 
@@ -1187,23 +1199,134 @@ def _tail_lines(path: Path, max_lines: int) -> list[str]:
     return lines[-max_lines:]
 
 
-def _logs(config: RuntimeConfig, target: str, lines: int) -> int:
+def _highlight_log_line(line: str) -> str:
+    """高亮日志行中的错误关键词"""
+    # ANSI 颜色代码
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    GREEN = "\033[92m"
+    RESET = "\033[0m"
+
+    # 错误关键词（红色）
+    error_keywords = ["ERROR", "FATAL", "CRITICAL", "Exception", "Traceback", "Failed", "failed"]
+    for keyword in error_keywords:
+        if keyword in line:
+            return f"{RED}{line}{RESET}"
+
+    # 警告关键词（黄色）
+    warn_keywords = ["WARN", "WARNING", "Warning"]
+    for keyword in warn_keywords:
+        if keyword in line:
+            return f"{YELLOW}{line}{RESET}"
+
+    # 信息关键词（绿色）
+    info_keywords = ["INFO", "DEBUG"]
+    for keyword in info_keywords:
+        if keyword in line:
+            return f"{GREEN}{line}{RESET}"
+
+    return line
+
+
+def _grep_lines(lines: list[str], pattern: str, ignore_case: bool = False) -> list[str]:
+    """过滤日志行，支持正则表达式"""
+    flags = re.IGNORECASE if ignore_case else 0
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error:
+        # 如果不是有效的正则表达式，当作普通字符串处理
+        if ignore_case:
+            pattern_lower = pattern.lower()
+            return [line for line in lines if pattern_lower in line.lower()]
+        return [line for line in lines if pattern in line]
+
+    return [line for line in lines if regex.search(line)]
+
+
+def _follow_log_file(path: Path, highlight: bool = True) -> None:
+    """实时跟踪日志文件"""
+    if path.is_symlink():
+        path = path.resolve()
+
+    if not path.exists():
+        print(f"  Log file does not exist: {path}")
+        return
+
+    # 使用 tail -f 实时跟踪
+    try:
+        process = subprocess.Popen(
+            ["tail", "-f", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        print(f"  Following {path} (Ctrl+C to stop)...")
+        for line in process.stdout:
+            if highlight:
+                highlighted = _highlight_log_line(line.rstrip())
+                print(f"  {highlighted}")
+            else:
+                print(f"  {line.rstrip()}")
+    except KeyboardInterrupt:
+        process.terminate()
+        process.wait()
+        print("\n  Stopped following log.")
+    except Exception as e:
+        print(f"  Error following log: {e}")
+
+
+def _logs(config: RuntimeConfig, target: str, lines: int, follow: bool = False, grep: str = "", ignore_case: bool = False, highlight: bool = True) -> int:
     _print_header("llmnode logs")
     _print_kv("target", target)
-    _print_kv("lines", str(lines))
-    for name, path in _resolve_log_targets(config, target):
+    if follow:
+        _print_kv("mode", "follow (real-time)")
+    else:
+        _print_kv("lines", str(lines))
+    if grep:
+        _print_kv("grep", grep)
+
+    try:
+        log_targets = _resolve_log_targets(config, target)
+    except ValueError as e:
+        _print_error(str(e))
+        return 1
+
+    for name, path in log_targets:
         _print_header(f"log:{name}")
         resolved = path.resolve(strict=False) if path.is_symlink() else path
         _print_kv("path", str(resolved))
+
         if not path.exists() and not path.is_symlink():
             _print_warn("log file is missing")
             continue
+
+        # 实时跟踪模式
+        if follow:
+            _follow_log_file(path, highlight=highlight)
+            continue
+
+        # 普通模式：读取最后 N 行
         content = _tail_lines(path, lines)
         if not content:
             _print_info("content", "log file is empty")
             continue
+
+        # 关键词搜索
+        if grep:
+            content = _grep_lines(content, grep, ignore_case)
+            if not content:
+                _print_info("grep", f"no lines matching '{grep}'")
+                continue
+
+        # 输出日志内容
         for line in content:
-            print(f"  {line}")
+            if highlight:
+                highlighted = _highlight_log_line(line)
+                print(f"  {highlighted}")
+            else:
+                print(f"  {line}")
+
     return 0
 
 
@@ -1290,8 +1413,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--service", choices=["agent", "gateway", "vllm"])
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--foreground", action="store_true")
-    parser.add_argument("--target", choices=["agent", "gateway", "web-console", "vllm", "all"], default="all")
+    parser.add_argument("--target", choices=["agent", "gateway", "web-console", "vllm", "backend", "all"], default="all")
     parser.add_argument("--lines", type=int, default=20)
+    parser.add_argument("--follow", "-f", action="store_true", help="Follow log output in real-time")
+    parser.add_argument("--grep", type=str, default="", help="Filter log lines by pattern (supports regex)")
+    parser.add_argument("--ignore-case", "-i", action="store_true", help="Ignore case when using --grep")
+    parser.add_argument("--no-highlight", action="store_true", help="Disable error highlighting")
     return parser
 
 
@@ -1321,7 +1448,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     if args.action == "env":
         return _env_report(config)
     if args.action == "logs":
-        return _logs(config, args.target, max(args.lines, 0))
+        return _logs(
+            config,
+            args.target,
+            max(args.lines, 0),
+            follow=args.follow,
+            grep=args.grep,
+            ignore_case=args.ignore_case,
+            highlight=not args.no_highlight,
+        )
     return _status_stack(config)
 
 
