@@ -9,7 +9,7 @@ function buildDraft(routes: ModelRouteRow[]): DraftRoute {
 }
 
 export function ModelRoutesView() {
-  const {snapshot, modelRoutes, updateModelRoute, loading} = useAppContext();
+  const {snapshot, modelRoutes, updateModelRoute, loading, t} = useAppContext();
   const [drafts, setDrafts] = useState<DraftRoute>({});
   const [savingName, setSavingName] = useState<string | null>(null);
 
@@ -58,30 +58,30 @@ export function ModelRoutesView() {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-5xl">
       <div className="glass-panel p-6 flex flex-col md:flex-row gap-6 md:items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold text-slate-800 mb-1">Runtime Configuration</h3>
-          <p className="text-sm text-slate-500">当前版本默认只支持单个 vLLM 后端实例。</p>
+          <h3 className="text-lg font-semibold text-slate-800 mb-1">{t('models.runtimeConfig')}</h3>
+          <p className="text-sm text-slate-500">{t('models.singleBackendNotice')}</p>
         </div>
         <div className="flex gap-6 relative z-10 flex-wrap">
           <div>
-            <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">Backend Type</div>
+            <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">{t('models.backendType')}</div>
             <div className="font-mono text-sm font-medium text-slate-800 px-2 py-1 bg-slate-100 rounded border border-slate-200">
               {runtime?.backend_type?.toUpperCase() || 'VLLM'}
             </div>
           </div>
           <div>
-            <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">GPU Mem Util</div>
+            <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">{t('models.gpuMemUtil')}</div>
             <div className="font-mono text-sm font-medium text-slate-800 px-2 py-1 bg-slate-100 rounded border border-slate-200">
               {runtime?.gpu_memory_utilization ?? '-'}
             </div>
           </div>
           <div>
-            <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">Max Context</div>
+            <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">{t('models.maxContext')}</div>
             <div className="font-mono text-sm font-medium text-slate-800 px-2 py-1 bg-slate-100 rounded border border-slate-200">
               {runtime?.max_model_len ?? '-'}
             </div>
           </div>
           <div>
-            <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">Serve Model</div>
+            <div className="text-[10px] uppercase font-bold text-slate-500 mb-1">{t('models.serveModel')}</div>
             <div className="font-mono text-sm font-medium text-slate-800 px-2 py-1 bg-slate-100 rounded border border-slate-200">
               {runtime?.model_name || '-'}
             </div>
@@ -91,26 +91,26 @@ export function ModelRoutesView() {
 
       <div className="glass-panel overflow-hidden">
         <div className="p-5 border-b border-white/40 bg-white/20">
-          <h3 className="font-semibold text-slate-800">Logical Model Routing</h3>
-          <p className="text-xs text-slate-500 mt-1">映射前端暴露模型名到当前 vLLM 实际服务模型。</p>
+          <h3 className="font-semibold text-slate-800">{t('models.logicalRouting')}</h3>
+          <p className="text-xs text-slate-500 mt-1">{t('models.mappingNotice')}</p>
         </div>
 
         <div className="p-0 overflow-auto">
           <table className="w-full text-sm text-left">
             <thead className="text-xs text-slate-500 uppercase bg-slate-50/50">
               <tr>
-                <th className="px-5 py-4 font-medium w-1/4">Logical Model Name</th>
-                <th className="px-5 py-4 font-medium w-1/4">Display Name</th>
-                <th className="px-5 py-4 font-medium w-1/3">Backend Model</th>
-                <th className="px-5 py-4 font-medium w-24">Enabled</th>
-                <th className="px-5 py-4 font-medium text-right">Actions</th>
+                <th className="px-5 py-4 font-medium w-1/4">{t('models.logicalModelName')}</th>
+                <th className="px-5 py-4 font-medium w-1/4">{t('models.displayName')}</th>
+                <th className="px-5 py-4 font-medium w-1/3">{t('models.backendModel')}</th>
+                <th className="px-5 py-4 font-medium w-24">{t('models.enabled')}</th>
+                <th className="px-5 py-4 font-medium text-right">{t('models.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100/50">
               {modelRoutes.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-5 py-12 text-center text-slate-500">
-                    {loading.modelRoutes ? '正在加载路由...' : '暂无模型路由'}
+                    {loading.modelRoutes ? t('models.loadingRoutes') : t('models.noRoutes')}
                   </td>
                 </tr>
               ) : (
@@ -157,7 +157,7 @@ export function ModelRoutesView() {
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs font-medium rounded-md border border-blue-200 transition-colors disabled:opacity-60"
                         >
                           <Save className="w-3.5 h-3.5" />
-                          {savingName === route.name ? 'Saving...' : 'Save'}
+                          {savingName === route.name ? t('models.saving') : t('common.save')}
                         </button>
                       </td>
                     </tr>
@@ -172,10 +172,8 @@ export function ModelRoutesView() {
       <div className="glass-panel p-4 flex items-start gap-3 bg-blue-50/50 border-blue-100">
         <AlertCircle className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
         <div>
-          <h4 className="text-sm font-semibold text-blue-900">当前约束</h4>
-          <p className="text-xs text-blue-700 mt-1">
-            这版控制台只维护逻辑模型名与单一 vLLM 后端模型的映射，不做多后端分流。
-          </p>
+          <h4 className="text-sm font-semibold text-blue-900">{t('models.currentConstraint')}</h4>
+          <p className="text-xs text-blue-700 mt-1">{t('models.currentConstraintDesc')}</p>
         </div>
       </div>
     </div>

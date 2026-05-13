@@ -1,4 +1,11 @@
 import React, {createContext, useContext, useEffect, useRef, useState, type ReactNode} from 'react';
+import {
+  getPageLabel,
+  readStoredLocale,
+  translate,
+  type Locale,
+  writeStoredLocale,
+} from './i18n';
 
 export type Page = 'overview' | 'usage' | 'keys' | 'models' | 'schedule' | 'status';
 
@@ -205,6 +212,11 @@ interface LoadingState {
 interface AppState {
   currentPage: Page;
   setCurrentPage: (page: Page) => void;
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  toggleLocale: () => void;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+  pageTitle: string;
   apiBase: string;
   setApiBase: (url: string) => void;
   apiKey: string;
@@ -285,6 +297,7 @@ function appendHistoryPoint(previous: SnapshotHistoryPoint[], snapshot: AdminSna
 
 export function AppProvider({children}: {children: ReactNode}) {
   const [currentPage, setCurrentPage] = useState<Page>('overview');
+  const [locale, setLocaleState] = useState<Locale>(readStoredLocale());
   const [apiBase, setApiBase] = useState(defaultApiBase);
   const [apiKey, setApiKey] = useState(defaultApiKey);
   const [sseConnected, setSseConnected] = useState(false);
@@ -314,6 +327,22 @@ export function AppProvider({children}: {children: ReactNode}) {
   useEffect(() => {
     localStorage.setItem('vllm-console-api-key', apiKey);
   }, [apiKey]);
+
+  useEffect(() => {
+    writeStoredLocale(locale);
+  }, [locale]);
+
+  function setLocale(nextLocale: Locale) {
+    setLocaleState(nextLocale);
+  }
+
+  function toggleLocale() {
+    setLocaleState((previous) => (previous === 'zh' ? 'en' : 'zh'));
+  }
+
+  function t(key: string, vars?: Record<string, string | number>) {
+    return translate(locale, key, vars);
+  }
 
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(buildUrl(apiBase, path), {
@@ -624,11 +653,18 @@ export function AppProvider({children}: {children: ReactNode}) {
     };
   }, [apiBase, apiKey]);
 
+  const pageTitle = getPageLabel(currentPage, locale);
+
   return (
     <AppContext.Provider
       value={{
         currentPage,
         setCurrentPage,
+        locale,
+        setLocale,
+        toggleLocale,
+        t,
+        pageTitle,
         apiBase,
         setApiBase,
         apiKey,

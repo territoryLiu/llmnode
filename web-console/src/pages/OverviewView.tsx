@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import {AlertTriangle, Layers, RefreshCcw, ServerCog, Settings, Zap} from 'lucide-react';
 import {useAppContext} from '../store';
+import {mapRequestStatus} from '../i18n';
 
 const COLORS = ['#3b82f6', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
@@ -24,7 +25,8 @@ function formatClock(value: string) {
 }
 
 export function OverviewView() {
-  const {snapshot, snapshotHistory, refreshSnapshot, loading, setCurrentPage, restartBackend} = useAppContext();
+  const {snapshot, snapshotHistory, refreshSnapshot, loading, setCurrentPage, restartBackend, locale, t} =
+    useAppContext();
   const [restarting, setRestarting] = useState(false);
 
   const recentLogs = snapshot?.logs ?? [];
@@ -60,13 +62,13 @@ export function OverviewView() {
             <span className="p-2 bg-slate-800 rounded-lg flex items-center justify-center">
               <ServerCog className="w-5 h-5 text-emerald-400" />
             </span>
-            <span className="text-[10px] uppercase tracking-widest font-bold text-white/30">Status</span>
+            <span className="text-[10px] uppercase tracking-widest font-bold text-white/30">{t('overview.status')}</span>
           </div>
           <h3 className="text-4xl font-bold text-white relative z-10">
-            {snapshot?.backend_ready ? 'Healthy' : 'Degraded'}
+            {snapshot?.backend_ready ? t('overview.healthy') : t('overview.degraded')}
           </h3>
           <p className="text-sm text-white/50 mt-1 relative z-10">
-            {backendLabel} · {snapshot?.require_agent_ready ? 'Agent gated' : 'Direct gateway'}
+            {backendLabel} · {snapshot?.require_agent_ready ? t('overview.agentGated') : t('overview.directGateway')}
           </p>
         </div>
 
@@ -75,10 +77,10 @@ export function OverviewView() {
             <span className="p-2 bg-blue-100 rounded-lg flex items-center justify-center">
               <Zap className="w-5 h-5 text-blue-600" />
             </span>
-            <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">Requests</span>
+            <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">{t('overview.requests')}</span>
           </div>
           <h3 className="text-4xl font-bold text-slate-800">{recentLogs.length}</h3>
-          <p className="text-sm text-black/50 mt-1">当前快照中的最近请求数</p>
+          <p className="text-sm text-black/50 mt-1">{t('overview.requestSummary')}</p>
         </div>
 
         <div className="glass-panel p-6 flex flex-col justify-between">
@@ -86,10 +88,10 @@ export function OverviewView() {
             <span className="p-2 bg-purple-100 rounded-lg flex items-center justify-center">
               <Layers className="w-5 h-5 text-purple-600" />
             </span>
-            <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">Models</span>
+            <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">{t('overview.models')}</span>
           </div>
           <h3 className="text-4xl font-bold text-slate-800">{modelRoutes.length}</h3>
-          <p className="text-sm text-black/50 mt-1">已配置逻辑模型路由</p>
+          <p className="text-sm text-black/50 mt-1">{t('overview.modelSummary')}</p>
         </div>
 
         <div className="glass-panel p-6 flex flex-col justify-between relative overflow-hidden">
@@ -98,23 +100,25 @@ export function OverviewView() {
             <span className="p-2 bg-orange-100 rounded-lg flex items-center justify-center">
               <AlertTriangle className="w-5 h-5 text-orange-600" />
             </span>
-            <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">Queue</span>
+            <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">{t('overview.queue')}</span>
           </div>
           <h3 className="text-4xl font-bold text-slate-800 relative z-10">{snapshot?.queue_length ?? 0}</h3>
-          <p className="text-sm text-black/50 mt-1 relative z-10">队列上限 {queueLimit}</p>
+          <p className="text-sm text-black/50 mt-1 relative z-10">{t('overview.queueLimit', {count: queueLimit})}</p>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="glass-panel lg:col-span-2">
           <h4 className="font-bold mb-6 flex justify-between items-center text-slate-800">
-            <span>Queue & Failure Trend</span>
-            <span className="text-blue-600 text-sm font-normal">最近 {snapshotHistory.length || 0} 个采样点</span>
+            <span>{t('overview.queueTrend')}</span>
+            <span className="text-blue-600 text-sm font-normal">
+              {t('overview.recentSamples', {count: snapshotHistory.length || 0})}
+            </span>
           </h4>
           <div className="h-64 w-full">
             {snapshotHistory.length === 0 ? (
               <div className="h-full flex items-center justify-center text-sm text-slate-500">
-                {loading.snapshot ? '正在加载趋势数据...' : '暂时还没有趋势数据'}
+                {loading.snapshot ? t('overview.loadingTrend') : t('overview.noTrend')}
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
@@ -150,10 +154,10 @@ export function OverviewView() {
         </div>
 
         <div className="glass-panel flex flex-col">
-          <h4 className="font-bold mb-6 text-slate-800">Model Distribution</h4>
+          <h4 className="font-bold mb-6 text-slate-800">{t('overview.modelDistribution')}</h4>
           <div className="flex-1 min-h-[200px]">
             {modelDistribution.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-sm text-slate-500">最近没有可统计的模型请求</div>
+              <div className="h-full flex items-center justify-center text-sm text-slate-500">{t('overview.noModelRequests')}</div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -188,22 +192,22 @@ export function OverviewView() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="glass-panel overflow-hidden flex flex-col !p-0">
           <div className="p-6 border-b border-black/5 bg-white/30 backdrop-blur-md">
-            <h4 className="font-bold text-slate-800">Recent Requests</h4>
+            <h4 className="font-bold text-slate-800">{t('overview.recentRequests')}</h4>
           </div>
           <div className="p-0 flex-1 overflow-auto">
             <table className="w-full text-sm text-left">
               <thead className="text-xs text-slate-500 uppercase bg-slate-50/50">
                 <tr>
-                  <th className="px-6 py-4 font-medium">Req ID</th>
-                  <th className="px-6 py-4 font-medium">Model</th>
-                  <th className="px-6 py-4 font-medium">Status</th>
+                  <th className="px-6 py-4 font-medium">{t('overview.reqId')}</th>
+                  <th className="px-6 py-4 font-medium">{t('overview.model')}</th>
+                  <th className="px-6 py-4 font-medium">{t('overview.statusColumn')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100/50">
                 {recentLogs.length === 0 ? (
                   <tr>
                     <td colSpan={3} className="px-6 py-10 text-center text-slate-500">
-                      {loading.snapshot ? '正在拉取请求记录...' : '还没有请求记录'}
+                      {loading.snapshot ? t('overview.loadingRequests') : t('overview.noRequests')}
                     </td>
                   </tr>
                 ) : (
@@ -221,7 +225,7 @@ export function OverviewView() {
                             log.status === 'ok' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
                           }`}
                         >
-                          {log.status}
+                          {mapRequestStatus(locale, log.status)}
                         </span>
                       </td>
                     </tr>
@@ -233,7 +237,7 @@ export function OverviewView() {
         </div>
 
         <div className="glass-panel">
-          <h4 className="font-bold mb-6 text-slate-800">Quick Actions</h4>
+          <h4 className="font-bold mb-6 text-slate-800">{t('overview.quickActions')}</h4>
           <div className="grid grid-cols-2 gap-4">
             <button
               onClick={handleRestart}
@@ -241,26 +245,28 @@ export function OverviewView() {
               className="flex flex-col items-center justify-center p-6 bg-white/40 border border-white/60 rounded-2xl hover:bg-white/60 hover:shadow-md transition-all cursor-pointer disabled:opacity-60"
             >
               <RefreshCcw className={`w-6 h-6 text-blue-600 mb-2 ${restarting ? 'animate-spin' : ''}`} />
-              <span className="text-sm font-medium text-slate-800">{restarting ? '重启中...' : 'Restart Backend'}</span>
+              <span className="text-sm font-medium text-slate-800">
+                {restarting ? t('overview.restarting') : t('overview.restartBackend')}
+              </span>
             </button>
             <button
               onClick={() => setCurrentPage('schedule')}
               className="flex flex-col items-center justify-center p-6 bg-white/40 border border-white/60 rounded-2xl hover:bg-white/60 hover:shadow-md transition-all cursor-pointer"
             >
               <Settings className="w-6 h-6 text-purple-600 mb-2" />
-              <span className="text-sm font-medium text-slate-800">Edit Schedule</span>
+              <span className="text-sm font-medium text-slate-800">{t('overview.editSchedule')}</span>
             </button>
           </div>
 
           <div className="mt-8">
             <h4 className="font-bold mb-4 flex items-center gap-2 text-slate-800">
               <AlertTriangle className="w-4 h-4 text-orange-500" />
-              Errors & Exceptions
+              {t('overview.errors')}
             </h4>
             <div className="space-y-3">
               {errorLogs.length === 0 ? (
                 <div className="p-4 bg-emerald-50/60 border border-emerald-100 rounded-2xl text-sm text-emerald-700">
-                  最近样本中没有异常请求。
+                  {t('overview.noErrors')}
                 </div>
               ) : (
                 errorLogs.slice(0, 4).map((err) => (
@@ -283,7 +289,7 @@ export function OverviewView() {
               onClick={() => void refreshSnapshot()}
               className="px-4 py-2 text-sm font-medium border border-slate-300 rounded-lg bg-white/50 hover:bg-white/70 transition-colors text-slate-700"
             >
-              刷新快照
+              {t('overview.refreshSnapshot')}
             </button>
           </div>
         </div>

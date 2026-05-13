@@ -1,6 +1,7 @@
 import React, {useMemo, useState} from 'react';
 import {Search} from 'lucide-react';
 import {useAppContext} from '../store';
+import {mapRequestStatus} from '../i18n';
 
 function formatDate(value: string) {
   const date = new Date(value);
@@ -11,7 +12,7 @@ function formatDate(value: string) {
 }
 
 export function UsageRecordsView() {
-  const {requestLogs, snapshot, loading} = useAppContext();
+  const {requestLogs, snapshot, loading, locale, t} = useAppContext();
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
 
@@ -39,10 +40,10 @@ export function UsageRecordsView() {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 h-full flex flex-col">
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
         {[
-          {label: 'Total Requests', val: String(total)},
-          {label: 'Exceptions', val: String(exceptions), color: 'text-red-600'},
-          {label: 'Rejected', val: String(rejected), color: 'text-orange-600'},
-          {label: 'Backend Type', val: backendType},
+          {label: t('usage.totalRequests'), val: String(total)},
+          {label: t('usage.exceptions'), val: String(exceptions), color: 'text-red-600'},
+          {label: t('usage.rejected'), val: String(rejected), color: 'text-orange-600'},
+          {label: t('usage.backendType'), val: backendType},
         ].map((kpi) => (
           <div key={kpi.label} className="glass-panel p-6 flex flex-col justify-between">
             <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{kpi.label}</div>
@@ -60,7 +61,7 @@ export function UsageRecordsView() {
                 type="text"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search request ID, model, IP..."
+                placeholder={t('usage.searchPlaceholder')}
                 className="pl-9 pr-4 py-1.5 text-sm rounded-lg bg-white/50 border border-white/60 focus:ring-2 focus:ring-blue-500/30 outline-none w-64"
               />
             </div>
@@ -69,33 +70,35 @@ export function UsageRecordsView() {
               onChange={(event) => setFilter(event.target.value)}
               className="px-3 py-1.5 text-sm rounded-lg bg-white/50 border border-white/60 outline-none text-slate-700"
             >
-              <option value="all">All Status</option>
-              <option value="ok">Success</option>
-              <option value="rejected">Rejected</option>
-              <option value="error">Error</option>
+              <option value="all">{t('usage.allStatus')}</option>
+              <option value="ok">{t('usage.success')}</option>
+              <option value="rejected">{t('usage.rejected')}</option>
+              <option value="error">{t('usage.error')}</option>
             </select>
           </div>
-          <div className="text-xs text-slate-500">显示 {filteredLogs.length} / {requestLogs.length} 条记录</div>
+          <div className="text-xs text-slate-500">
+            {t('usage.showing', {shown: filteredLogs.length, total: requestLogs.length})}
+          </div>
         </div>
 
         <div className="flex-1 overflow-auto">
           <table className="w-full text-sm text-left whitespace-nowrap">
             <thead className="text-xs text-slate-500 uppercase bg-slate-50/50 sticky top-0 backdrop-blur-md">
               <tr>
-                <th className="px-5 py-3 font-medium">Time / ID</th>
-                <th className="px-5 py-3 font-medium">Protocol</th>
-                <th className="px-5 py-3 font-medium">Model</th>
-                <th className="px-5 py-3 font-medium">Status</th>
-                <th className="px-5 py-3 font-medium">Source</th>
-                <th className="px-5 py-3 font-medium">Client IP</th>
-                <th className="px-5 py-3 font-medium">Reason</th>
+                <th className="px-5 py-3 font-medium">{t('usage.timeId')}</th>
+                <th className="px-5 py-3 font-medium">{t('usage.protocol')}</th>
+                <th className="px-5 py-3 font-medium">{t('usage.model')}</th>
+                <th className="px-5 py-3 font-medium">{t('usage.status')}</th>
+                <th className="px-5 py-3 font-medium">{t('usage.source')}</th>
+                <th className="px-5 py-3 font-medium">{t('usage.clientIp')}</th>
+                <th className="px-5 py-3 font-medium">{t('usage.reason')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100/50">
               {filteredLogs.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="px-5 py-12 text-center text-slate-500">
-                    {loading.requestLogs ? '正在加载请求日志...' : '没有符合筛选条件的记录'}
+                    {loading.requestLogs ? t('usage.loadingLogs') : t('usage.noResults')}
                   </td>
                 </tr>
               ) : (
@@ -117,7 +120,7 @@ export function UsageRecordsView() {
                               : 'bg-orange-100 text-orange-700'
                         }`}
                       >
-                        {log.status}
+                        {mapRequestStatus(locale, log.status)}
                       </span>
                     </td>
                     <td className="px-5 py-3 text-slate-600">

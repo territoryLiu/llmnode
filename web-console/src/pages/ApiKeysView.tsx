@@ -34,7 +34,7 @@ function ToggleButton({
 }
 
 export function ApiKeysView() {
-  const {apiKeys, createApiKey, updateApiKey, deleteApiKey, loading} = useAppContext();
+  const {apiKeys, createApiKey, updateApiKey, deleteApiKey, loading, locale, t} = useAppContext();
   const [showNewSecret, setShowNewSecret] = useState<string | null>(null);
   const [copyDone, setCopyDone] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -113,19 +113,19 @@ export function ApiKeysView() {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 h-full flex flex-col">
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
         <div className="glass-panel p-6 flex flex-col justify-between">
-          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">Total Keys</div>
+          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.totalKeys')}</div>
           <div className="text-4xl font-bold text-slate-800">{stats.total}</div>
         </div>
         <div className="glass-panel p-6 flex flex-col justify-between">
-          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">Active</div>
+          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.active')}</div>
           <div className="text-4xl font-bold text-emerald-600">{stats.active}</div>
         </div>
         <div className="glass-panel p-6 flex flex-col justify-between">
-          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">Inference Scopes</div>
+          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.inferenceScopes')}</div>
           <div className="text-4xl font-bold text-blue-600">{stats.inference}</div>
         </div>
         <div className="glass-panel p-6 flex flex-col justify-between">
-          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">Admin Scopes</div>
+          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.adminScopes')}</div>
           <div className="text-4xl font-bold text-purple-600">{stats.admin}</div>
         </div>
       </div>
@@ -136,28 +136,28 @@ export function ApiKeysView() {
             type="text"
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="Key name"
+            placeholder={t('keys.keyName')}
             className="w-full bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/30"
           />
           <input
             type="number"
             value={rpmLimit}
             onChange={(event) => setRpmLimit(event.target.value)}
-            placeholder="RPM limit"
+            placeholder={t('keys.rpmLimit')}
             className="w-full bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/30"
           />
           <input
             type="number"
             value={concurrencyLimit}
             onChange={(event) => setConcurrencyLimit(event.target.value)}
-            placeholder="Concurrency"
+            placeholder={t('keys.concurrency')}
             className="w-full bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/30"
           />
           <input
             type="text"
             value={note}
             onChange={(event) => setNote(event.target.value)}
-            placeholder="Optional note"
+            placeholder={t('keys.optionalNote')}
             className="w-full bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/30"
           />
           <button
@@ -166,18 +166,18 @@ export function ApiKeysView() {
             className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-colors shadow-md shadow-slate-900/20 disabled:opacity-60"
           >
             <Plus className="w-4 h-4" />
-            {creating ? 'Creating...' : 'Create Key'}
+            {creating ? t('keys.creating') : t('keys.createKey')}
           </button>
         </div>
 
         <div className="flex flex-wrap gap-3 mt-4">
           <label className="flex items-center gap-2 text-sm text-slate-700">
             <input type="checkbox" checked={scopeAdmin} onChange={() => setScopeAdmin((value) => !value)} />
-            admin
+            {t('keys.scopeAdmin')}
           </label>
           <label className="flex items-center gap-2 text-sm text-slate-700">
             <input type="checkbox" checked={scopeInference} onChange={() => setScopeInference((value) => !value)} />
-            inference
+            {t('keys.scopeInference')}
           </label>
         </div>
       </div>
@@ -189,7 +189,7 @@ export function ApiKeysView() {
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-2 text-emerald-400">
                 <CheckCircle2 className="w-5 h-5" />
-                <h3 className="font-semibold text-lg">Key Generated Successfully</h3>
+                <h3 className="font-semibold text-lg">{t('keys.generated')}</h3>
               </div>
               <button onClick={() => setShowNewSecret(null)} className="text-slate-400 hover:text-white transition-colors">
                 <X className="w-5 h-5" />
@@ -197,7 +197,7 @@ export function ApiKeysView() {
             </div>
 
             <p className="text-sm text-slate-300 mb-4">
-              请立刻保存这个密钥。<strong className="text-red-400 font-bold">关闭后将无法再次查看。</strong>
+              {t('keys.saveSecretWarning')}
             </p>
 
             <div className="flex items-center gap-3">
@@ -207,39 +207,41 @@ export function ApiKeysView() {
               <button
                 onClick={() => void handleCopy()}
                 className="p-3 bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 rounded-lg border border-emerald-500/50 transition-all"
-                title="Copy to clipboard"
+                title={t('keys.copy')}
               >
                 <Copy className="w-5 h-5" />
               </button>
             </div>
-            {copyDone && <div className="text-xs text-emerald-300 mt-3">已复制到剪贴板</div>}
+            {copyDone && <div className="text-xs text-emerald-300 mt-3">{t('keys.copied')}</div>}
           </div>
         </div>
       )}
 
       <div className="glass-panel flex-1 flex flex-col overflow-hidden">
         <div className="p-4 border-b border-white/40 flex items-center justify-between gap-4 bg-white/20">
-          <div className="font-semibold text-slate-800">Database API Keys</div>
-          <div className="text-xs text-slate-500">{loading.apiKeys ? '正在加载...' : `${apiKeys.length} keys`}</div>
+          <div className="font-semibold text-slate-800">{t('keys.keyList')}</div>
+          <div className="text-xs text-slate-500">
+            {loading.apiKeys ? t('keys.loadingKeys') : t('keys.keysCount', {count: apiKeys.length})}
+          </div>
         </div>
 
         <div className="flex-1 overflow-auto p-0">
           <table className="w-full text-sm text-left">
             <thead className="text-xs text-slate-500 uppercase bg-slate-50/50">
               <tr>
-                <th className="px-5 py-3 font-medium">Name</th>
-                <th className="px-5 py-3 font-medium">Status</th>
-                <th className="px-5 py-3 font-medium">Scopes</th>
-                <th className="px-5 py-3 font-medium">Limits (RPM/Conc)</th>
-                <th className="px-5 py-3 font-medium">Created At</th>
-                <th className="px-5 py-3 font-medium text-right">Actions</th>
+                <th className="px-5 py-3 font-medium">{t('keys.name')}</th>
+                <th className="px-5 py-3 font-medium">{t('keys.status')}</th>
+                <th className="px-5 py-3 font-medium">{t('keys.scopes')}</th>
+                <th className="px-5 py-3 font-medium">{t('keys.limits')}</th>
+                <th className="px-5 py-3 font-medium">{t('keys.createdAt')}</th>
+                <th className="px-5 py-3 font-medium text-right">{t('keys.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100/50">
               {apiKeys.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-5 py-12 text-center text-slate-500">
-                    {loading.apiKeys ? '正在获取密钥列表...' : '还没有 API Key'}
+                    {loading.apiKeys ? t('keys.loadingKeys') : t('keys.noKeys')}
                   </td>
                 </tr>
               ) : (
@@ -255,7 +257,7 @@ export function ApiKeysView() {
                           key.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
                         }`}
                       >
-                        {key.status}
+                        {key.status === 'active' ? t('keys.active') : t('keys.disabled')}
                       </span>
                     </td>
                     <td className="px-5 py-4">
@@ -275,12 +277,14 @@ export function ApiKeysView() {
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-500">
                       <div>{formatDate(key.created_at)}</div>
-                      <div className="mt-1">last used: {formatDate(key.last_used_at)}</div>
+                      <div className="mt-1">
+                        {t('keys.lastUsed')}: {formatDate(key.last_used_at)}
+                      </div>
                     </td>
                     <td className="px-5 py-4 text-right">
                       <div className="flex justify-end gap-2">
                         <ToggleButton onClick={() => void handleToggle(key)} disabled={busyId === key.id}>
-                          {key.status === 'active' ? 'Disable' : 'Enable'}
+                          {key.status === 'active' ? t('keys.disable') : t('keys.enable')}
                         </ToggleButton>
                         <button
                           onClick={() => void handleDelete(key)}

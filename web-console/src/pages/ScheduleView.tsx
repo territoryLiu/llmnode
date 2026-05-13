@@ -3,13 +3,13 @@ import {Calendar, Check, Clock, Power, ShieldAlert} from 'lucide-react';
 import {useAppContext, type ScheduleConfig} from '../store';
 
 const DAYS = [
-  {id: 'mon', label: 'Monday'},
-  {id: 'tue', label: 'Tuesday'},
-  {id: 'wed', label: 'Wednesday'},
-  {id: 'thu', label: 'Thursday'},
-  {id: 'fri', label: 'Friday'},
-  {id: 'sat', label: 'Saturday'},
-  {id: 'sun', label: 'Sunday'},
+  {id: 'mon', key: 'schedule.days.mon'},
+  {id: 'tue', key: 'schedule.days.tue'},
+  {id: 'wed', key: 'schedule.days.wed'},
+  {id: 'thu', key: 'schedule.days.thu'},
+  {id: 'fri', key: 'schedule.days.fri'},
+  {id: 'sat', key: 'schedule.days.sat'},
+  {id: 'sun', key: 'schedule.days.sun'},
 ] as const;
 
 const EMPTY_SCHEDULE: ScheduleConfig = {
@@ -23,7 +23,7 @@ const EMPTY_SCHEDULE: ScheduleConfig = {
 };
 
 export function ScheduleView() {
-  const {schedule, updateSchedule, loading} = useAppContext();
+  const {schedule, updateSchedule, loading, t} = useAppContext();
   const [draft, setDraft] = useState<ScheduleConfig>(schedule || EMPTY_SCHEDULE);
   const [saving, setSaving] = useState(false);
 
@@ -57,10 +57,8 @@ export function ScheduleView() {
       <div className="flex items-center gap-4 p-4 glass-panel bg-orange-50/50 border-orange-200">
         <ShieldAlert className="w-6 h-6 text-orange-500 shrink-0" />
         <div>
-          <h4 className="text-sm font-semibold text-orange-900">V2 Scheduling Behavior</h4>
-          <p className="text-xs text-orange-800 mt-1">
-            当前调度直接驱动应用内定时逻辑，这里保存的配置就是系统事实来源。
-          </p>
+          <h4 className="text-sm font-semibold text-orange-900">{t('schedule.schedulingBehavior')}</h4>
+          <p className="text-xs text-orange-800 mt-1">{t('schedule.schedulingBehaviorDesc')}</p>
         </div>
       </div>
 
@@ -70,7 +68,7 @@ export function ScheduleView() {
 
         <h3 className="text-lg font-semibold text-slate-800 mb-6 relative z-10 flex items-center gap-2">
           <Calendar className="w-5 h-5 text-blue-500" />
-          Runtime Scheduling Strategy
+          {t('schedule.runtimeStrategy')}
         </h3>
 
         <form
@@ -83,7 +81,7 @@ export function ScheduleView() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Timezone</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">{t('schedule.timezone')}</label>
                 <select
                   value={draft.timezone}
                   onChange={(event) => setDraft((previous) => ({...previous, timezone: event.target.value}))}
@@ -97,7 +95,7 @@ export function ScheduleView() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Start Time</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">{t('schedule.startTime')}</label>
                   <div className="relative">
                     <Clock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
@@ -109,7 +107,7 @@ export function ScheduleView() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">End Time</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-2">{t('schedule.endTime')}</label>
                   <div className="relative">
                     <Clock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
@@ -123,7 +121,7 @@ export function ScheduleView() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Cooldown (Minutes)</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">{t('schedule.cooldownMinutes')}</label>
                 <input
                   type="number"
                   min={0}
@@ -138,7 +136,7 @@ export function ScheduleView() {
 
             <div className="space-y-6">
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-3">Work Days</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase mb-3">{t('schedule.workDays')}</label>
                 <div className="flex flex-wrap gap-2">
                   {DAYS.map((day) => (
                     <label
@@ -151,7 +149,7 @@ export function ScheduleView() {
                         onChange={() => toggleDay(day.id)}
                         className="w-3.5 h-3.5 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
                       />
-                      <span className="text-xs font-medium text-blue-900">{day.label}</span>
+                      <span className="text-xs font-medium text-blue-900">{t(day.key)}</span>
                     </label>
                   ))}
                 </div>
@@ -166,13 +164,13 @@ export function ScheduleView() {
                       onChange={(event) =>
                         setDraft((previous) => ({...previous, auto_start_enabled: event.target.checked}))
                       }
-                      className="opacity-0 absolute inset-0 z-10 cursor-pointer peer"
+                        className="opacity-0 absolute inset-0 z-10 cursor-pointer peer"
                     />
                     <Check className="w-3.5 h-3.5 text-blue-600 opacity-0 peer-checked:opacity-100 transition-opacity" />
                   </div>
                   <div>
-                    <div className="text-sm font-semibold text-slate-800">Auto Start Enabled</div>
-                    <div className="text-xs text-slate-500 mt-0.5">到开始时间后自动唤起后端实例。</div>
+                    <div className="text-sm font-semibold text-slate-800">{t('schedule.autoStart')}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{t('schedule.autoStartDesc')}</div>
                   </div>
                 </label>
 
@@ -184,13 +182,13 @@ export function ScheduleView() {
                       onChange={(event) =>
                         setDraft((previous) => ({...previous, auto_stop_enabled: event.target.checked}))
                       }
-                      className="opacity-0 absolute inset-0 z-10 cursor-pointer peer"
+                        className="opacity-0 absolute inset-0 z-10 cursor-pointer peer"
                     />
                     <Check className="w-3.5 h-3.5 text-blue-600 opacity-0 peer-checked:opacity-100 transition-opacity" />
                   </div>
                   <div>
-                    <div className="text-sm font-semibold text-slate-800">Auto Stop Enabled</div>
-                    <div className="text-xs text-slate-500 mt-0.5">结束时间后自动关闭后端，节省资源。</div>
+                    <div className="text-sm font-semibold text-slate-800">{t('schedule.autoStop')}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{t('schedule.autoStopDesc')}</div>
                   </div>
                 </label>
               </div>
@@ -198,14 +196,14 @@ export function ScheduleView() {
           </div>
 
           <div className="pt-6 border-t border-white/60 flex items-center justify-between">
-            <div className="text-xs text-slate-500">{loading.schedule ? '正在加载调度配置...' : '保存后立即生效'}</div>
+            <div className="text-xs text-slate-500">{loading.schedule ? t('schedule.loadingSchedule') : t('schedule.saveHint')}</div>
             <button
               type="submit"
               disabled={saving}
               className="inline-flex items-center gap-2 px-6 py-2.5 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-colors shadow-lg shadow-slate-900/20 font-medium text-sm disabled:opacity-60"
             >
               <Power className="w-4 h-4" />
-              {saving ? 'Saving...' : 'Apply Schedule'}
+              {saving ? t('schedule.saving') : t('schedule.applySchedule')}
             </button>
           </div>
         </form>
