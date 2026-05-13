@@ -103,8 +103,10 @@
   三后端代码实现全部落地：`ContainerSpec / BackendDriver / service.py / control.py / api/app.py` 均已按 `backend_type` 动态路由；`gpu_memory_utilization` 改为 `0.9`；默认模型目录切换至 `Qwen3.6-35B-A3B`（非 FP8）；GGUF 转换链路（f16 → Q4_K_M）已完成。
 - 补充里程碑（2026-05-12）：
   **三后端线上联调验证全部完成**：vLLM / llama.cpp / SGLang 各自跑通推理链路，`reasoning_content` / `content` 干净分离已确认。主要发现：llama.cpp 须用 `full-cuda` 镜像（`:full` 为纯 CPU），验证约 68 token/s / 26GB VRAM；SGLang 需 `--reasoning-parser qwen3` 参数（非特性缺失，仅启动命令遗漏）；旧容器复用会导致启动参数变更不生效（需先 `docker rm`）。详见 [docs/knowledge/backend_integration_qa.md](../knowledge/backend_integration_qa.md)。
+- 补充里程碑（2026-05-13）：
+  **文档系统第二轮收口已完成**：`docs/knowledge/*` 已固定为常驻参考层，`docs/superpowers/*` 已固定为进行中工作区；`README.md` 的失效文档入口已清理，文档边界统一回流到 `development-workflow / glossary / current / roadmap`。这标志着文档系统从“第一轮分层”进入“第二轮边界固化”阶段。
 - 对应历史蓝图：
-  未来方向已回流到 [roadmap.md](roadmap.md)，设计展开转入 [docs/superpowers/specs/2026-05-11-v3-v4-platform-direction.md](../superpowers/specs/2026-05-11-v3-v4-platform-direction.md)
+  未来方向已回流到 [roadmap.md](roadmap.md)，相关正式边界已进入 [current.md](current.md) 与相关 `contracts / process` 文档。
 
 ## 4. 写阶段记录时的最小要求
 
