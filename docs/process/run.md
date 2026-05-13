@@ -41,7 +41,7 @@ python -m llmnode.control stop
 ## 4. 默认启动对象
 
 - `node-agent`
-- 推理后端（默认 `vLLM`，可通过 `config/defaults.yaml` 的 `vllm.backend_type` 字段切换为 `llama.cpp` 或 `sglang`）
+- 推理后端（默认 `vLLM`，可通过 `config/defaults.yaml` 的 `active_backend_profile` 切换到其他后端或模型）
 - `gateway-api`
 - `web-console`
 
@@ -58,9 +58,8 @@ python -m llmnode.control stop
 
 其中 `<host_port>` 由当前激活后端决定：
 
-- `vLLM`：默认 `8000`
-- `llama.cpp`：默认 `8080`
-- `sglang`：默认 `30000`
+- 当前正式默认 profile：`15673`
+- 其他 profile 也建议统一使用 `15673`，如需例外以具体 `config/backends/*.yaml` 为准
 
 这说明推理后端已可服务，但还不等于整个对外入口都已可用。
 

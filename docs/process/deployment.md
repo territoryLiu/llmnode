@@ -31,6 +31,7 @@
 - Docker
 - 已准备好的模型目录
 - `config/defaults.yaml`
+- `config/backends/*.yaml`
 - 如果需要默认整栈，则还需要 `web-console` 前端依赖
 
 ## 2. 当前正式支持的部署模板
@@ -58,7 +59,7 @@ python -m llmnode.control start
 
 启动后检查：
 
-- `http://127.0.0.1:8000/v1/models` 正常，表示 `vLLM` 后端 ready
+- `http://127.0.0.1:15673/v1/models` 正常，表示当前激活后端 ready
 - `http://127.0.0.1:4000/v1/models` 正常，表示对外主链路 ready
 - `http://127.0.0.1:5173` 可访问，表示默认前端入口 ready
 - `python -m llmnode.control status` 能看到整栈摘要
@@ -96,7 +97,7 @@ python -m llmnode.control start --service gateway --daemon
 
 - `python -m llmnode.control doctor`
 - `python -m llmnode.control status`
-- `http://127.0.0.1:8000/v1/models`
+- `http://127.0.0.1:15673/v1/models`
 - `http://127.0.0.1:4000/v1/models`
 
 它不适用于：

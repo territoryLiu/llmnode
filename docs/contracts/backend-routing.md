@@ -36,8 +36,10 @@
 
 当前正式锚点至少包括：
 
-- `config/models.yaml`
-  - 静态模型目录与初始路由来源
+- `config/defaults.yaml`
+  - 当前激活 profile 选择入口
+- `config/backends/*.yaml`
+  - 每个“后端 + 模型”组合的正式参数来源
 - `llmnode/models.py`
   - `ModelRoute` 数据结构
   - `load_model_catalog()` 默认值与加载逻辑
@@ -54,7 +56,7 @@
 ## 4. 当前状态
 
 - 当前正式运行路径默认仍为 `vLLM`
-- 路由配置以 `config/models.yaml` 为主
+- 模型目录与路由初值以当前激活 profile 为主
 - `backend_type` 现已正式支持 `vllm / llama.cpp / sglang` 三个值，三后端均已完成线上联调验证（2026-05-12）
 - `/admin/models/{name}` 管理接口已接受三个值（`_VALID_BACKEND_TYPES`）
 
@@ -102,9 +104,10 @@
 
 当前真实行为应按下面理解：
 
-- `config/models.yaml` 提供模型目录初值
+- `config/defaults.yaml` 只决定当前激活的 backend profile
+- `config/backends/*.yaml` 提供模型目录、端口与后端参数初值
 - `llmnode/models.py` 中 `ModelRoute.backend_type` 默认值是 `vllm`
-- 如果配置里未显式写 `backend_type`，加载后会默认落成 `vllm`
+- 如果 profile 里未显式写 `backend_type`，加载后会默认落成 `vllm`
 - 启动后，模型路由会进入 SQLite 的 `model_routes` 表作为运行态存储
 - 管理面可以更新 `display_name / backend_model / backend_type / enabled`
 - `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值（`_VALID_BACKEND_TYPES`）
@@ -183,7 +186,8 @@ Agent 服务（`llmnode/agent/service.py`）暴露以下诊断 API 端点：
 
 如果路由字段或后端类型发生变化，应至少检查是否同步更新：
 
-- `config/models.yaml`
+- `config/defaults.yaml`
+- `config/backends/*.yaml`
 - `llmnode/models.py`
 - `llmnode/api/app.py`
 - `llmnode/storage/db.py`

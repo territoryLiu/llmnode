@@ -47,7 +47,9 @@ python -m llmnode.control start
 ## 当前边界
 
 - 当前正式默认后端：`vLLM`
-- 默认模型目录：`models/Qwen/Qwen3.6-27B`
+- 默认激活 profile：`config/backends/vllm_qwen36-35b-a3b-fp8.yaml`
+- 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B-FP8`
+- 默认后端端口：`15673`
 - 当前正式控制入口不再依赖 `scripts/*.sh`
 - `docs/blueprint/roadmap.md` 是唯一未来规划入口
 - `docs/knowledge/*` 是常驻参考层，不承担正式真相
@@ -77,5 +79,7 @@ python -m llmnode.control start
   [docs/contracts/backend-routing.md](/proj02/liuheshan/llmnode/docs/contracts/backend-routing.md:1)
 - 三后端联调经验与已知问题：
   [docs/knowledge/backend_integration_qa.md](/proj02/liuheshan/llmnode/docs/knowledge/backend_integration_qa.md:1)
+- 模型支持矩阵与 profile 命名：
+  [docs/knowledge/model_profiles.md](/proj02/liuheshan/llmnode/docs/knowledge/model_profiles.md:1)
 - 文档系统开发与回流规则：
   [docs/process/development-workflow.md](/proj02/liuheshan/llmnode/docs/process/development-workflow.md:1)

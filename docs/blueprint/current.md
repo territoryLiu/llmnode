@@ -50,6 +50,7 @@
 
 - 首要职责不是解释大模型概念，而是稳定提供本地推理接入与控制能力。
 - `web-console`、控制面、配置、日志、健康检查和后端容器管理都属于正式能力的一部分。
+- `node-agent` 当前已区分“期望运行”和“用户手动停止”，手动 stop 后不会再把后端当作故障自动拉起。
 - 当前重点不在多节点和分布式，而在单机路径的可维护、可诊断和可扩展。
 
 ## 3. 当前正式主链路
@@ -148,7 +149,9 @@
 当前默认正式运行路径仍然是：
 
 - 推理后端：`vLLM`
-- 默认模型目录：`models/Qwen/Qwen3.6-27B`
+- 默认模型 profile：`config/backends/vllm_qwen36-35b-a3b-fp8.yaml`
+- 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B-FP8`
+- 默认后端端口：`15673`
 
 当前现实包括：
 
@@ -174,8 +177,8 @@
 
 当前明确成立的真相源边界是：
 
-- 运行默认值：`config/defaults.yaml`
-- 模型路由目录：`config/models.yaml`
+- 运行默认值与激活 profile 选择：`config/defaults.yaml`
+- 后端与模型 profile 目录：`config/backends/*.yaml`
 - Python 控制入口：`llmnode/control.py`
 - 网关配置加载：`llmnode/config.py`
 - 当前系统真相：本文
@@ -198,7 +201,7 @@
 当前明确边界：
 
 - 三后端的 ContainerSpec 与 BackendDriver 均已落地
-- 切换后端通过 `config/defaults.yaml` 的 `vllm.backend_type` 字段或对应环境变量控制
+- 切换后端通过 `config/defaults.yaml` 的 `active_backend_profile` 或对应环境变量控制
 - 三后端均已完成线上联调验证（2026-05-12），详见 [docs/knowledge/backend_integration_qa.md](../knowledge/backend_integration_qa.md)
 - 管理面 `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值
 
@@ -243,7 +246,7 @@
 已完成：
 
 - 三后端代码实现全部落地（ContainerSpec / BackendDriver / service.py / control.py / api/app.py 均已按 `backend_type` 动态路由）
-- 多后端配置与实现之间的一致性已收敛（`config/defaults.yaml` 与代码路由行为对齐）
+- 多后端配置与实现之间的一致性已收敛（`config/defaults.yaml + config/backends/*.yaml` 与代码路由行为对齐）
 - 对外 API 已扩展支持三种接口协议：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`
 - **三后端线上联调验证已完成（2026-05-12）**：vLLM / llama.cpp / SGLang 各自跑通推理链路，`reasoning_content` / `content` 干净分离已确认
 - **控制面诊断能力增强已完成（2026-05-12）**：
