@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Union
@@ -183,6 +184,68 @@ def docker_client() -> docker.DockerClient:
     return docker.from_env()
 
 
+def _normalized_entrypoint(value: Any) -> list[str] | None:
+    if value in (None, "", []):
+        return None
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _normalized_port_bindings(value: Any) -> dict[str, list[str]]:
+    bindings: dict[str, list[str]] = {}
+    if not isinstance(value, dict):
+        return bindings
+    for container_port, items in value.items():
+        host_ports: list[str] = []
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and item.get("HostPort") is not None:
+                    host_ports.append(str(item["HostPort"]))
+        bindings[str(container_port)] = sorted(host_ports)
+    return bindings
+
+
+def _normalized_mount_sources(value: Any) -> dict[str, str]:
+    mounts: dict[str, str] = {}
+    if not isinstance(value, list):
+        return mounts
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        destination = item.get("Destination")
+        source = item.get("Source")
+        if destination and source:
+            mounts[str(destination)] = str(source)
+    return mounts
+
+
+def _container_matches_spec(container: Any, spec: AnyContainerSpec) -> bool:
+    attrs = getattr(container, "attrs", {}) or {}
+    config = attrs.get("Config", {}) if isinstance(attrs, dict) else {}
+    host_config = attrs.get("HostConfig", {}) if isinstance(attrs, dict) else {}
+
+    actual_image = str(config.get("Image") or "")
+    actual_cmd = [str(item) for item in config.get("Cmd") or []]
+    actual_entrypoint = _normalized_entrypoint(config.get("Entrypoint"))
+    actual_ports = _normalized_port_bindings(host_config.get("PortBindings"))
+    actual_mounts = _normalized_mount_sources(attrs.get("Mounts"))
+
+    expected_ports = {str(port): [str(host_port)] for port, host_port in spec.ports.items()}
+    expected_mounts = {
+        details["bind"]: str(Path(source).resolve())
+        for source, details in spec.volumes.items()
+    }
+
+    return (
+        actual_image == spec.image_name
+        and actual_cmd == spec.command
+        and actual_entrypoint == spec.entrypoint
+        and actual_ports == expected_ports
+        and actual_mounts == expected_mounts
+    )
+
+
 def container_snapshot(spec: AnyContainerSpec) -> dict[str, Any]:
     client = docker_client()
     try:
@@ -205,28 +268,40 @@ def ensure_container_running(spec: AnyContainerSpec) -> dict[str, Any]:
     try:
         container = client.containers.get(spec.container_name)
         container.reload()
+        if not _container_matches_spec(container, spec):
+            if container.status == "running":
+                container.stop(timeout=30)
+            else:
+                with suppress(APIError):
+                    container.stop(timeout=30)
+            container.remove(force=True)
+            return _run_new_container(client, spec, action="recreated")
         if container.status != "running":
             container.start()
         return {"action": "started_existing", "snapshot": container_snapshot(spec)}
     except NotFound:
-        try:
-            kwargs: dict[str, Any] = dict(
-                command=spec.command,
-                name=spec.container_name,
-                detach=True,
-                restart_policy={"Name": "unless-stopped"},
-                volumes=spec.volumes,
-                ports=spec.ports,
-                ipc_mode="host",
-                shm_size=spec.shm_size,
-                device_requests=spec.device_requests,
-            )
-            if spec.entrypoint is not None:
-                kwargs["entrypoint"] = spec.entrypoint
-            client.containers.run(spec.image_name, **kwargs)
-        except APIError as exc:
-            raise RuntimeError(f"failed to start container: {exc}") from exc
-        return {"action": "started_new", "snapshot": container_snapshot(spec)}
+        return _run_new_container(client, spec, action="started_new")
+
+
+def _run_new_container(client: docker.DockerClient, spec: AnyContainerSpec, *, action: str) -> dict[str, Any]:
+    try:
+        kwargs: dict[str, Any] = dict(
+            command=spec.command,
+            name=spec.container_name,
+            detach=True,
+            restart_policy={"Name": "unless-stopped"},
+            volumes=spec.volumes,
+            ports=spec.ports,
+            ipc_mode="host",
+            shm_size=spec.shm_size,
+            device_requests=spec.device_requests,
+        )
+        if spec.entrypoint is not None:
+            kwargs["entrypoint"] = spec.entrypoint
+        client.containers.run(spec.image_name, **kwargs)
+    except APIError as exc:
+        raise RuntimeError(f"failed to start container: {exc}") from exc
+    return {"action": action, "snapshot": container_snapshot(spec)}
 
 
 def stop_container(spec: AnyContainerSpec) -> dict[str, Any]:

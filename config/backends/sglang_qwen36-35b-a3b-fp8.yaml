@@ -1,0 +1,23 @@
+backend:
+  backend_type: sglang
+  container_name: qwen36-sglang
+  image_name: lmsysorg/sglang:v0.5.11-cu129-runtime
+  model_dir: models/Qwen/Qwen3.6-35B-A3B-FP8
+  model_file: ""
+  model_name: qwen36-35b-a3b-fp8
+  display_name: Qwen3.6 35B A3B FP8
+  enabled: true
+  host_port: 15673
+  gpu_memory_utilization: 0.65
+  tensor_parallel_size: 1
+  max_model_len: 262144
+  max_num_seqs: 1
+  shm_size: 16g
+  enable_auto_tool_choice: false
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_coder
+  n_gpu_layers: -1
+  ctx_size: 262144
+  n_parallel: 1
+  mem_fraction_static: 0.65
+  max_running_requests: 1

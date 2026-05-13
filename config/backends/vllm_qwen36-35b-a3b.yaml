@@ -1,0 +1,23 @@
+backend:
+  backend_type: vllm
+  container_name: qwen36-35b-a3b-vllm
+  image_name: vllm/vllm-openai:nightly
+  model_dir: models/Qwen/Qwen3.6-35B-A3B
+  model_file: ""
+  model_name: qwen36-35b-a3b
+  display_name: Qwen3.6 35B A3B
+  enabled: true
+  host_port: 15673
+  gpu_memory_utilization: 0.8
+  tensor_parallel_size: 1
+  max_model_len: 131072
+  max_num_seqs: 2
+  shm_size: 16g
+  enable_auto_tool_choice: true
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_coder
+  n_gpu_layers: -1
+  ctx_size: 131072
+  n_parallel: 2
+  mem_fraction_static: 0.85
+  max_running_requests: 2

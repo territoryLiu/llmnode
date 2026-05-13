@@ -87,36 +87,28 @@ def resolve_route(model_name: str, models: Dict[str, ModelRoute]) -> ModelRoute:
 
 
 async def proxy_openai_chat(payload: Dict[str, Any], ctx: GatewayContext) -> Dict[str, Any]:
-    route = resolve_route(payload["model"], ctx.models)
-    payload = dict(payload)
-    payload["model"] = route.backend_model
+    resolve_route(payload["model"], ctx.models)
     if not await ctx.backend_client.health():
         raise HTTPException(status_code=503, detail="backend vllm is not ready")
     return await ctx.backend_client.post_json("/v1/chat/completions", payload)
 
 
 async def proxy_anthropic_messages(payload: Dict[str, Any], ctx: GatewayContext) -> Dict[str, Any]:
-    route = resolve_route(payload["model"], ctx.models)
-    payload = dict(payload)
-    payload["model"] = route.backend_model
+    resolve_route(payload["model"], ctx.models)
     if not await ctx.backend_client.health():
         raise HTTPException(status_code=503, detail="backend vllm is not ready")
     return await ctx.backend_client.post_json("/v1/messages", payload)
 
 
 async def stream_openai_chat(payload: Dict[str, Any], ctx: GatewayContext):
-    route = resolve_route(payload["model"], ctx.models)
-    payload = dict(payload)
-    payload["model"] = route.backend_model
+    resolve_route(payload["model"], ctx.models)
     if not await ctx.backend_client.health():
         raise HTTPException(status_code=503, detail="backend vllm is not ready")
     return ctx.backend_client.stream_bytes("/v1/chat/completions", payload)
 
 
 async def stream_anthropic_messages(payload: Dict[str, Any], ctx: GatewayContext):
-    route = resolve_route(payload["model"], ctx.models)
-    payload = dict(payload)
-    payload["model"] = route.backend_model
+    resolve_route(payload["model"], ctx.models)
     if not await ctx.backend_client.health():
         raise HTTPException(status_code=503, detail="backend vllm is not ready")
     return ctx.backend_client.stream_bytes("/v1/messages", payload)

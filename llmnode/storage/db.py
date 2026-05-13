@@ -503,14 +503,25 @@ def list_model_routes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def seed_model_routes(conn: sqlite3.Connection, routes: list[dict[str, Any]]) -> None:
-    existing = conn.execute("SELECT COUNT(1) FROM model_routes").fetchone()[0]
-    if existing:
-        return
+    desired_names = {route["name"] for route in routes}
+    if desired_names:
+        placeholders = ",".join("?" for _ in desired_names)
+        conn.execute(
+            f"DELETE FROM model_routes WHERE name NOT IN ({placeholders})",
+            tuple(desired_names),
+        )
+    else:
+        conn.execute("DELETE FROM model_routes")
     for route in routes:
         conn.execute(
             """
             INSERT INTO model_routes(name, display_name, backend_model, backend_type, enabled)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                display_name=excluded.display_name,
+                backend_model=excluded.backend_model,
+                backend_type=excluded.backend_type,
+                enabled=excluded.enabled
             """,
             (
                 route["name"],

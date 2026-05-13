@@ -15,7 +15,7 @@ function formatClock(value: string | null | undefined) {
 
 function stringifyJson(value: unknown) {
   try {
-    return JSON.stringify(value ?? , null, 2);
+    return JSON.stringify(value ?? {}, null, 2);
   } catch {
     return '{}';
   }

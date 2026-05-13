@@ -25,7 +25,7 @@ def test_models_endpoint_returns_catalog():
             resp = await client.get("/v1/models", headers={"Authorization": "Bearer dev-key"})
             assert resp.status_code == 200
             ids = [item["id"] for item in resp.json()["data"]]
-            assert "claude-sonnet-4-5-20250929" in ids
+            assert ids == ["qwen36-35b-a3b-fp8"]
 
     asyncio.run(run())
 
@@ -69,7 +69,7 @@ def test_admin_status_includes_runtime_config():
     asyncio.run(run())
 
 
-def test_chat_completions_routes_to_backend_model():
+def test_chat_completions_passes_through_real_model_name():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = FakeClient()
@@ -79,13 +79,13 @@ def test_chat_completions_routes_to_backend_model():
                 "/v1/chat/completions",
                 headers={"Authorization": "Bearer dev-key"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": "qwen36-35b-a3b-fp8",
                     "messages": [{"role": "user", "content": "hello"}],
                     "max_tokens": 16,
                 },
             )
             assert resp.status_code == 200
-            assert resp.json()["model"] == "qwen36-35b-a3b"
+            assert resp.json()["model"] == "qwen36-35b-a3b-fp8"
 
     asyncio.run(run())
 
@@ -106,7 +106,7 @@ def test_chat_completions_rejects_when_agent_not_ready():
                 "/v1/chat/completions",
                 headers={"Authorization": "Bearer dev-key"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": "qwen36-35b-a3b-fp8",
                     "messages": [{"role": "user", "content": "hello"}],
                     "max_tokens": 16,
                 },
@@ -127,7 +127,7 @@ def test_admin_request_logs_endpoint_exists():
                 "/v1/chat/completions",
                 headers={"Authorization": "Bearer dev-key"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": "qwen36-35b-a3b-fp8",
                     "messages": [{"role": "user", "content": "hello"}],
                     "max_tokens": 16,
                 },

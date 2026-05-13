@@ -31,12 +31,12 @@ def test_anthropic_messages_endpoint_exists():
                 "/v1/messages",
                 headers={"Authorization": "Bearer dev-key"},
                 json={
-                    "model": "qwen36-35b-a3b",
+                    "model": "qwen36-35b-a3b-fp8",
                     "max_tokens": 16,
                     "messages": [{"role": "user", "content": "hello"}],
                 },
             )
             assert resp.status_code == 200
-            assert resp.json()["content"][0]["text"] == "qwen36-35b-a3b"
+            assert resp.json()["content"][0]["text"] == "qwen36-35b-a3b-fp8"
 
     asyncio.run(run())

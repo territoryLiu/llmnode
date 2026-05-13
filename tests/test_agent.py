@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import warnings
 from datetime import datetime, timedelta, timezone
 
@@ -90,6 +91,89 @@ def test_agent_manage_start_stop_use_docker_controls():
     asyncio.run(run())
 
 
+def test_agent_manual_stop_blocks_state_triggered_auto_recovery():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+        app.state.agent.failure_count = app.state.recovery_threshold
+
+        async def fake_health(_):
+            return False
+
+        restart_calls = []
+
+        def fake_stop():
+            restart_calls.append("stop")
+
+        def fake_start():
+            restart_calls.append("start")
+
+        async def run_sync(func):
+            return func()
+
+        app.state.backend_driver.health = fake_health
+        app.state.backend_driver.stop = fake_stop
+        app.state.backend_driver.start = fake_start
+        app.state.run_sync = run_sync
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            stop_resp = await client.post("/manage/stop")
+            assert stop_resp.status_code == 200
+
+            state_resp = await client.get("/state")
+            assert state_resp.status_code == 200
+            payload = state_resp.json()
+            assert payload["status"] == "stopped"
+            assert payload["desired_state"] == "stopped"
+            assert restart_calls == ["stop"]
+
+    asyncio.run(run())
+
+
+def test_agent_manual_start_restores_auto_recovery_target():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+        app.state.agent.status = "stopped"
+        app.state.agent.desired_state = "stopped"
+
+        async def fake_health(_):
+            return False
+
+        def fake_snapshot():
+            return {"exists": False, "status": "missing"}
+
+        restart_calls = []
+
+        def fake_stop():
+            restart_calls.append("stop")
+
+        def fake_start():
+            restart_calls.append("start")
+
+        async def run_sync(func):
+            return func()
+
+        app.state.backend_driver.health = fake_health
+        app.state.backend_driver.snapshot = fake_snapshot
+        app.state.backend_driver.stop = fake_stop
+        app.state.backend_driver.start = fake_start
+        app.state.run_sync = run_sync
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            start_resp = await client.post("/manage/start")
+            assert start_resp.status_code == 200
+
+            app.state.agent.failure_count = app.state.recovery_threshold - 1
+            state_resp = await client.get("/state")
+            assert state_resp.status_code == 200
+            payload = state_resp.json()
+            assert payload["desired_state"] == "running"
+            assert restart_calls == ["start", "stop", "start"]
+
+    asyncio.run(run())
+
+
 def test_agent_create_app_emits_no_deprecation_warnings():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -134,6 +218,7 @@ def test_agent_defers_auto_recovery_during_startup_grace():
     async def run():
         app = create_agent_app(enable_monitor=False)
         app.state.agent.status = "starting"
+        app.state.agent.desired_state = "running"
         app.state.agent.started_at = datetime.now(timezone.utc).isoformat()
         app.state.agent.failure_count = app.state.recovery_threshold
 
@@ -176,6 +261,7 @@ def test_agent_recovers_after_startup_grace_expires():
     async def run():
         app = create_agent_app(enable_monitor=False)
         app.state.agent.status = "starting"
+        app.state.agent.desired_state = "running"
         app.state.agent.started_at = (datetime.now(timezone.utc) - timedelta(seconds=400)).isoformat()
         app.state.agent.failure_count = app.state.recovery_threshold
 
@@ -217,6 +303,8 @@ def test_agent_recovers_after_startup_grace_expires():
 def test_agent_metrics_endpoint_returns_aggregated_metrics():
     async def run():
         app = create_agent_app(enable_monitor=False)
+        app.state.db.execute("DELETE FROM request_metrics")
+        app.state.db.commit()
         write_request_metric(
             app.state.db,
             request_id="req-1",
@@ -243,4 +331,12 @@ def test_agent_metrics_endpoint_returns_aggregated_metrics():
             assert payload["success_count"] == 1
             assert payload["avg_latency_ms"] == 1500.0
 
-    asyncio.run(run())
+        app.state.db.execute("DELETE FROM request_metrics")
+        app.state.db.commit()
+
+    try:
+        asyncio.run(run())
+    finally:
+        with sqlite3.connect("/proj02/liuheshan/llmnode/runtime/data/gateway.db") as conn:
+            conn.execute("DELETE FROM request_metrics")
+            conn.commit()

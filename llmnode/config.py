@@ -6,11 +6,14 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS_FILE = PROJECT_ROOT / "config" / "defaults.yaml"
+BACKENDS_DIR = PROJECT_ROOT / "config" / "backends"
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 DATA_DIR = RUNTIME_DIR / "data"
 RUN_DIR = RUNTIME_DIR / "run"
 LOG_DIR = RUNTIME_DIR / "logs"
-DEFAULT_MODEL_DIR = PROJECT_ROOT / "models" / "Qwen" / "Qwen3.6-35B-A3B"
+DEFAULT_BACKEND_PROFILE = "vllm_qwen36-35b-a3b-fp8"
+DEFAULT_BACKEND_PORT = 15673
+DEFAULT_MODEL_DIR = PROJECT_ROOT / "models" / "Qwen" / "Qwen3.6-35B-A3B-FP8"
 
 
 @dataclass
@@ -18,8 +21,8 @@ class GatewaySettings:
     host: str = "0.0.0.0"
     port: int = 4000
     api_key: str = "dev-key"
-    backend_url: str = "http://127.0.0.1:8000"
-    backend_model: str = "qwen36-35b-a3b"
+    backend_url: str = f"http://127.0.0.1:{DEFAULT_BACKEND_PORT}"
+    backend_model: str = "qwen36-35b-a3b-fp8"
     agent_base_url: str = "http://127.0.0.1:4010"
     agent_status_url: str = "http://127.0.0.1:4010/state"
     require_agent_ready: bool = False
@@ -56,9 +59,11 @@ class BackendSettings:
     image_name: str = "vllm/vllm-openai:nightly"
     model_dir: str = str(DEFAULT_MODEL_DIR)
     model_file: str = ""
-    model_name: str = "qwen36-35b-a3b"
-    host_port: int = 8000
-    gpu_memory_utilization: float = 0.6
+    model_name: str = "qwen36-35b-a3b-fp8"
+    display_name: str = "Qwen3.6 35B A3B FP8"
+    enabled: bool = True
+    host_port: int = DEFAULT_BACKEND_PORT
+    gpu_memory_utilization: float = 0.65
     tensor_parallel_size: int = 1
     max_model_len: int = 262144
     max_num_seqs: int = 4
@@ -67,43 +72,80 @@ class BackendSettings:
     reasoning_parser: str = "qwen3"
     tool_call_parser: str = "qwen3_coder"
     n_gpu_layers: int = -1
-    ctx_size: int = 4096
-    n_parallel: int = 1
-    mem_fraction_static: float = 0.9
+    ctx_size: int = 262144
+    n_parallel: int = 4
+    mem_fraction_static: float = 0.85
     max_running_requests: int = 4
-
 
 
 @dataclass
 class AppSettings:
+    active_backend_profile: str
     gateway: GatewaySettings
     agent: AgentSettings
     schedule: ScheduleSettings
     vllm: BackendSettings
 
 
+def _load_yaml_dict(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _resolve_path(value: str | Path | None, default: Path) -> str:
+    raw = Path(str(value or default))
+    if raw.is_absolute():
+        return str(raw)
+    return str((PROJECT_ROOT / raw).resolve())
+
+
 def load_settings(path: Path | None = None) -> AppSettings:
     file_path = path or DEFAULTS_FILE
-    data = yaml.safe_load(file_path.read_text()) if file_path.exists() else {}
-    data = data or {}
+    data = _load_yaml_dict(file_path)
     gateway = data.get("gateway", {})
     agent = data.get("agent", {})
     schedule = data.get("schedule", {})
-    vllm = data.get("vllm", {})
+    active_profile = os.getenv(
+        "VLLM_CLAUDE_ACTIVE_BACKEND_PROFILE",
+        data.get("active_backend_profile", DEFAULT_BACKEND_PROFILE),
+    )
+    backends_dir = file_path.parent / "backends" if path is not None else BACKENDS_DIR
+    profile_path = backends_dir / f"{active_profile}.yaml"
+    profile_data = _load_yaml_dict(profile_path)
+    vllm = profile_data.get("backend", profile_data)
 
-    def _resolve_path(value: str | Path | None, default: Path) -> str:
-        raw = Path(str(value or default))
-        if raw.is_absolute():
-            return str(raw)
-        return str((PROJECT_ROOT / raw).resolve())
+    resolved_backend_type = os.getenv("VLLM_CLAUDE_VLLM_BACKEND_TYPE", vllm.get("backend_type", "vllm"))
+    resolved_container_name = os.getenv("VLLM_CLAUDE_VLLM_CONTAINER", vllm.get("container_name", "qwen36-vllm"))
+    resolved_image_name = os.getenv("VLLM_CLAUDE_VLLM_IMAGE", vllm.get("image_name", "vllm/vllm-openai:nightly"))
+    resolved_model_dir = _resolve_path(
+        os.getenv(
+            "VLLM_CLAUDE_VLLM_MODEL_DIR",
+            vllm.get("model_dir", str(Path("models") / "Qwen" / "Qwen3.6-35B-A3B-FP8")),
+        ),
+        DEFAULT_MODEL_DIR,
+    )
+    resolved_model_file = os.getenv("LLMNODE_LLAMACPP_MODEL_FILE", vllm.get("model_file", ""))
+    resolved_model_name = os.getenv("VLLM_CLAUDE_VLLM_MODEL_NAME", vllm.get("model_name", "qwen36-35b-a3b-fp8"))
+    resolved_host_port = int(os.getenv("VLLM_CLAUDE_VLLM_PORT", vllm.get("host_port", DEFAULT_BACKEND_PORT)))
 
     return AppSettings(
+        active_backend_profile=active_profile,
         gateway=GatewaySettings(
             host=os.getenv("VLLM_CLAUDE_GATEWAY_HOST", gateway.get("host", "0.0.0.0")),
             port=int(os.getenv("VLLM_CLAUDE_GATEWAY_PORT", gateway.get("port", 4000))),
             api_key=os.getenv("VLLM_CLAUDE_GATEWAY_KEY", gateway.get("api_key", "dev-key")),
-            backend_url=os.getenv("VLLM_CLAUDE_BACKEND_URL", gateway.get("backend_url", "http://127.0.0.1:8000")),
-            backend_model=os.getenv("VLLM_CLAUDE_BACKEND_MODEL", gateway.get("backend_model", "qwen36-35b-a3b")),
+            backend_url=os.getenv(
+                "VLLM_CLAUDE_BACKEND_URL",
+                gateway.get("backend_url", f"http://127.0.0.1:{resolved_host_port}"),
+            ),
+            backend_model=os.getenv(
+                "VLLM_CLAUDE_BACKEND_MODEL",
+                gateway.get("backend_model", resolved_model_name),
+            ),
             agent_base_url=os.getenv(
                 "VLLM_CLAUDE_AGENT_BASE_URL",
                 gateway.get("agent_base_url", "http://127.0.0.1:4010"),
@@ -154,21 +196,24 @@ def load_settings(path: Path | None = None) -> AppSettings:
             ),
         ),
         vllm=BackendSettings(
-            backend_type=os.getenv("VLLM_CLAUDE_VLLM_BACKEND_TYPE", vllm.get("backend_type", "vllm")),
-            container_name=os.getenv("VLLM_CLAUDE_VLLM_CONTAINER", vllm.get("container_name", "qwen36-vllm")),
-            image_name=os.getenv("VLLM_CLAUDE_VLLM_IMAGE", vllm.get("image_name", "vllm/vllm-openai:nightly")),
-            model_dir=_resolve_path(
+            backend_type=resolved_backend_type,
+            container_name=resolved_container_name,
+            image_name=resolved_image_name,
+            model_dir=resolved_model_dir,
+            model_file=resolved_model_file,
+            model_name=resolved_model_name,
+            display_name=str(vllm.get("display_name", resolved_model_name)),
+            enabled=bool(vllm.get("enabled", True)),
+            host_port=resolved_host_port,
+            gpu_memory_utilization=float(
                 os.getenv(
-                "VLLM_CLAUDE_VLLM_MODEL_DIR",
-                vllm.get("model_dir", str(Path("models") / "Qwen" / "Qwen3.6-35B-A3B")),
+                    "VLLM_CLAUDE_VLLM_GPU_MEMORY_UTILIZATION",
+                    vllm.get("gpu_memory_utilization", 0.65),
+                )
             ),
-                DEFAULT_MODEL_DIR,
+            tensor_parallel_size=int(
+                os.getenv("VLLM_CLAUDE_VLLM_TENSOR_PARALLEL_SIZE", vllm.get("tensor_parallel_size", 1))
             ),
-            model_file=os.getenv("LLMNODE_LLAMACPP_MODEL_FILE", vllm.get("model_file", "")),
-            model_name=os.getenv("VLLM_CLAUDE_VLLM_MODEL_NAME", vllm.get("model_name", "qwen36-35b-a3b")),
-            host_port=int(os.getenv("VLLM_CLAUDE_VLLM_PORT", vllm.get("host_port", 8000))),
-            gpu_memory_utilization=float(os.getenv("VLLM_CLAUDE_VLLM_GPU_MEMORY_UTILIZATION", vllm.get("gpu_memory_utilization", 0.6))),
-            tensor_parallel_size=int(os.getenv("VLLM_CLAUDE_VLLM_TENSOR_PARALLEL_SIZE", vllm.get("tensor_parallel_size", 1))),
             max_model_len=int(os.getenv("VLLM_CLAUDE_VLLM_MAX_MODEL_LEN", vllm.get("max_model_len", 262144))),
             max_num_seqs=int(os.getenv("VLLM_CLAUDE_VLLM_MAX_NUM_SEQS", vllm.get("max_num_seqs", 4))),
             shm_size=os.getenv("VLLM_CLAUDE_VLLM_SHM_SIZE", vllm.get("shm_size", "16g")),
@@ -179,9 +224,13 @@ def load_settings(path: Path | None = None) -> AppSettings:
             reasoning_parser=os.getenv("VLLM_CLAUDE_VLLM_REASONING_PARSER", vllm.get("reasoning_parser", "qwen3")),
             tool_call_parser=os.getenv("VLLM_CLAUDE_VLLM_TOOL_CALL_PARSER", vllm.get("tool_call_parser", "qwen3_coder")),
             n_gpu_layers=int(os.getenv("LLMNODE_LLAMACPP_N_GPU_LAYERS", vllm.get("n_gpu_layers", -1))),
-            ctx_size=int(os.getenv("LLMNODE_LLAMACPP_CTX_SIZE", vllm.get("ctx_size", 4096))),
-            n_parallel=int(os.getenv("LLMNODE_LLAMACPP_N_PARALLEL", vllm.get("n_parallel", 1))),
-            mem_fraction_static=float(os.getenv("LLMNODE_SGLANG_MEM_FRACTION_STATIC", vllm.get("mem_fraction_static", 0.9))),
-            max_running_requests=int(os.getenv("LLMNODE_SGLANG_MAX_RUNNING_REQUESTS", vllm.get("max_running_requests", 4))),
+            ctx_size=int(os.getenv("LLMNODE_LLAMACPP_CTX_SIZE", vllm.get("ctx_size", 262144))),
+            n_parallel=int(os.getenv("LLMNODE_LLAMACPP_N_PARALLEL", vllm.get("n_parallel", 4))),
+            mem_fraction_static=float(
+                os.getenv("LLMNODE_SGLANG_MEM_FRACTION_STATIC", vllm.get("mem_fraction_static", 0.85))
+            ),
+            max_running_requests=int(
+                os.getenv("LLMNODE_SGLANG_MAX_RUNNING_REQUESTS", vllm.get("max_running_requests", 4))
+            ),
         ),
     )

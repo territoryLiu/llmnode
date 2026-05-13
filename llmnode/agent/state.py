@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 @dataclass
 class AgentState:
     status: str = "stopped"
+    desired_state: str = "running"
     backend_ready: bool = False
     checked_at: str = ""
     failure_count: int = 0

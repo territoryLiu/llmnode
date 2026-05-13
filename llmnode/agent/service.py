@@ -52,12 +52,17 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
         app.state.agent.checked_at = _utc_now()
         if ready:
             app.state.agent.failure_count = 0
-            if app.state.agent.status in {"starting", "recovering", "stopped", "degraded"}:
+            if app.state.agent.status in {"starting", "recovering", "degraded"} or (
+                app.state.agent.status == "stopped" and app.state.agent.desired_state == "running"
+            ):
                 app.state.agent.mark("ready")
                 write_agent_event(app.state.db, "ready", "backend healthy")
             return True
 
         app.state.agent.failure_count += 1
+        if app.state.agent.desired_state == "stopped":
+            app.state.agent.mark("stopped", "manual stop requested")
+            return False
         if app.state.agent.status == "ready":
             app.state.agent.mark("degraded", "backend became unavailable")
             write_agent_event(app.state.db, "degraded", "backend became unavailable")
@@ -69,6 +74,8 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
 
     async def _recover_if_needed() -> None:
         if not app.state.auto_recover:
+            return
+        if app.state.agent.desired_state != "running":
             return
         if app.state.agent.failure_count < app.state.recovery_threshold:
             return
@@ -188,6 +195,7 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
             await _recover_if_needed()
         return {
             "status": app.state.agent.status,
+            "desired_state": app.state.agent.desired_state,
             "backend_ready": ready,
             "failure_count": app.state.agent.failure_count,
             "checked_at": app.state.agent.checked_at,
@@ -207,6 +215,7 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
 
     @app.post("/manage/start")
     async def start_backend():
+        app.state.agent.desired_state = "running"
         await app.state.run_sync(app.state.backend_driver.start)
         app.state.agent.mark("starting", "manual start requested")
         write_agent_event(app.state.db, "starting", "manual start requested")
@@ -214,6 +223,7 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
 
     @app.post("/manage/stop")
     async def stop_backend():
+        app.state.agent.desired_state = "stopped"
         await app.state.run_sync(app.state.backend_driver.stop)
         app.state.agent.mark("stopped", "manual stop requested")
         write_agent_event(app.state.db, "stopped", "manual stop requested")
@@ -221,6 +231,7 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
 
     @app.post("/manage/restart")
     async def restart_backend():
+        app.state.agent.desired_state = "running"
         await app.state.run_sync(app.state.backend_driver.restart)
         app.state.agent.mark("recovering", "manual restart requested")
         write_agent_event(app.state.db, "recovering", "manual restart requested")
