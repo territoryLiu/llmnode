@@ -74,9 +74,17 @@ V4 当前仍有效的未来方向已经收敛为：
 
 重点：
 
-- 维持”不再保留 `docs/blueprintV3.md` / `docs/blueprintV4.md`”这一入口约束
-- 决定 `docs/knowledge/*` 的长期定位
-- 规范 `docs/superpowers/*` 的保留与删除策略
+- 维持“不再保留 `docs/blueprintV3.md` / `docs/blueprintV4.md`”这一入口约束
+- 把 `docs/knowledge/*` 固定为常驻参考层，不再与正式真相层混写
+- 把 `docs/superpowers/*` 固定为进行中工作区，明确 `spec / plan` 的回流与删除时机
+- 清理当前主要文档入口中的断链与职责漂移
+
+完成标志：
+
+- `README.md`、`docs/process/development-workflow.md`、`docs/glossary.md` 对目录边界的表述一致
+- `docs/knowledge/README.md` 已明确准入边界和回流规则
+- `README.md` 不再引用失效文档入口
+- `spec / plan` 默认不是长期真相源这一规则在正式流程层可见
 
 为什么优先：
 
