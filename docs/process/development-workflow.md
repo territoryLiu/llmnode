@@ -52,7 +52,6 @@
 5. 相关 `docs/contracts/*.md`
 6. 相关 `docs/process/*.md`
 7. 必要时看 `docs/knowledge/*.md`
-8. 只有在初始化或重构文档系统时，再看 `docs/doc-system.md`
 
 这个顺序的意义是：
 
@@ -158,12 +157,15 @@
   解决“这次准备怎么设计、为什么这样设计、边界怎么定”
 - `plan`  
   解决“接下来按什么顺序做、检查点是什么”
+- `knowledge`
+  解决“为什么这样做、有哪些经验和背景可参考”，但不承担当前状态、正式契约或正式流程真相
 - `current / contracts / process`  
   解决“改完以后系统现在是什么”
 
 默认原则：
 
 - `spec` 与 `plan` 是设计与实施过程文档
+- `knowledge` 是常驻参考层，不是正式真相层
 - `current / contracts / process` 才是长期真相回流层
 - 长期有效的信息最终仍应回流到 `blueprint / contracts / process`
 
@@ -262,12 +264,22 @@
 对 `docs/superpowers/specs/*.md` 与 `docs/superpowers/plans/*.md`，默认这样处理：
 
 - 如果它们仍承担当前任务的设计或执行真相，就继续更新
+- `docs/superpowers/*` 的默认定位是进行中工作区，不是长期沉淀库
 - 如果其中有效内容已经沉淀为长期规则，就回流到 `blueprint / contracts / process`
 - `plan` 如果只服务一次实现，应在任务完成且正式文档回流后删除
 - `spec` 如果只服务一次设计展开，应在回流完成后删除；只有跨阶段仍在推进、短期仍需反复参考时才保留
 - 不要强行把 `spec / plan` 升格为长期主入口
 
-### 6.5 什么时候更新 `README.md`
+### 6.5 什么时候更新 `docs/knowledge/*`
+
+对 `docs/knowledge/*`，默认这样处理：
+
+- 它们用于保留选型背景、环境经验、联调 Q&A、转换说明和对比资料
+- 它们可以长期保留，但不承担当前状态、正式契约、正式流程或未来优先级真相
+- 如果某条知识已经变成必须遵守的正式约束，应回流到 `current / contracts / process`
+- 如果某篇知识文档已经明显过时且没有参考价值，应删除或改写，而不是继续悬挂
+
+### 6.6 什么时候更新 `README.md`
 
 只有下面这些内容发生变化时，才需要同步更新 `README.md`：
 
