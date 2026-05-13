@@ -18,7 +18,7 @@ from ..diagnostics import (
     inspect_container,
     parse_model_config,
 )
-from ..storage.db import init_db, list_agent_events, write_agent_event
+from ..storage.db import aggregate_request_metrics, init_db, list_agent_events, write_agent_event
 from .backend import LlamaCppBackendDriver, SGLangBackendDriver, VLLMBackendDriver
 from .docker_control import LlamaCppContainerSpec, SGLangContainerSpec, VLLMContainerSpec
 from .state import AgentState
@@ -272,6 +272,14 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
             "model_format": model_format,
             "model_config": model_config,
         }
+
+    @app.get("/admin/diagnostics/metrics")
+    async def diagnostics_metrics():
+        """获取请求指标聚合结果"""
+        metrics = aggregate_request_metrics(app.state.db)
+        metrics["queue_length"] = 0
+        metrics["generated_at"] = _utc_now()
+        return metrics
 
     @app.get("/admin/diagnostics/suggestions")
     async def diagnostics_suggestions():

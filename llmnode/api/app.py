@@ -7,6 +7,7 @@ import sqlite3
 import uuid
 from contextlib import suppress
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -47,6 +48,7 @@ from ..storage.db import (
     update_api_key,
     upsert_model_route,
     upsert_schedule_config,
+    write_request_metric,
     write_request_log,
 )
 
@@ -89,6 +91,53 @@ def _request_log_context(request: Request, auth: AuthContext) -> dict[str, Any]:
         "user_agent": request.headers.get("user-agent"),
         "rejection_reason": None,
     }
+
+
+def _elapsed_ms(started_at: datetime, finished_at: datetime) -> float:
+    return (finished_at - started_at).total_seconds() * 1000.0
+
+
+def _extract_usage(payload: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None, None, None
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
+    return prompt_tokens, completion_tokens, total_tokens
+
+
+def _record_request_metric(
+    app: FastAPI,
+    *,
+    request_id: str,
+    model_name: str,
+    protocol: str,
+    status: str,
+    started_at: datetime,
+    finished_at: datetime,
+    response_payload: dict[str, Any] | None = None,
+) -> None:
+    prompt_tokens, completion_tokens, total_tokens = _extract_usage(response_payload or {})
+    latency_ms = _elapsed_ms(started_at, finished_at)
+    tokens_per_second = None
+    if completion_tokens is not None and latency_ms > 0:
+        tokens_per_second = completion_tokens / (latency_ms / 1000.0)
+    with suppress(Exception):
+        write_request_metric(
+            app.state.db,
+            request_id=request_id,
+            model_name=model_name,
+            protocol=protocol,
+            status=status,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            tokens_per_second=tokens_per_second,
+            started_at=started_at.isoformat(),
+            finished_at=finished_at.isoformat(),
+        )
 
 
 def _sanitize_api_key_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -580,6 +629,7 @@ def create_app() -> FastAPI:
         raw = await _read_json_body(request)
         payload = OpenAIChatCompletionsRequest.model_validate(raw)
         request_id = _request_id(request)
+        started_at = datetime.now(timezone.utc)
         log_context = _request_log_context(request, auth)
         try:
             key_lease = await request.app.state.api_key_gate.begin(
@@ -618,7 +668,17 @@ def create_app() -> FastAPI:
                 stream = await stream_openai_chat(payload.to_backend_payload(payload.model), request.app.state.ctx)
             except QueueFullError as exc:
                 await key_lease.reject()
+                finished_at = datetime.now(timezone.utc)
                 log_context["rejection_reason"] = "queue_full"
+                _record_request_metric(
+                    request.app,
+                    request_id=request_id,
+                    model_name=payload.model,
+                    protocol="openai",
+                    status="rejected",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
                 write_request_log(
                     request.app.state.db,
                     request_id,
@@ -631,7 +691,17 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
             except QueueTimeoutError as exc:
                 await key_lease.reject()
+                finished_at = datetime.now(timezone.utc)
                 log_context["rejection_reason"] = "queue_timeout"
+                _record_request_metric(
+                    request.app,
+                    request_id=request_id,
+                    model_name=payload.model,
+                    protocol="openai",
+                    status="timeout",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
                 write_request_log(
                     request.app.state.db,
                     request_id,
@@ -672,7 +742,17 @@ def create_app() -> FastAPI:
                 result = await proxy_openai_chat(payload.to_backend_payload(payload.model), request.app.state.ctx)
         except QueueFullError as exc:
             await key_lease.reject()
+            finished_at = datetime.now(timezone.utc)
             log_context["rejection_reason"] = "queue_full"
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="openai",
+                status="rejected",
+                started_at=started_at,
+                finished_at=finished_at,
+            )
             write_request_log(
                 request.app.state.db,
                 request_id,
@@ -685,7 +765,17 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
         except QueueTimeoutError as exc:
             await key_lease.reject()
+            finished_at = datetime.now(timezone.utc)
             log_context["rejection_reason"] = "queue_timeout"
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="openai",
+                status="timeout",
+                started_at=started_at,
+                finished_at=finished_at,
+            )
             write_request_log(
                 request.app.state.db,
                 request_id,
@@ -700,6 +790,17 @@ def create_app() -> FastAPI:
             await key_lease.finish()
             raise
         await key_lease.finish()
+        finished_at = datetime.now(timezone.utc)
+        _record_request_metric(
+            request.app,
+            request_id=request_id,
+            model_name=payload.model,
+            protocol="openai",
+            status="ok",
+            started_at=started_at,
+            finished_at=finished_at,
+            response_payload=result,
+        )
         write_request_log(
             request.app.state.db,
             request_id,
@@ -719,6 +820,7 @@ def create_app() -> FastAPI:
         raw = await _read_json_body(request)
         payload = AnthropicMessagesRequest.model_validate(raw)
         request_id = _request_id(request)
+        started_at = datetime.now(timezone.utc)
         log_context = _request_log_context(request, auth)
         try:
             key_lease = await request.app.state.api_key_gate.begin(
@@ -757,7 +859,17 @@ def create_app() -> FastAPI:
                 stream = await stream_anthropic_messages(payload.to_backend_payload(payload.model), request.app.state.ctx)
             except QueueFullError as exc:
                 await key_lease.reject()
+                finished_at = datetime.now(timezone.utc)
                 log_context["rejection_reason"] = "queue_full"
+                _record_request_metric(
+                    request.app,
+                    request_id=request_id,
+                    model_name=payload.model,
+                    protocol="anthropic",
+                    status="rejected",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
                 write_request_log(
                     request.app.state.db,
                     request_id,
@@ -770,7 +882,17 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
             except QueueTimeoutError as exc:
                 await key_lease.reject()
+                finished_at = datetime.now(timezone.utc)
                 log_context["rejection_reason"] = "queue_timeout"
+                _record_request_metric(
+                    request.app,
+                    request_id=request_id,
+                    model_name=payload.model,
+                    protocol="anthropic",
+                    status="timeout",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
                 write_request_log(
                     request.app.state.db,
                     request_id,
@@ -811,7 +933,17 @@ def create_app() -> FastAPI:
                 result = await proxy_anthropic_messages(payload.to_backend_payload(payload.model), request.app.state.ctx)
         except QueueFullError as exc:
             await key_lease.reject()
+            finished_at = datetime.now(timezone.utc)
             log_context["rejection_reason"] = "queue_full"
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="anthropic",
+                status="rejected",
+                started_at=started_at,
+                finished_at=finished_at,
+            )
             write_request_log(
                 request.app.state.db,
                 request_id,
@@ -824,7 +956,17 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
         except QueueTimeoutError as exc:
             await key_lease.reject()
+            finished_at = datetime.now(timezone.utc)
             log_context["rejection_reason"] = "queue_timeout"
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="anthropic",
+                status="timeout",
+                started_at=started_at,
+                finished_at=finished_at,
+            )
             write_request_log(
                 request.app.state.db,
                 request_id,
@@ -839,6 +981,17 @@ def create_app() -> FastAPI:
             await key_lease.finish()
             raise
         await key_lease.finish()
+        finished_at = datetime.now(timezone.utc)
+        _record_request_metric(
+            request.app,
+            request_id=request_id,
+            model_name=payload.model,
+            protocol="anthropic",
+            status="ok",
+            started_at=started_at,
+            finished_at=finished_at,
+            response_payload=result,
+        )
         write_request_log(
             request.app.state.db,
             request_id,

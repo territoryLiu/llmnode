@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -128,6 +129,24 @@ def init_db(path: Path) -> sqlite3.Connection:
             "note": "TEXT",
         },
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS request_metrics (
+            request_id TEXT PRIMARY KEY,
+            model_name TEXT NOT NULL,
+            protocol TEXT NOT NULL,
+            status TEXT NOT NULL,
+            latency_ms REAL,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            total_tokens INTEGER,
+            tokens_per_second REAL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -178,6 +197,97 @@ def write_agent_event(conn: sqlite3.Connection, status: str, reason: str | None 
         (status, reason),
     )
     conn.commit()
+
+
+def write_request_metric(
+    conn: sqlite3.Connection,
+    *,
+    request_id: str,
+    model_name: str,
+    protocol: str,
+    status: str,
+    latency_ms: float | None,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    total_tokens: int | None,
+    tokens_per_second: float | None,
+    started_at: str,
+    finished_at: str | None,
+) -> None:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO request_metrics(
+            request_id,
+            model_name,
+            protocol,
+            status,
+            latency_ms,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            tokens_per_second,
+            started_at,
+            finished_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            request_id,
+            model_name,
+            protocol,
+            status,
+            latency_ms,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            tokens_per_second,
+            started_at,
+            finished_at,
+        ),
+    )
+    conn.commit()
+
+
+def _percentile(values: list[float], ratio: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, math.ceil(len(ordered) * ratio) - 1))
+    return ordered[index]
+
+
+def aggregate_request_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT status, latency_ms, completion_tokens
+        FROM request_metrics
+        ORDER BY created_at ASC
+        """
+    ).fetchall()
+    request_count = len(rows)
+    success_count = sum(1 for row in rows if row[0] == "ok")
+    latencies = [float(row[1]) for row in rows if row[1] is not None]
+    token_rows = [
+        (float(row[1]), int(row[2]))
+        for row in rows
+        if row[1] is not None and row[2] is not None
+    ]
+    total_completion_tokens = sum(item[1] for item in token_rows)
+    total_latency_seconds = sum(item[0] / 1000.0 for item in token_rows)
+    return {
+        "request_count": request_count,
+        "success_count": success_count,
+        "success_rate": (success_count / request_count) if request_count else 0.0,
+        "avg_latency_ms": (sum(latencies) / len(latencies)) if latencies else 0.0,
+        "p95_latency_ms": _percentile(latencies, 0.95) or 0.0,
+        "p99_latency_ms": _percentile(latencies, 0.99) or 0.0,
+        "throughput_tokens_per_s": (
+            total_completion_tokens / total_latency_seconds
+            if total_latency_seconds > 0
+            else 0.0
+        ),
+        "tokens_observed_requests": len(token_rows),
+    }
 
 
 def list_request_logs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:

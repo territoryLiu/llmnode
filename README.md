@@ -47,7 +47,7 @@ python -m llmnode.control start
 ## 当前边界
 
 - 当前正式默认后端：`vLLM`
-- 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B`
+- 默认模型目录：`models/Qwen/Qwen3.6-27B`
 - 当前正式控制入口不再依赖 `scripts/*.sh`
 - `docs/blueprint/roadmap.md` 是唯一未来规划入口
 - `docs/knowledge/*` 是常驻参考层，不承担正式真相

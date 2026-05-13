@@ -3,7 +3,7 @@ gateway:
   port: 4000
   api_key: dev-key
   backend_url: http://127.0.0.1:8000
-  backend_model: qwen36-35b-a3b
+  backend_model: qwen36-27b
   agent_base_url: http://127.0.0.1:4010
   agent_status_url: http://127.0.0.1:4010/state
   require_agent_ready: false
@@ -39,11 +39,11 @@ vllm:
   backend_type: vllm
   container_name: qwen36-vllm
   image_name: vllm/vllm-openai:nightly
-  model_dir: models/Qwen/Qwen3.6-35B-A3B
+  model_dir: models/Qwen/Qwen3.6-27B
   model_file: ""
-  model_name: qwen36-35b-a3b
+  model_name: qwen36-27b
   host_port: 8000
-  gpu_memory_utilization: 0.9
+  gpu_memory_utilization: 0.75
   tensor_parallel_size: 1
   max_model_len: 262144
   max_num_seqs: 4
@@ -63,9 +63,9 @@ vllm:
 #   backend_type: llama.cpp
 #   container_name: qwen36-llamacpp
 #   image_name: ghcr.io/ggml-org/llama.cpp:full-cuda
-#   model_dir: models/Qwen/Qwen3.6-35B-A3B-GGUF
-#   model_file: qwen36-35b-a3b-q4km.gguf
-#   model_name: qwen36-35b-a3b
+#   model_dir: models/Qwen/Qwen3.6-27B-GGUF
+#   model_file: qwen36-27b-q4km.gguf
+#   model_name: qwen36-27b
 #   host_port: 8000
 #   n_gpu_layers: -1
 #   ctx_size: 262144
@@ -77,9 +77,9 @@ vllm:
 #   backend_type: sglang
 #   container_name: qwen36-sglang
 #   image_name: lmsysorg/sglang:v0.5.11-cu129-runtime
-#   model_dir: models/Qwen/Qwen3.6-35B-A3B
+#   model_dir: models/Qwen/Qwen3.6-27B
 #   model_file: ""
-#   model_name: qwen36-35b-a3b
+#   model_name: qwen36-27b
 #   host_port: 8000
 #   tensor_parallel_size: 1
 #   mem_fraction_static: 0.85

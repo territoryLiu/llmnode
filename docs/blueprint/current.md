@@ -148,7 +148,7 @@
 当前默认正式运行路径仍然是：
 
 - 推理后端：`vLLM`
-- 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B`
+- 默认模型目录：`models/Qwen/Qwen3.6-27B`
 
 当前现实包括：
 
@@ -165,6 +165,10 @@
   - `logs` 命令支持实时跟踪、错误高亮、关键词搜索
   - Agent 服务暴露诊断 API 端点（`/admin/diagnostics/*`）
   - 管理台前端已对齐三后端状态展示
+- 最小 P1 性能指标采集已落地（2026-05-13）：
+  - 网关会为成功、拒绝和无 `usage` 的请求落库 `request_metrics`
+  - Agent 暴露 `GET /admin/diagnostics/metrics`
+  - 当前聚合指标包括请求数、成功率、平均/分位延迟、吞吐和稳定回退 `queue_length`
 
 ## 7. 当前配置与真相源边界
 

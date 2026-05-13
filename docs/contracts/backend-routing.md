@@ -153,7 +153,7 @@
 未来仍需补厚的方向：
 
 - 诊断建议的持续优化（新增错误模式识别）
-- 性能指标采集（请求总数、延迟、吞吐量）
+- 性能指标采集的多维分组与时间窗口查询
 
 ## 11. 诊断 API 端点
 
@@ -162,6 +162,7 @@ Agent 服务（`llmnode/agent/service.py`）暴露以下诊断 API 端点：
 - `GET /admin/diagnostics/gpu` - 获取 GPU 信息和 CUDA 版本
 - `GET /admin/diagnostics/container` - 获取容器详细信息（状态、运行时长、重启次数）
 - `GET /admin/diagnostics/model` - 获取模型信息（格式、配置）
+- `GET /admin/diagnostics/metrics` - 获取基础性能指标聚合（请求数、成功率、延迟、吞吐、`queue_length`）
 - `GET /admin/diagnostics/suggestions` - 获取智能建议（基于日志分析和系统状态）
 - `GET /admin/diagnostics/status` - 获取完整诊断状态（聚合所有诊断信息）
 

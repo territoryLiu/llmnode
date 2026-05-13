@@ -6,6 +6,7 @@ import httpx
 
 from llmnode.agent.service import create_agent_app
 from llmnode.agent.state import AgentState
+from llmnode.storage.db import write_request_metric
 
 
 def test_state_machine_has_ready_state():
@@ -209,5 +210,37 @@ def test_agent_recovers_after_startup_grace_expires():
             assert payload["status"] == "starting"
             assert payload["last_error"] == "recovery restart issued"
             assert restart_calls == ["stop", "start"]
+
+    asyncio.run(run())
+
+
+def test_agent_metrics_endpoint_returns_aggregated_metrics():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+        write_request_metric(
+            app.state.db,
+            request_id="req-1",
+            model_name="qwen36-27b",
+            protocol="openai",
+            status="ok",
+            latency_ms=1500.0,
+            prompt_tokens=32,
+            completion_tokens=64,
+            total_tokens=96,
+            tokens_per_second=42.6,
+            started_at="2026-05-13T10:00:00+00:00",
+            finished_at="2026-05-13T10:00:01.500000+00:00",
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/admin/diagnostics/metrics")
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["queue_length"] == 0
+            assert "generated_at" in payload
+            assert payload["request_count"] == 1
+            assert payload["success_count"] == 1
+            assert payload["avg_latency_ms"] == 1500.0
 
     asyncio.run(run())

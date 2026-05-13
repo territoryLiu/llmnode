@@ -149,6 +149,16 @@ python -m llmnode.control <action>
 - 应尽量直接告诉用户下一步最值得执行什么
 - 使用视觉符号（✓/✗/⚠/ℹ）提升可读性
 
+### 诊断 API 家族
+- Agent 诊断 API 当前至少包括：
+  - `GET /admin/diagnostics/gpu`
+  - `GET /admin/diagnostics/container`
+  - `GET /admin/diagnostics/model`
+  - `GET /admin/diagnostics/metrics`
+  - `GET /admin/diagnostics/suggestions`
+  - `GET /admin/diagnostics/status`
+- 其中 `metrics` 负责暴露基础性能指标聚合，不改变 `doctor` 命令面向终端的正式输出职责
+
 ### 三后端特定检查
 - **vLLM**: GPU 可用性、显存容量、模型格式（HuggingFace）、镜像版本
 - **llama.cpp**: 镜像类型（full-cuda）、模型文件存在性、模型格式（GGUF）、n_gpu_layers 合理性

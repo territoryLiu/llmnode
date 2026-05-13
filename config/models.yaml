@@ -1,18 +1,17 @@
 models:
   - name: claude-sonnet-4-5-20250929
     display_name: Claude Sonnet 4.5
-    backend_model: qwen36-35b-a3b
+    backend_model: qwen36-27b
     enabled: true
   - name: claude-haiku-4-5-20251001
     display_name: Claude Haiku 4.5
-    backend_model: qwen36-35b-a3b
+    backend_model: qwen36-27b
     enabled: true
   - name: claude-opus-4-5-20251101
     display_name: Claude Opus 4.5
-    backend_model: qwen36-35b-a3b
+    backend_model: qwen36-27b
     enabled: true
-  - name: qwen36-35b-a3b
-    display_name: Qwen3.6 35B A3B
-    backend_model: qwen36-35b-a3b
+  - name: qwen36-27b
+    display_name: Qwen3.6 27B
+    backend_model: qwen36-27b
     enabled: true
-
