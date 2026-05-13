@@ -50,7 +50,8 @@ python -m llmnode.control start
 - 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B`
 - 当前正式控制入口不再依赖 `scripts/*.sh`
 - `docs/blueprint/roadmap.md` 是唯一未来规划入口
-- `docs/superpowers/*` 负责设计展开与实施计划，不再保留 `docs/blueprintV3.md` / `docs/blueprintV4.md`
+- `docs/knowledge/*` 是常驻参考层，不承担正式真相
+- `docs/superpowers/*` 负责设计展开与实施计划，默认只服务进行中的工作，不再保留 `docs/blueprintV3.md` / `docs/blueprintV4.md`
 
 ## 阅读顺序
 
@@ -74,7 +75,7 @@ python -m llmnode.control start
   [docs/contracts/control-plane.md](/proj02/liuheshan/llmnode/docs/contracts/control-plane.md:1)
 - 模型路由与 `backend_type` 语义：
   [docs/contracts/backend-routing.md](/proj02/liuheshan/llmnode/docs/contracts/backend-routing.md:1)
-- 推理后端 Docker 化方向与选型背景：
-  [docs/knowledge/inference_framework_selection.md](/proj02/liuheshan/llmnode/docs/knowledge/inference_framework_selection.md:1)
-- 文档系统分层与维护方法：
-  [docs/doc-system.md](/proj02/liuheshan/llmnode/docs/doc-system.md:1)
+- 三后端联调经验与已知问题：
+  [docs/knowledge/backend_integration_qa.md](/proj02/liuheshan/llmnode/docs/knowledge/backend_integration_qa.md:1)
+- 文档系统开发与回流规则：
+  [docs/process/development-workflow.md](/proj02/liuheshan/llmnode/docs/process/development-workflow.md:1)
