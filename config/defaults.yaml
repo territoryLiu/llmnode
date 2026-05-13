@@ -31,4 +31,4 @@ schedule:
   auto_start_enabled: true
   cooldown_minutes: 10
 
-active_backend_profile: vllm_qwen36-35b-a3b-fp8
+active_backend_profile: vllm_qwen3-vl-8b-instruct-fp8

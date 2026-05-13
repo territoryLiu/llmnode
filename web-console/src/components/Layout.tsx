@@ -47,11 +47,8 @@ export function Layout({children}: {children: React.ReactNode}) {
 
       {/* Sidebar - Glassmorphism */}
       <aside className="w-72 fixed inset-y-0 left-0 p-6 flex flex-col z-20 gap-8">
-        <div className="flex items-center gap-3 px-2">
-          <img src={logoImage} alt="LlmNode logo" className="h-11 w-11 rounded-xl object-contain bg-white/70 p-1.5 shadow-sm" />
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-[#1a1a1a]">{t('layout.brand')}</h1>
-          </div>
+        <div className="flex items-center justify-center px-2">
+          <img src={logoImage} alt="LlmNode logo" className="h-36 w-60 object-contain drop-shadow-sm" />
         </div>
 
         <nav className="flex-1 space-y-2">

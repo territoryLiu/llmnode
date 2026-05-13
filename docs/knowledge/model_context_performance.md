@@ -256,3 +256,32 @@
   - 先清空外部 GPU 占用
   - 再单独复测 `0.65 / 1`
   - 必要时再评估是否关闭或进一步缩减 CUDA graph 相关启动负担
+
+
+
+
+
+
+
+
+
+ - Qwen3.6-35B-A3B-FP8 在文档里能跑 256K，对应配置是 models/Qwen/Qwen3.6-35B-A3B-FP8/config.json
+  - 这个模型的 text_config 里有大量 linear_attention，而且 num_key_value_heads: 2
+  - 你现在上的 Qwen3-VL-8B-Instruct-FP8 对应 models/Qwen/Qwen3-VL-8B-Instruct-FP8/config.json
+  - 它是标准注意力路径，num_key_value_heads: 8，num_hidden_layers: 36，head_dim: 128，max_position_embeddings: 262144
+
+  这会直接导致 KV cache 需求完全不是一个量级。
+  所以会出现看起来反常的结果：
+
+  - 35B A3B：模型更大，但因为 attention 结构特殊，256K 能成立
+  - 8B VL：模型更小，但 256K 的 KV cache 更贵，所以你给的 20G 预算不够
+
+  容器日志已经把这个点说死了：
+
+  - 当前 262144 需要 36.0 GiB KV cache
+  - 现在实际可用 KV cache 只有 6.95 GiB
+  所以这不是文档和程序冲突，而是两个模型根本不是同一种长上下文成本曲线。
+
+  - 保留 20G 显存预算
+  - 把 max_model_len 和 ctx_size 从 262144 改到 49152
+

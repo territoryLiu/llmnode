@@ -108,7 +108,7 @@ export function OverviewView() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="glass-panel lg:col-span-2 overflow-hidden">
+        <div className="glass-panel lg:col-span-2 overflow-hidden p-6">
           <h4 className="font-bold mb-6 flex flex-wrap justify-between items-center gap-3 text-slate-800">
             <span className="min-w-0">{t('overview.queueTrend')}</span>
             <span className="text-blue-600 text-sm font-normal shrink-0 text-right">
@@ -153,7 +153,7 @@ export function OverviewView() {
           </div>
         </div>
 
-        <div className="glass-panel flex flex-col overflow-hidden">
+        <div className="glass-panel flex flex-col overflow-hidden p-6">
           <h4 className="font-bold mb-6 text-slate-800">{t('overview.modelDistribution')}</h4>
           <div className="flex-1 min-h-[200px]">
             {modelDistribution.length === 0 ? (
@@ -236,7 +236,7 @@ export function OverviewView() {
           </div>
         </div>
 
-        <div className="glass-panel overflow-hidden">
+        <div className="glass-panel overflow-hidden p-6">
           <h4 className="font-bold mb-6 text-slate-800">{t('overview.quickActions')}</h4>
           <div className="grid grid-cols-2 gap-4">
             <button

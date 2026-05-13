@@ -156,6 +156,13 @@
 当前现实包括：
 
 - `vLLM` 是正式主路径（默认 `backend_type: vllm`）
+- 当前已落地的 profile 分层清晰：
+  - 正式默认：`config/backends/vllm_qwen36-35b-a3b-fp8.yaml`
+  - 可选正式路径：`config/backends/vllm_qwen36-35b-a3b.yaml`
+  - 可选 GGUF 路径：`config/backends/llama.cpp_qwen36-35b-a3b-q4km.yaml`
+  - 备选 GGUF 路径：`config/backends/llama.cpp_qwen36-35b-a3b-f16.yaml`
+  - 试验中路径：`config/backends/sglang_qwen36-35b-a3b-fp8.yaml`
+  - 历史保留路径：`config/backends/vllm_qwen36-27b.yaml`
 - 三后端均已完成线上联调验证（2026-05-12）：
   - `vLLM`：正常推理，`reasoning_content` / `content` 干净分离
   - `llama.cpp`：须使用 `full-cuda` 镜像，约 68 token/s，显存占用约 26GB，`reasoning_content` 正常
@@ -172,6 +179,26 @@
   - 网关会为成功、拒绝和无 `usage` 的请求落库 `request_metrics`
   - Agent 暴露 `GET /admin/diagnostics/metrics`
   - 当前聚合指标包括请求数、成功率、平均/分位延迟、吞吐和稳定回退 `queue_length`
+
+当前模型选择建议也已经收敛：
+
+- `Qwen3.6-35B-A3B-FP8`
+  - 当前正式默认模型
+  - 正式优先后端仍是 `vLLM`
+- `Qwen3.6-35B-A3B-GGUF`
+  - 当前优先作为 `llama.cpp` 路线使用
+  - 适合低显存或 GGUF 兼容性优先场景
+- `Qwen3.6-27B`
+  - 当前保留历史 profile
+  - 不建议继续作为正式默认模型
+- `DeepSeek-V4-Flash`、`gemma-4-31B-it`
+  - 当前未纳入正式 profile 路径
+  - 需要补完格式、模板和性能验证后再决定是否收口
+
+与模型能力相关的长期参考仍分开放置：
+
+- 性能与长上下文记录见 [docs/knowledge/model_context_performance.md](../knowledge/model_context_performance.md)
+- 格式转换、量化与部署建议见 [docs/knowledge/model_format_conversion.md](../knowledge/model_format_conversion.md)
 
 ## 7. 当前配置与真相源边界
 

@@ -80,6 +80,6 @@ python -m llmnode.control start
 - 三后端联调经验与已知问题：
   [docs/knowledge/backend_integration_qa.md](/proj02/liuheshan/llmnode/docs/knowledge/backend_integration_qa.md:1)
 - 模型支持矩阵与 profile 命名：
-  [docs/knowledge/model_profiles.md](/proj02/liuheshan/llmnode/docs/knowledge/model_profiles.md:1)
+  [docs/knowledge/model_context_performance.md](/proj02/liuheshan/llmnode/docs/knowledge/model_context_performance.md:1)
 - 文档系统开发与回流规则：
   [docs/process/development-workflow.md](/proj02/liuheshan/llmnode/docs/process/development-workflow.md:1)

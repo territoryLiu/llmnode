@@ -14,8 +14,8 @@
 | [api_protocol_reference.md](api_protocol_reference.md) | 三种对外接口协议（/v1/chat/completions、/v1/responses、/v1/messages）的规范对比、字段映射与转换策略 |
 | [llm_development.md](llm_development.md) | Dense 与 MoE 模型资源特点、单卡边界与后端框架选型建议 |
 | [docker_deployment.md](docker_deployment.md) | 三后端（vLLM / llama.cpp / SGLang）Docker 部署方案与环境约束说明 |
-| [model_format_conversion.md](model_format_conversion.md) | safetensors → GGUF 转换流程与量化参数速查 |
-| [quantization_comparison.md](quantization_comparison.md) | Q4_K_M vs FP8 量化对比、硬件适配与决策树 |
+| [model_format_conversion.md](model_format_conversion.md) | HF / safetensors → GGUF 转换、UD / Q4 / FP8 量化对比、MTP 与部署建议 |
+| [model_context_performance.md](model_context_performance.md) | 各模型在当前机器上的上下文长度可用性与单并发性能记录 |
 | [backend_integration_qa.md](backend_integration_qa.md) | 三后端联调验证 Q&A：已知问题、解决方案与验证结果汇总 |
 
 ---
