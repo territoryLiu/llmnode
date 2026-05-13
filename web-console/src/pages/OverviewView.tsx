@@ -108,10 +108,10 @@ export function OverviewView() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="glass-panel lg:col-span-2">
-          <h4 className="font-bold mb-6 flex justify-between items-center text-slate-800">
-            <span>{t('overview.queueTrend')}</span>
-            <span className="text-blue-600 text-sm font-normal">
+        <div className="glass-panel lg:col-span-2 overflow-hidden">
+          <h4 className="font-bold mb-6 flex flex-wrap justify-between items-center gap-3 text-slate-800">
+            <span className="min-w-0">{t('overview.queueTrend')}</span>
+            <span className="text-blue-600 text-sm font-normal shrink-0 text-right">
               {t('overview.recentSamples', {count: snapshotHistory.length || 0})}
             </span>
           </h4>
@@ -153,7 +153,7 @@ export function OverviewView() {
           </div>
         </div>
 
-        <div className="glass-panel flex flex-col">
+        <div className="glass-panel flex flex-col overflow-hidden">
           <h4 className="font-bold mb-6 text-slate-800">{t('overview.modelDistribution')}</h4>
           <div className="flex-1 min-h-[200px]">
             {modelDistribution.length === 0 ? (
@@ -178,7 +178,7 @@ export function OverviewView() {
               </ResponsiveContainer>
             )}
           </div>
-          <div className="flex flex-wrap justify-center gap-4 text-xs text-slate-600 mt-4">
+          <div className="flex flex-wrap justify-center gap-4 text-xs text-slate-600 mt-4 pb-1">
             {modelDistribution.map((item, index) => (
               <div key={item.name} className="flex items-center gap-1">
                 <div className="w-2 h-2 rounded-full" style={{background: COLORS[index % COLORS.length]}} />
@@ -236,7 +236,7 @@ export function OverviewView() {
           </div>
         </div>
 
-        <div className="glass-panel">
+        <div className="glass-panel overflow-hidden">
           <h4 className="font-bold mb-6 text-slate-800">{t('overview.quickActions')}</h4>
           <div className="grid grid-cols-2 gap-4">
             <button
