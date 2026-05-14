@@ -50,6 +50,27 @@ python -m llmnode.control stop
 不要把”某个进程活着”直接等同于”系统 ready”。  
 当前更稳妥的判断应拆成三层：
 
+### 5.0 Agent Readiness 状态语义
+
+`node-agent` 通过双阶段探针判定后端就绪状态：
+
+1. **HTTP 健康检查**：确认后端端口可达
+2. **推理探针**：发送 `max_tokens=1` 的极小推理请求确认模型可服务
+
+状态标志：
+- `http_ready=true` 但 `inference_ready=false` 表示后端仍在热身（`warming_up`）
+- `http_ready=true` 且 `inference_ready=true` 表示后端完全就绪（`ready`）
+- `http_ready=false` 表示后端不可达（`degraded` / `stopped`）
+
+客户端对接：
+- 对外业务请求在未就绪时应返回 `503 Service Unavailable`
+- 响应头携带 `Retry-After` 字段指示重试等待秒数
+- `detail` 字段枚举值：
+  - `backend_warming_up`：HTTP 可达但推理未就绪
+  - `backend_not_ready`：后端 HTTP 不可达
+  - `agent_state_unavailable`：agent 状态获取失败
+  - `agent_not_ready`：agent 状态非 ready
+
 ### 5.1 推理后端 ready
 
 至少满足：

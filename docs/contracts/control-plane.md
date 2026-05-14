@@ -158,6 +158,14 @@ python -m llmnode.control <action>
   - `GET /admin/diagnostics/suggestions`
   - `GET /admin/diagnostics/status`
 - 其中 `metrics` 负责暴露基础性能指标聚合，不改变 `doctor` 命令面向终端的正式输出职责
+- `GET /admin/diagnostics/status` 和 `GET /state` 的 readiness 响应字段：
+  - `http_ready`: HTTP 健康检查是否通过
+  - `inference_ready`: 推理探针是否通过
+  - `retry_after_seconds`: 建议客户端重试等待秒数
+  - `readiness_state`: 当前 readiness 状态（`stopped / starting / warming_up / ready / degraded / recovering / alerting`）
+  - `last_probe_error`: 最近一次探针失败原因
+  - `last_probe_latency_ms`: 最近一次探针延迟（毫秒）
+  - `last_transition_at`: 上次状态切换时间
 
 ### 三后端特定检查
 - **vLLM**: GPU 可用性、显存容量、模型格式（HuggingFace）、镜像版本
