@@ -48,7 +48,7 @@
 
 - 已激活 `paper2any` 环境
 - Docker 可用
-- `models/Qwen/Qwen3.6-35B-A3B-FP8` 或配置中的目标模型目录已准备好
+- `models/Qwen/Qwen3.6-27B-FP8` 或配置中的目标模型目录已准备好
 - `web-console` 依赖已安装
 
 最小启动方式：
@@ -63,6 +63,8 @@ python -m llmnode.control start
 - `http://127.0.0.1:4000/v1/models` 正常，表示对外主链路 ready
 - `http://127.0.0.1:5173` 可访问，表示默认前端入口 ready
 - `python -m llmnode.control status` 能看到整栈摘要
+- 后端热身窗口期内，推理请求会返回 `503 + Retry-After`，表示 Agent 已就绪但后端模型仍在加载中
+- 管理台密钥页面通过 `/admin/overview/readiness` 获取 Base URL（本地地址 / 局域网地址），供客户端复制使用
 
 它不适用于：
 

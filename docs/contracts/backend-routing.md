@@ -171,6 +171,21 @@ Agent 服务（`llmnode/agent/service.py`）暴露以下诊断 API 端点：
 
 这些端点供管理台前端和外部监控系统使用，返回 JSON 格式数据。
 
+## 12. 管理台 API 端点
+
+网关服务（`llmnode/api/app.py`）暴露以下管理台 API 端点：
+
+- `GET /admin/overview/readiness` - 获取系统就绪状态和 Base URL 信息
+  - 返回 `readiness`（Agent 状态）和 `base_urls`（`local` / `lan` 地址）
+  - Base URL 由管理台统一下发，供客户端复制使用
+- `GET /admin/keys` - 获取 API Key 列表
+  - 返回 `masked_key` 脱敏字段，不含 secret 明文
+  - 附带 `usage_summary`（总请求数、总 Token 数）
+- `POST /admin/keys` - 创建 API Key
+  - 返回 `masked_key` 和 `secret`（仅当次可见）
+- `PATCH /admin/keys/{id}` - 更新 API Key 状态/名称/权限
+- `DELETE /admin/keys/{id}` - 删除 API Key
+
 ## 12. 长期扩展方向
 
 后续三后端落地后，本契约应继续扩展：

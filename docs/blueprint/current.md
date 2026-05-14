@@ -149,15 +149,16 @@
 当前默认正式运行路径仍然是：
 
 - 推理后端：`vLLM`
-- 默认模型 profile：`config/backends/vllm_qwen36-35b-a3b-fp8.yaml`
-- 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B-FP8`
+- 默认模型 profile：`config/backends/vllm_qwen36-27b-FP8.yaml`
+- 默认模型目录：`models/Qwen/Qwen3.6-27B-FP8`
 - 默认后端端口：`15673`
 
 当前现实包括：
 
 - `vLLM` 是正式主路径（默认 `backend_type: vllm`）
 - 当前已落地的 profile 分层清晰：
-  - 正式默认：`config/backends/vllm_qwen36-35b-a3b-fp8.yaml`
+  - 正式默认：`config/backends/vllm_qwen36-27b-FP8.yaml`
+  - 可选正式路径：`config/backends/vllm_qwen36-35b-a3b-fp8.yaml`
   - 可选正式路径：`config/backends/vllm_qwen36-35b-a3b.yaml`
   - 可选 GGUF 路径：`config/backends/llama.cpp_qwen36-35b-a3b-q4km.yaml`
   - 备选 GGUF 路径：`config/backends/llama.cpp_qwen36-35b-a3b-f16.yaml`
@@ -179,11 +180,20 @@
   - 网关会为成功、拒绝和无 `usage` 的请求落库 `request_metrics`
   - Agent 暴露 `GET /admin/diagnostics/metrics`
   - 当前聚合指标包括请求数、成功率、平均/分位延迟、吞吐和稳定回退 `queue_length`
+- API Key 管理台能力已补齐（2026-05-14）：
+  - 后端 API key 列表和创建接口返回 `masked_key` 脱敏字段
+  - key 列表接口附带 `usage_summary`（总请求数、总 Token 数）
+  - 新增 `/admin/overview/readiness` 端点，统一下发 Base URL 和就绪状态
+  - 管理台密钥页面展示 Base URL 卡片、复制按钮、密钥显示/隐藏切换
+  - 历史 key 列表中展示 masked_key 和用量统计
 
 当前模型选择建议也已经收敛：
 
-- `Qwen3.6-35B-A3B-FP8`
+- `Qwen3.6-27B-FP8`
   - 当前正式默认模型
+  - 正式优先后端仍是 `vLLM`
+- `Qwen3.6-35B-A3B-FP8`
+  - 可选正式 profile，性能和上下文能力更强
   - 正式优先后端仍是 `vLLM`
 - `Qwen3.6-35B-A3B-GGUF`
   - 当前优先作为 `llama.cpp` 路线使用
