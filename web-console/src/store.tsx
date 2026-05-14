@@ -34,6 +34,7 @@ export interface AgentEvent {
 export interface ApiKeyRow {
   id: number;
   name: string;
+  masked_key: string;
   status: 'active' | 'disabled';
   scopes: string[];
   rpm_limit: number | null;
@@ -42,6 +43,10 @@ export interface ApiKeyRow {
   disabled_at: string | null;
   last_used_at: string | null;
   note: string | null;
+  usage_summary?: {
+    total_requests: number;
+    total_tokens: number | null;
+  };
 }
 
 export interface ModelRouteRow {
@@ -50,6 +55,14 @@ export interface ModelRouteRow {
   backend_model: string;
   backend_type: string;
   enabled: boolean;
+}
+
+export interface ReadinessOverview {
+  readiness: Record<string, unknown> | null;
+  base_urls: {
+    local: string;
+    lan: string;
+  };
 }
 
 export interface ScheduleConfig {
@@ -232,6 +245,7 @@ interface AppState {
   modelRoutes: ModelRouteRow[];
   schedule: ScheduleConfig | null;
   diagnostics: DiagnosticsStatus | null;
+  readinessOverview: ReadinessOverview | null;
   loading: LoadingState;
   refreshAll: () => Promise<void>;
   refreshSnapshot: () => Promise<void>;
@@ -240,6 +254,7 @@ interface AppState {
   refreshModelRoutes: () => Promise<void>;
   refreshSchedule: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
+  refreshReadinessOverview: () => Promise<void>;
   createApiKey: (payload: CreateApiKeyPayload) => Promise<{secret: string; key: ApiKeyRow}>;
   updateApiKey: (id: number, payload: UpdateApiKeyPayload) => Promise<ApiKeyRow>;
   deleteApiKey: (id: number) => Promise<void>;
@@ -319,6 +334,7 @@ export function AppProvider({children}: {children: ReactNode}) {
   const [modelRoutes, setModelRoutes] = useState<ModelRouteRow[]>([]);
   const [schedule, setSchedule] = useState<ScheduleConfig | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
+  const [readinessOverview, setReadinessOverview] = useState<ReadinessOverview | null>(null);
   const [loading, setLoading] = useState<LoadingState>({
     snapshot: true,
     requestLogs: true,
@@ -484,6 +500,15 @@ export function AppProvider({children}: {children: ReactNode}) {
     }
   }
 
+  async function refreshReadinessOverview() {
+    try {
+      const payload = await requestJson<ReadinessOverview>('/admin/overview/readiness');
+      setReadinessOverview(payload);
+    } catch {
+      // Silently fail readiness overview fetch
+    }
+  }
+
   async function refreshAll() {
     await Promise.allSettled([
       refreshSnapshot(),
@@ -492,6 +517,7 @@ export function AppProvider({children}: {children: ReactNode}) {
       refreshModelRoutes(),
       refreshSchedule(),
       refreshDiagnostics(),
+      refreshReadinessOverview(),
     ]);
   }
 
@@ -689,6 +715,7 @@ export function AppProvider({children}: {children: ReactNode}) {
         modelRoutes,
         schedule,
         diagnostics,
+        readinessOverview,
         loading,
         refreshAll,
         refreshSnapshot,
@@ -697,6 +724,7 @@ export function AppProvider({children}: {children: ReactNode}) {
         refreshModelRoutes,
         refreshSchedule,
         refreshDiagnostics,
+        refreshReadinessOverview,
         createApiKey,
         updateApiKey,
         deleteApiKey,

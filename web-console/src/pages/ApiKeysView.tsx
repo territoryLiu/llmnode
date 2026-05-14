@@ -1,5 +1,5 @@
 import React, {useMemo, useState} from 'react';
-import {CheckCircle2, Copy, Key, Plus, Trash2, X} from 'lucide-react';
+import {CheckCircle2, Copy, Eye, EyeOff, Globe, Key, Plus, Trash2, X} from 'lucide-react';
 import {useAppContext, type ApiKeyRow} from '../store';
 
 function formatDate(value: string | null) {
@@ -34,8 +34,9 @@ function ToggleButton({
 }
 
 export function ApiKeysView() {
-  const {apiKeys, createApiKey, updateApiKey, deleteApiKey, loading, locale, t} = useAppContext();
+  const {apiKeys, createApiKey, updateApiKey, deleteApiKey, loading, locale, t, readinessOverview} = useAppContext();
   const [showNewSecret, setShowNewSecret] = useState<string | null>(null);
+  const [secretVisible, setSecretVisible] = useState(true);
   const [copyDone, setCopyDone] = useState(false);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -70,6 +71,7 @@ export function ApiKeysView() {
         note: note.trim() || null,
       });
       setShowNewSecret(response.secret);
+      setSecretVisible(true);
       setCopyDone(false);
       setName('Web Console');
       setScopeAdmin(true);
@@ -87,6 +89,13 @@ export function ApiKeysView() {
       return;
     }
     await navigator.clipboard.writeText(showNewSecret);
+    setCopyDone(true);
+    setTimeout(() => setCopyDone(false), 1200);
+  }
+
+  async function copyText(text: string) {
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
     setCopyDone(true);
     setTimeout(() => setCopyDone(false), 1200);
   }
@@ -111,6 +120,35 @@ export function ApiKeysView() {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 h-full flex flex-col">
+      {readinessOverview?.base_urls && (
+        <div className="glass-panel p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Globe className="w-4 h-4 text-blue-600" />
+            <div className="font-semibold text-slate-800">{t('keys.baseUrls')}</div>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="flex items-center gap-2 flex-1">
+              <span className="text-xs text-slate-500 w-16 shrink-0">{t('keys.local')}</span>
+              <code className="flex-1 bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm font-mono text-blue-700">
+                {readinessOverview.base_urls.local}
+              </code>
+              <button onClick={() => void copyText(readinessOverview.base_urls.local)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')}>
+                <Copy className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex items-center gap-2 flex-1">
+              <span className="text-xs text-slate-500 w-16 shrink-0">{t('keys.lan')}</span>
+              <code className="flex-1 bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm font-mono text-blue-700">
+                {readinessOverview.base_urls.lan}
+              </code>
+              <button onClick={() => void copyText(readinessOverview.base_urls.lan)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')}>
+                <Copy className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
         <div className="glass-panel p-6 flex flex-col justify-between">
           <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.totalKeys')}</div>
@@ -202,8 +240,15 @@ export function ApiKeysView() {
 
             <div className="flex items-center gap-3">
               <code className="flex-1 bg-slate-950/50 p-3 rounded-lg text-emerald-300 font-mono text-sm border border-emerald-500/20 selection:bg-emerald-500/30 break-all">
-                {showNewSecret}
+                {secretVisible ? showNewSecret : '••••••••••••••••••••'}
               </code>
+              <button
+                onClick={() => setSecretVisible((v) => !v)}
+                className="p-3 bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 rounded-lg border border-blue-500/50 transition-all"
+                title={secretVisible ? t('keys.hide') : t('keys.show')}
+              >
+                {secretVisible ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              </button>
               <button
                 onClick={() => void handleCopy()}
                 className="p-3 bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 rounded-lg border border-emerald-500/50 transition-all"
@@ -230,9 +275,11 @@ export function ApiKeysView() {
             <thead className="text-xs text-slate-500 uppercase bg-slate-50/50">
               <tr>
                 <th className="px-5 py-3 font-medium">{t('keys.name')}</th>
+                <th className="px-5 py-3 font-medium">{t('keys.maskedKey')}</th>
                 <th className="px-5 py-3 font-medium">{t('keys.status')}</th>
                 <th className="px-5 py-3 font-medium">{t('keys.scopes')}</th>
                 <th className="px-5 py-3 font-medium">{t('keys.limits')}</th>
+                <th className="px-5 py-3 font-medium">{t('keys.usageSummary')}</th>
                 <th className="px-5 py-3 font-medium">{t('keys.createdAt')}</th>
                 <th className="px-5 py-3 font-medium text-right">{t('keys.actions')}</th>
               </tr>
@@ -240,7 +287,7 @@ export function ApiKeysView() {
             <tbody className="divide-y divide-slate-100/50">
               {apiKeys.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-5 py-12 text-center text-slate-500">
+                  <td colSpan={8} className="px-5 py-12 text-center text-slate-500">
                     {loading.apiKeys ? t('keys.loadingKeys') : t('keys.noKeys')}
                   </td>
                 </tr>
@@ -250,6 +297,14 @@ export function ApiKeysView() {
                     <td className="px-5 py-4">
                       <div className="font-medium text-slate-800">{key.name}</div>
                       {key.note && <div className="text-xs text-slate-500 mt-1">{key.note}</div>}
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-1">
+                        <div className="font-mono text-xs text-slate-600">{key.masked_key}</div>
+                        <button onClick={() => void copyText(key.masked_key)} className="p-0.5 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyMasked')}>
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                     <td className="px-5 py-4">
                       <span
@@ -274,6 +329,16 @@ export function ApiKeysView() {
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-600 font-mono">
                       {key.rpm_limit || '∞'} / {key.concurrency_limit || '∞'}
+                    </td>
+                    <td className="px-5 py-4 text-xs text-slate-500">
+                      {key.usage_summary ? (
+                        <div>
+                          <div>{t('keys.totalRequests')}: {key.usage_summary.total_requests}</div>
+                          <div>{t('keys.totalTokens')}: {key.usage_summary.total_tokens ?? '-'}</div>
+                        </div>
+                      ) : (
+                        <div>-</div>
+                      )}
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-500">
                       <div>{formatDate(key.created_at)}</div>
