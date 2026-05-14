@@ -40,3 +40,36 @@ def test_anthropic_messages_endpoint_exists():
             assert resp.json()["content"][0]["text"] == "qwen36-35b-a3b-fp8"
 
     asyncio.run(run())
+
+
+def test_anthropic_messages_returns_503_when_warming_up():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        app.state.require_agent_ready = True
+
+        async def fake_agent_state():
+            return {
+                "status": "warming_up",
+                "http_ready": True,
+                "inference_ready": False,
+                "retry_after_seconds": 5,
+            }
+
+        app.state.fetch_agent_state = fake_agent_state
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": "Bearer dev-key"},
+                json={
+                    "model": "qwen36-35b-a3b-fp8",
+                    "max_tokens": 16,
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+            assert resp.status_code == 503
+            assert resp.json()["detail"] == "backend_warming_up"
+
+    asyncio.run(run())

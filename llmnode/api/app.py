@@ -320,14 +320,31 @@ def create_app() -> FastAPI:
 
     app.state.restart_agent_backend = restart_agent_backend
 
-    async def ensure_agent_ready() -> None:
+    async def ensure_agent_ready() -> dict[str, Any]:
         if not app.state.require_agent_ready:
-            return
+            return {}
         state = await app.state.fetch_agent_state()
         if not state:
-            raise HTTPException(status_code=503, detail="agent state unavailable")
+            raise HTTPException(status_code=503, detail="agent_state_unavailable")
+        # Check inference readiness
+        if state.get("inference_ready") is False:
+            retry_after = str(state.get("retry_after_seconds") or 5)
+            if state.get("http_ready"):
+                detail = "backend_warming_up"
+            else:
+                detail = "backend_not_ready"
+            raise HTTPException(
+                status_code=503,
+                detail=detail,
+                headers={"Retry-After": retry_after},
+            )
         if state.get("status") != "ready":
-            raise HTTPException(status_code=503, detail=f"agent not ready: {state.get('status', 'unknown')}")
+            raise HTTPException(
+                status_code=503,
+                detail="agent_not_ready",
+                headers={"Retry-After": "5"},
+            )
+        return state
 
     def _build_backend_runtime_info(s) -> dict[str, Any]:
         bt = s.vllm.backend_type
