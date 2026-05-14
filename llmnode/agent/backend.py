@@ -21,6 +21,8 @@ class BackendDriver(Protocol):
 
     async def health(self, backend_url: str) -> bool: ...
 
+    async def probe(self, backend_url: str, model_name: str) -> dict[str, Any]: ...
+
     def snapshot(self) -> dict[str, Any]: ...
 
     def start(self) -> dict[str, Any]: ...
@@ -37,6 +39,19 @@ class VLLMBackendDriver:
 
     async def health(self, backend_url: str) -> bool:
         return await backend_health(backend_url)
+
+    async def probe(self, backend_url: str, model_name: str) -> dict[str, Any]:
+        import httpx as _httpx
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+            "stream": False,
+        }
+        async with _httpx.AsyncClient(base_url=backend_url, timeout=30) as client:
+            resp = await client.post("/v1/chat/completions", json=payload)
+            resp.raise_for_status()
+            return {"ok": True, "response": resp.json()}
 
     def snapshot(self) -> dict[str, Any]:
         return container_snapshot(self.spec)
@@ -59,6 +74,19 @@ class LlamaCppBackendDriver:
     async def health(self, backend_url: str) -> bool:
         return await llamacpp_health(backend_url)
 
+    async def probe(self, backend_url: str, model_name: str) -> dict[str, Any]:
+        import httpx as _httpx
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+            "stream": False,
+        }
+        async with _httpx.AsyncClient(base_url=backend_url, timeout=30) as client:
+            resp = await client.post("/v1/chat/completions", json=payload)
+            resp.raise_for_status()
+            return {"ok": True, "response": resp.json()}
+
     def snapshot(self) -> dict[str, Any]:
         return container_snapshot(self.spec)
 
@@ -79,6 +107,19 @@ class SGLangBackendDriver:
 
     async def health(self, backend_url: str) -> bool:
         return await backend_health(backend_url)
+
+    async def probe(self, backend_url: str, model_name: str) -> dict[str, Any]:
+        import httpx as _httpx
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+            "stream": False,
+        }
+        async with _httpx.AsyncClient(base_url=backend_url, timeout=30) as client:
+            resp = await client.post("/v1/chat/completions", json=payload)
+            resp.raise_for_status()
+            return {"ok": True, "response": resp.json()}
 
     def snapshot(self) -> dict[str, Any]:
         return container_snapshot(self.spec)

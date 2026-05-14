@@ -47,30 +47,87 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
         return bool(snapshot.get("exists")) and str(snapshot.get("status")) == "running"
 
     async def _refresh_state() -> bool:
-        ready = await app.state.backend_driver.health(app.state.backend_url)
-        app.state.agent.backend_ready = ready
+        # Stage 1: HTTP health check
+        http_ready = await app.state.backend_driver.health(app.state.backend_url)
+        app.state.agent.http_ready = http_ready
+        app.state.agent.backend_ready = http_ready
         app.state.agent.checked_at = _utc_now()
-        if ready:
-            app.state.agent.failure_count = 0
-            if app.state.agent.status in {"starting", "recovering", "degraded"} or (
+
+        if not http_ready:
+            # HTTP not reachable — reset inference readiness
+            app.state.agent.inference_ready = False
+            app.state.agent.retry_after_seconds = None
+            app.state.agent.last_probe_error = "backend http unreachable"
+            app.state.agent.last_probe_latency_ms = None
+            app.state.agent.failure_count += 1
+            if app.state.agent.desired_state == "stopped":
+                app.state.agent.mark("stopped", "manual stop requested")
+                write_agent_event(
+                    app.state.db, "stopped", "manual stop requested",
+                    readiness_state="stopped", http_ready=False, inference_ready=False,
+                )
+                return False
+            if app.state.agent.status == "ready":
+                app.state.agent.mark("degraded", "backend became unavailable")
+                write_agent_event(
+                    app.state.db, "degraded", "backend became unavailable",
+                    readiness_state="degraded", http_ready=False, inference_ready=False,
+                )
+            elif app.state.agent.status == "starting":
+                app.state.agent.mark("starting", "waiting for backend")
+            elif not app.state.agent.last_error:
+                app.state.agent.last_error = "backend unavailable"
+            return False
+
+        # HTTP is reachable — reset failure counter
+        app.state.agent.failure_count = 0
+
+        # Stage 2: Inference probe
+        probe_start = datetime.now(timezone.utc)
+        try:
+            model_name = settings.vllm.model_name or "unknown"
+            await app.state.backend_driver.probe(app.state.backend_url, model_name)
+            latency_ms = (datetime.now(timezone.utc) - probe_start).total_seconds() * 1000
+            app.state.agent.inference_ready = True
+            app.state.agent.retry_after_seconds = None
+            app.state.agent.last_probe_error = ""
+            app.state.agent.last_probe_latency_ms = latency_ms
+        except Exception as exc:
+            latency_ms = (datetime.now(timezone.utc) - probe_start).total_seconds() * 1000
+            app.state.agent.inference_ready = False
+            app.state.agent.retry_after_seconds = app.state.warming_up_retry_after
+            app.state.agent.last_probe_error = str(exc)
+            app.state.agent.last_probe_latency_ms = latency_ms
+
+        # Determine status from readiness flags
+        if app.state.agent.desired_state == "stopped":
+            app.state.agent.mark("stopped", "manual stop requested")
+            write_agent_event(
+                app.state.db, "stopped", "manual stop requested",
+                readiness_state="stopped", http_ready=True, inference_ready=app.state.agent.inference_ready,
+            )
+            return False
+
+        if app.state.agent.inference_ready:
+            # Both stages passed
+            if app.state.agent.status in {"starting", "recovering", "degraded", "warming_up"} or (
                 app.state.agent.status == "stopped" and app.state.agent.desired_state == "running"
             ):
                 app.state.agent.mark("ready")
-                write_agent_event(app.state.db, "ready", "backend healthy")
+                write_agent_event(
+                    app.state.db, "ready", "backend healthy",
+                    readiness_state="ready", http_ready=True, inference_ready=True,
+                )
             return True
-
-        app.state.agent.failure_count += 1
-        if app.state.agent.desired_state == "stopped":
-            app.state.agent.mark("stopped", "manual stop requested")
+        else:
+            # HTTP ready but inference not ready — warming up
+            if app.state.agent.status != "warming_up":
+                app.state.agent.mark("warming_up", "backend http ready, inference probe pending")
+                write_agent_event(
+                    app.state.db, "warming_up", "backend http ready, inference probe pending",
+                    readiness_state="warming_up", http_ready=True, inference_ready=False,
+                )
             return False
-        if app.state.agent.status == "ready":
-            app.state.agent.mark("degraded", "backend became unavailable")
-            write_agent_event(app.state.db, "degraded", "backend became unavailable")
-        elif app.state.agent.status == "starting":
-            app.state.agent.mark("starting", "waiting for backend")
-        elif not app.state.agent.last_error:
-            app.state.agent.last_error = "backend unavailable"
-        return False
 
     async def _recover_if_needed() -> None:
         if not app.state.auto_recover:
@@ -179,6 +236,7 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
     app.state.auto_recover = bool(getattr(settings.agent, "auto_recover", True))
     app.state.recovery_threshold = int(getattr(settings.agent, "recovery_threshold", 2))
     app.state.startup_grace_period = int(getattr(settings.agent, "startup_grace_period", 180))
+    app.state.warming_up_retry_after = int(getattr(settings.agent, "warming_up_retry_after", 5))
     app.state.recovery_lock = asyncio.Lock()
     app.state.monitor_task = None
     app.state.run_sync = asyncio.to_thread
@@ -197,11 +255,17 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
             "status": app.state.agent.status,
             "desired_state": app.state.agent.desired_state,
             "backend_ready": ready,
+            "http_ready": app.state.agent.http_ready,
+            "inference_ready": app.state.agent.inference_ready,
+            "retry_after_seconds": app.state.agent.retry_after_seconds,
             "failure_count": app.state.agent.failure_count,
             "checked_at": app.state.agent.checked_at,
             "last_error": app.state.agent.last_error,
             "last_recovery_at": app.state.agent.last_recovery_at,
             "started_at": app.state.agent.started_at,
+            "last_transition_at": app.state.agent.last_transition_at,
+            "last_probe_error": app.state.agent.last_probe_error,
+            "last_probe_latency_ms": app.state.agent.last_probe_latency_ms,
         }
 
     @app.get("/container")
@@ -378,6 +442,13 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
 
         return {
             "backend_type": app.state.backend_type,
+            "readiness_state": app.state.agent.status,
+            "http_ready": app.state.agent.http_ready,
+            "inference_ready": app.state.agent.inference_ready,
+            "retry_after_seconds": app.state.agent.retry_after_seconds,
+            "last_transition_at": app.state.agent.last_transition_at,
+            "last_probe_error": app.state.agent.last_probe_error,
+            "last_probe_latency_ms": app.state.agent.last_probe_latency_ms,
             "gpu": {
                 "gpus": gpus,
                 "cuda_version": cuda_version,

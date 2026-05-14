@@ -15,6 +15,17 @@ def test_state_machine_has_ready_state():
     assert state.status == "stopped"
 
 
+def test_agent_state_exposes_readiness_flags():
+    state = AgentState()
+    assert state.status == "stopped"
+    assert state.http_ready is False
+    assert state.inference_ready is False
+    assert state.retry_after_seconds is None
+    assert state.last_transition_at == ""
+    assert state.last_probe_error == ""
+    assert state.last_probe_latency_ms is None
+
+
 def test_agent_exposes_state():
     async def run():
         app = create_agent_app(enable_monitor=False)
@@ -22,7 +33,12 @@ def test_agent_exposes_state():
         async def fake_health(_):
             return True
 
+        async def fake_probe(_, model_name):
+            return {"ok": True, "latency_ms": 12.5}
+
         app.state.backend_driver.health = fake_health
+        app.state.backend_driver.probe = fake_probe
+        app.state.warming_up_retry_after = 5
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             resp = await client.get("/state")
@@ -30,8 +46,36 @@ def test_agent_exposes_state():
             payload = resp.json()
             assert payload["status"] == "ready"
             assert payload["backend_ready"] is True
+            assert payload["http_ready"] is True
+            assert payload["inference_ready"] is True
             assert "checked_at" in payload
             assert "failure_count" in payload
+
+    asyncio.run(run())
+
+
+def test_agent_warming_up_when_http_ready_but_probe_fails():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+
+        async def fake_health(_):
+            return True
+
+        async def fake_probe(*_args, **_kwargs):
+            raise RuntimeError("stream not ready")
+
+        app.state.backend_driver.health = fake_health
+        app.state.backend_driver.probe = fake_probe
+        app.state.warming_up_retry_after = 5
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/state")
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["status"] == "warming_up"
+            assert payload["http_ready"] is True
+            assert payload["inference_ready"] is False
+            assert payload["retry_after_seconds"] == 5
 
     asyncio.run(run())
 
@@ -296,6 +340,37 @@ def test_agent_recovers_after_startup_grace_expires():
             assert payload["status"] == "starting"
             assert payload["last_error"] == "recovery restart issued"
             assert restart_calls == ["stop", "start"]
+
+    asyncio.run(run())
+
+
+def test_agent_diagnostics_status_includes_readiness_fields():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+
+        async def fake_health(_):
+            return True
+
+        async def fake_probe(_, model_name):
+            return {"ok": True, "latency_ms": 12.5}
+
+        app.state.backend_driver.health = fake_health
+        app.state.backend_driver.probe = fake_probe
+        app.state.warming_up_retry_after = 5
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            # Trigger a state refresh first
+            await client.get("/state")
+            resp = await client.get("/admin/diagnostics/status")
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert "http_ready" in payload
+            assert "inference_ready" in payload
+            assert "retry_after_seconds" in payload
+            assert "readiness_state" in payload
+            assert "last_probe_error" in payload
+            assert "last_probe_latency_ms" in payload
 
     asyncio.run(run())
 
