@@ -149,4 +149,17 @@ describe('Layout locale switch', () => {
     expect(screen.getAllByText('Overview').length).toBeGreaterThan(0);
     expect(screen.getByRole('button', {name: 'Switch to Chinese'})).toBeInTheDocument();
   });
+
+  it('does not render legacy connection config panel', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText('连接配置')).not.toBeInTheDocument();
+    expect(screen.queryByText('API 地址')).not.toBeInTheDocument();
+    expect(screen.queryByText('API 密钥')).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('http://127.0.0.1:5173')).not.toBeInTheDocument();
+  });
 });

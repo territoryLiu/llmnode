@@ -248,9 +248,18 @@ interface AppState {
   restartBackend: () => Promise<void>;
 }
 
-const defaultApiBase =
-  localStorage.getItem('vllm-console-api-base') ||
-  (typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:5173');
+function inferDefaultApiBase(): string {
+  if (typeof window === 'undefined') {
+    return 'http://127.0.0.1:4000';
+  }
+  const {protocol, hostname, port} = window.location;
+  if (port === '4000') {
+    return window.location.origin;
+  }
+  return `${protocol}//${hostname}:4000`;
+}
+
+const defaultApiBase = localStorage.getItem('vllm-console-api-base') || inferDefaultApiBase();
 const defaultApiKey = localStorage.getItem('vllm-console-api-key') || 'dev-key';
 
 const AppContext = createContext<AppState | undefined>(undefined);
@@ -260,7 +269,7 @@ function resolveApiBase(apiBase: string): string {
   if (normalized) {
     return normalized.endsWith('/') ? normalized : `${normalized}/`;
   }
-  return typeof window !== 'undefined' ? `${window.location.origin}/` : 'http://127.0.0.1:5173/';
+  return `${inferDefaultApiBase()}/`;
 }
 
 function buildUrl(apiBase: string, path: string): string {

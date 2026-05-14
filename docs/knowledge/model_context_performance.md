@@ -29,6 +29,13 @@
 - 是否单条通过 256K:
 - 备注:
 
+#### KV cache 与并发估算（可选）
+
+- Available KV cache memory:
+- GPU KV cache size:
+- `256K tokens/request` 理论最大并发:
+- 备注:
+
 #### 单并发阶梯测试
 
 | 阶梯 | 实测 prompt tokens | completion tokens | 总时延 ms | 估算 completion tok/s | 结论 |
@@ -49,7 +56,7 @@
 
 - GPU: `A800 80GB`
 - 后端: `vLLM`
-- 测试日期: `2026-05-13`
+- 测试日期: `2026-05-13 ~ 2026-05-14`
 - 测试方式: 单并发，请求直接打到 `http://127.0.0.1:15673/v1/chat/completions`
 - 备注:
   - 本文时延包含完整请求往返，不仅是 decode 阶段
@@ -92,6 +99,74 @@
 
 - 27B 在这台 `A800 80GB` 上并不是“只要把 `gpu_memory_utilization` 提高到 0.85 就能稳定单条 256K”。
 - 对这个模型，如果目标是稳定单条 256K，当前记录不建议再把它作为正式默认部署。
+
+### `models/Qwen/Qwen3.6-27B-FP8`
+
+#### 部署参数
+
+- served model: `qwen36-27b-fp8`
+- backend: `vLLM`
+- 关键参数:
+  - `max_model_len=262144`
+  - `gpu_memory_utilization=0.65`
+  - `max_num_seqs=4`
+  - `max_tokens=64`
+  - `shm_size=16g`
+  - 单并发
+
+#### 可用性结论
+
+- 最大已验证上下文: `262000 prompt tokens`
+- 是否单条通过 256K: 直连 `vLLM` 是；经 `gateway` 否
+- 备注:
+  - 当前在线实例 `qwen36-27b-fp8` 直连 `vLLM` 可完成单条 `256K`
+  - 本轮直连 `4K / 32K / 64K / 128K / 256K` 五档都返回 `200 OK`
+  - 经 `gateway` 的 `4K / 32K / 64K / 128K` 返回 `200 OK`
+  - 经 `gateway` 的 `256K` 在约 `120067 ms` 返回 `500`
+  - 这组返回里 `content` 基本为空，`completion_tokens=64` 主要反映推理输出长度
+
+#### KV cache 与并发估算
+
+- Available KV cache memory: `20.5 GiB`
+- GPU KV cache size: `83,888 tokens`
+- `256K tokens/request` 理论最大并发: `1.27x`
+- 备注:
+  - 以上数字来自当前在线实例启动日志，不是手工估算
+  - 工程上更合理的规划是：
+    - `256K` 按 `1` 个请求规划
+    - `128K` 约 `2` 个
+    - `64K` 理论 `4+`，但会被当前 `max_num_seqs=4` 卡到 `4` 个
+  - 实际可用并发还会被输出长度、工具调用、碎片和 warmup 抖动进一步吃掉一部分
+
+#### 单并发阶梯测试
+
+| 阶梯 | 实测 prompt tokens | completion tokens | 总时延 ms | 估算 completion tok/s | 结论 |
+|------|--------------------|-------------------|-----------|------------------------|------|
+| 4K   | 4096   | 64 | 2815.66   | 22.73 | 通过 |
+| 32K  | 32768  | 64 | 14540.58  | 4.40  | 通过 |
+| 64K  | 65536  | 64 | 31212.95  | 2.05  | 通过 |
+| 128K | 131072 | 64 | 74564.70  | 0.86  | 通过 |
+| 256K | 262000 | 64 | 199282.12 | 0.32  | 通过 |
+
+#### 单并发阶梯测试（经 `gateway`）
+
+| 阶梯 | 实测 prompt tokens | completion tokens | 总时延 ms | 估算 completion tok/s | 结论 |
+|------|--------------------|-------------------|-----------|------------------------|------|
+| 4K   | 4096   | 64 | 3023.31   | 21.17 | 通过 |
+| 32K  | 32768  | 64 | 15020.06  | 4.26  | 通过 |
+| 64K  | 65536  | 64 | 31972.00  | 2.00  | 通过 |
+| 128K | 131072 | 64 | 75674.43  | 0.85  | 通过 |
+| 256K | 262000 | -  | 120067.00 | -     | 失败，`gateway` 上游读超时后返回 `500` |
+
+#### 观察
+
+- 相比历史 `models/Qwen/Qwen3.6-27B` 记录，这个 `FP8` 版本在当前 `0.65` 配置下已经能真正完成单条 `256K`。
+- 但它的长上下文性能明显不理想：`4K -> 256K` 的单并发 `completion tok/s` 从约 `22.73` 下降到约 `0.32`，`256K` 完整请求时延接近 `199s`。
+- 从纯性能结果看，这个 `27B-FP8` 虽然参数规模更小，但在这台机器上的长上下文体验明显慢于当前正式默认的 `Qwen3.6-35B-A3B-FP8`。
+- 本轮日志里可见 `GPU KV cache usage` 高点约 `15.7%`，过程中没有出现 OOM 或容器重启。
+- `gateway` 到 `128K` 为止只增加了约 `0.21s / 0.48s / 0.76s / 1.11s` 的额外时延，代理层本身不是短到中长上下文的主要瓶颈。
+- `gateway 256K` 的失败不是模型本身失败，而是控制面当前 `llmnode/proxy/backend.py` 中 `post_json()` 的 `httpx.AsyncClient(timeout=120)` 先触发了 `ReadTimeout`，随后对外表现为 `500 Internal Server Error`。
+- 结论上，这个配置更像是“模型本体能扛住 256K”的容量证明，不适合作为经网关对外提供 `256K` 长上下文服务的当前正式体验基线。
 
 ### `models/Qwen/Qwen3.6-35B-A3B-FP8`
 
@@ -257,31 +332,17 @@
   - 再单独复测 `0.65 / 1`
   - 必要时再评估是否关闭或进一步缩减 CUDA graph 相关启动负担
 
+## 补充说明
 
+### `models/Qwen/Qwen3-VL-8B-Instruct-FP8` 的 20G 显存预算判断
 
-
-
-
-
-
-
- - Qwen3.6-35B-A3B-FP8 在文档里能跑 256K，对应配置是 models/Qwen/Qwen3.6-35B-A3B-FP8/config.json
-  - 这个模型的 text_config 里有大量 linear_attention，而且 num_key_value_heads: 2
-  - 你现在上的 Qwen3-VL-8B-Instruct-FP8 对应 models/Qwen/Qwen3-VL-8B-Instruct-FP8/config.json
-  - 它是标准注意力路径，num_key_value_heads: 8，num_hidden_layers: 36，head_dim: 128，max_position_embeddings: 262144
-
-  这会直接导致 KV cache 需求完全不是一个量级。
-  所以会出现看起来反常的结果：
-
-  - 35B A3B：模型更大，但因为 attention 结构特殊，256K 能成立
-  - 8B VL：模型更小，但 256K 的 KV cache 更贵，所以你给的 20G 预算不够
-
-  容器日志已经把这个点说死了：
-
-  - 当前 262144 需要 36.0 GiB KV cache
-  - 现在实际可用 KV cache 只有 6.95 GiB
-  所以这不是文档和程序冲突，而是两个模型根本不是同一种长上下文成本曲线。
-
-  - 保留 20G 显存预算
-  - 把 max_model_len 和 ctx_size 从 262144 改到 49152
-
+- `Qwen3.6-35B-A3B-FP8` 在本文能跑 `256K`，对应配置可参考 `models/Qwen/Qwen3.6-35B-A3B-FP8/config.json`
+- 这个模型的 `text_config` 里有大量 `linear_attention`，而且 `num_key_value_heads=2`
+- `Qwen3-VL-8B-Instruct-FP8` 对应 `models/Qwen/Qwen3-VL-8B-Instruct-FP8/config.json`
+- 它是标准注意力路径，`num_key_value_heads=8`、`num_hidden_layers=36`、`head_dim=128`、`max_position_embeddings=262144`
+- 这会直接导致两个模型的 KV cache 成本完全不是一个量级，因此会出现“35B A3B 更大却能过 256K，8B VL 更小却扛不住 256K”的反直觉结果
+- 容器日志已经给出关键信息：
+  - 当前 `262144` 需要约 `36.0 GiB` KV cache
+  - 现在实际可用 KV cache 只有约 `6.95 GiB`
+- 因此这不是文档和程序冲突，而是两个模型本身的长上下文成本曲线完全不同
+- 如果预算仍要压在 `20G` 显存附近，更合理的做法是把 `max_model_len` / `ctx_size` 从 `262144` 收到 `49152`

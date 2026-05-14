@@ -26,10 +26,6 @@ export function Layout({children}: {children: React.ReactNode}) {
     sseConnected,
     globalError,
     lastUpdated,
-    apiBase,
-    setApiBase,
-    apiKey,
-    setApiKey,
   } = useAppContext();
 
   const navItems = [
@@ -71,34 +67,6 @@ export function Layout({children}: {children: React.ReactNode}) {
             );
           })}
         </nav>
-
-        {/* Connection Status */}
-        <div className="mt-auto">
-          <div className="glass-panel-dark p-5 rounded-2xl relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-20 h-20 bg-orange-400 blur-2xl opacity-20"></div>
-            <div className="text-[10px] font-bold text-white/60 mb-2 uppercase tracking-widest">{t('layout.connection')}</div>
-            <div className="space-y-3 relative z-10">
-              <div className="space-y-1">
-                <label className="text-[10px] uppercase font-bold text-white/50">{t('layout.apiBase')}</label>
-                <input
-                  type="text"
-                  value={apiBase}
-                  onChange={(e) => setApiBase(e.target.value)}
-                  className="w-full bg-white/10 border border-white/20 rounded-md px-2 py-1.5 text-xs outline-none focus:border-white/40 transition-all font-mono text-white"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] uppercase font-bold text-white/50">{t('layout.apiKey')}</label>
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  className="w-full bg-white/10 border border-white/20 rounded-md px-2 py-1.5 text-xs outline-none focus:border-white/40 transition-all font-mono text-white"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
       </aside>
 
       {/* Main Content Area */}

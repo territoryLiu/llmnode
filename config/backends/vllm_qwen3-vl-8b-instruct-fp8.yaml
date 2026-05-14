@@ -16,8 +16,3 @@ backend:
   enable_auto_tool_choice: true
   reasoning_parser: qwen3
   tool_call_parser: qwen3_coder
-  n_gpu_layers: -1
-  ctx_size: 262144
-  n_parallel: 4
-  mem_fraction_static: 0.85
-  max_running_requests: 4

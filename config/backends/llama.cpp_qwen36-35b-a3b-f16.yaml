@@ -8,16 +8,7 @@ backend:
   display_name: Qwen3.6 35B A3B F16 GGUF
   enabled: true
   host_port: 15673
-  gpu_memory_utilization: 0.65
-  tensor_parallel_size: 1
-  max_model_len: 131072
-  max_num_seqs: 2
   shm_size: 16g
-  enable_auto_tool_choice: false
-  reasoning_parser: qwen3
-  tool_call_parser: qwen3_coder
   n_gpu_layers: -1
   ctx_size: 131072
   n_parallel: 1
-  mem_fraction_static: 0.85
-  max_running_requests: 2
