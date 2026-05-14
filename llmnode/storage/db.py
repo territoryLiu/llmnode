@@ -79,6 +79,17 @@ def init_db(path: Path) -> sqlite3.Connection:
         )
         """
     )
+    _ensure_columns(
+        conn,
+        "agent_events",
+        {
+            "event_type": "TEXT",
+            "readiness_state": "TEXT",
+            "http_ready": "INTEGER",
+            "inference_ready": "INTEGER",
+            "metadata_json": "TEXT",
+        },
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS model_routes (
@@ -188,13 +199,33 @@ def write_request_log(
     conn.commit()
 
 
-def write_agent_event(conn: sqlite3.Connection, status: str, reason: str | None = None) -> None:
+def write_agent_event(
+    conn: sqlite3.Connection,
+    status: str,
+    reason: str | None = None,
+    *,
+    event_type: str | None = None,
+    readiness_state: str | None = None,
+    http_ready: bool | None = None,
+    inference_ready: bool | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
     conn.execute(
         """
-        INSERT INTO agent_events(status, reason)
-        VALUES (?, ?)
+        INSERT INTO agent_events(
+            status, reason, event_type, readiness_state, http_ready, inference_ready, metadata_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (status, reason),
+        (
+            status,
+            reason,
+            event_type or status,
+            readiness_state or status,
+            None if http_ready is None else int(http_ready),
+            None if inference_ready is None else int(inference_ready),
+            json.dumps(metadata or {}, ensure_ascii=False),
+        ),
     )
     conn.commit()
 
@@ -323,7 +354,7 @@ def list_request_logs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[st
 def list_agent_events(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
     cursor = conn.execute(
         """
-        SELECT id, status, reason, created_at
+        SELECT id, status, reason, event_type, readiness_state, http_ready, inference_ready, metadata_json, created_at
         FROM agent_events
         ORDER BY id DESC
         LIMIT ?
@@ -336,7 +367,12 @@ def list_agent_events(conn: sqlite3.Connection, limit: int = 50) -> list[dict[st
             "id": row[0],
             "status": row[1],
             "reason": row[2],
-            "created_at": row[3],
+            "event_type": row[3],
+            "readiness_state": row[4],
+            "http_ready": bool(row[5]) if row[5] is not None else None,
+            "inference_ready": bool(row[6]) if row[6] is not None else None,
+            "metadata": json.loads(row[7]) if row[7] else {},
+            "created_at": row[8],
         }
         for row in rows
     ]
