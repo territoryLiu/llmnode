@@ -35,6 +35,7 @@ from ..runtime import QueueFullError, QueueTimeoutError, RequestGate
 from ..runtime import ApiKeyConcurrencyError, ApiKeyGate, ApiKeyRateLimitError
 from ..security import generate_api_key, hash_api_key
 from ..storage.db import (
+    aggregate_usage_for_api_key,
     create_api_key,
     delete_api_key,
     get_api_key_by_id,
@@ -44,7 +45,9 @@ from ..storage.db import (
     list_model_routes,
     list_request_logs,
     load_schedule_config,
+    mask_api_key,
     seed_model_routes,
+    stable_masked_key,
     update_api_key,
     upsert_model_route,
     upsert_schedule_config,
@@ -140,10 +143,11 @@ def _record_request_metric(
         )
 
 
-def _sanitize_api_key_row(row: dict[str, Any]) -> dict[str, Any]:
+def _sanitize_api_key_row(row: dict[str, Any], *, masked_key: str | None = None) -> dict[str, Any]:
     return {
         "id": row["id"],
         "name": row["name"],
+        "masked_key": masked_key or stable_masked_key(row["id"]),
         "status": row["status"],
         "scopes": row["scopes"],
         "rpm_limit": row["rpm_limit"],
@@ -511,7 +515,14 @@ def create_app() -> FastAPI:
     async def admin_keys(request: Request):
         _resolve_auth(request, "admin")
         request_id = _request_id(request)
-        keys = [_sanitize_api_key_row(row) for row in list_api_keys(request.app.state.db)]
+        raw_keys = list_api_keys(request.app.state.db)
+        keys = [
+            {
+                **_sanitize_api_key_row(row, masked_key=stable_masked_key(row["id"])),
+                "usage_summary": aggregate_usage_for_api_key(request.app.state.db, api_key_id=row["id"])["summary"],
+            }
+            for row in raw_keys
+        ]
         response = JSONResponse({"keys": keys})
         response.headers["x-request-id"] = request_id
         return response
@@ -534,7 +545,22 @@ def create_app() -> FastAPI:
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="api key already exists") from exc
         request_id = _request_id(request)
-        response = JSONResponse({"key": _sanitize_api_key_row(row), "secret": secret})
+        response = JSONResponse({"key": _sanitize_api_key_row(row, masked_key=mask_api_key(secret)), "secret": secret})
+        response.headers["x-request-id"] = request_id
+        return response
+
+    @app.get("/admin/overview/readiness")
+    async def admin_readiness_overview(request: Request):
+        _resolve_auth(request, "admin")
+        request_id = _request_id(request)
+        state = await request.app.state.fetch_agent_state()
+        response = JSONResponse({
+            "readiness": state,
+            "base_urls": {
+                "local": "http://127.0.0.1:4000",
+                "lan": "http://10.18.90.100:4000",
+            },
+        })
         response.headers["x-request-id"] = request_id
         return response
 

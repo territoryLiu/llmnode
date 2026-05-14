@@ -42,6 +42,16 @@ def _decode_api_key_row(row: Any) -> dict[str, Any]:
     }
 
 
+def mask_api_key(secret: str) -> str:
+    if len(secret) <= 10:
+        return secret
+    return f"{secret[:6]}***{secret[-4:]}"
+
+
+def stable_masked_key(key_id: int) -> str:
+    return f"ln_saved_{key_id}"
+
+
 def init_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
@@ -640,3 +650,22 @@ def upsert_schedule_config(conn: sqlite3.Connection, schedule: dict[str, Any]) -
         ),
     )
     conn.commit()
+
+
+def aggregate_usage_for_api_key(conn: sqlite3.Connection, api_key_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS total_requests,
+               COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM request_metrics rm
+        JOIN request_logs rl ON rm.request_id = rl.request_id
+        WHERE rl.api_key_id = ?
+        """,
+        (api_key_id,),
+    ).fetchone()
+    return {
+        "summary": {
+            "total_requests": row[0] if row else 0,
+            "total_tokens": row[1] if row else 0,
+        },
+    }

@@ -7,6 +7,8 @@ from llmnode.storage.db import (
     get_api_key_by_id,
     init_db,
     list_api_keys,
+    mask_api_key,
+    stable_masked_key,
     update_api_key,
 )
 
@@ -92,3 +94,23 @@ def test_scopes_json_round_trip(tmp_path: Path):
     assert updated is not None
     assert updated["scopes"] == ["inference"]
     assert updated["note"] is None
+
+
+def test_mask_api_key_masks_long_secrets():
+    secret = "ln_live_abc123def456ghi789jkl012mno345"
+    masked = mask_api_key(secret)
+    assert masked.startswith("ln_liv")
+    assert "***" in masked
+    assert masked.endswith("o345")
+    assert masked != secret
+
+
+def test_mask_api_key_returns_short_secrets_unchanged():
+    short = "ln_1234"
+    assert mask_api_key(short) == short
+
+
+def test_stable_masked_key_is_deterministic():
+    assert stable_masked_key(1) == "ln_saved_1"
+    assert stable_masked_key(42) == "ln_saved_42"
+    assert stable_masked_key(1) == stable_masked_key(1)
