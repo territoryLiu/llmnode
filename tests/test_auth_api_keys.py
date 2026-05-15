@@ -19,25 +19,25 @@ class FakeClient(VLLMClient):
         return {"path": path, "model": payload["model"]}
 
 
-def test_bootstrap_key_can_access_admin_status():
+def test_missing_bootstrap_key_cannot_access_admin_status_without_db_key():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = FakeClient()
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             resp = await client.get("/admin/status", headers={"Authorization": "Bearer dev-key"})
-            assert resp.status_code == 200
+            assert resp.status_code == 401
 
     asyncio.run(run())
 
 
-def test_bootstrap_key_can_access_models():
+def test_missing_bootstrap_key_cannot_access_models_without_db_key():
     async def run():
         app = create_app()
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             resp = await client.get("/v1/models", headers={"Authorization": "Bearer dev-key"})
-            assert resp.status_code == 200
+            assert resp.status_code == 401
 
     asyncio.run(run())
 
@@ -48,12 +48,12 @@ def test_db_backed_inference_key_can_access_models():
         create_api_key(
             app.state.db,
             name="inference-key",
-            key_hash=hash_api_key("ln_test_123"),
+            key_hash=hash_api_key("sk-test-123"),
             scopes=["inference"],
         )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            resp = await client.get("/v1/models", headers={"Authorization": "Bearer ln_test_123"})
+            resp = await client.get("/v1/models", headers={"Authorization": "Bearer sk-test-123"})
             assert resp.status_code == 200
 
     asyncio.run(run())
@@ -65,12 +65,12 @@ def test_db_inference_key_gets_forbidden_on_admin_status():
         create_api_key(
             app.state.db,
             name="inference-key",
-            key_hash=hash_api_key("ln_test_234"),
+            key_hash=hash_api_key("sk-test-234"),
             scopes=["inference"],
         )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            resp = await client.get("/admin/status", headers={"Authorization": "Bearer ln_test_234"})
+            resp = await client.get("/admin/status", headers={"Authorization": "Bearer sk-test-234"})
             assert resp.status_code == 403
 
     asyncio.run(run())
@@ -82,13 +82,13 @@ def test_disabled_db_key_gets_rejected():
         create_api_key(
             app.state.db,
             name="disabled-key",
-            key_hash=hash_api_key("ln_test_345"),
+            key_hash=hash_api_key("sk-test-345"),
             scopes=["inference"],
             status="disabled",
         )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            resp = await client.get("/v1/models", headers={"Authorization": "Bearer ln_test_345"})
+            resp = await client.get("/v1/models", headers={"Authorization": "Bearer sk-test-345"})
             assert resp.status_code == 401
 
     asyncio.run(run())

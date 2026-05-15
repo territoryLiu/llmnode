@@ -97,20 +97,22 @@ def test_scopes_json_round_trip(tmp_path: Path):
 
 
 def test_mask_api_key_masks_long_secrets():
-    secret = "ln_live_abc123def456ghi789jkl012mno345"
+    secret = "sk-eac3308ba6ef32875698a0a75d06bb71e7ded2a843ff03e16b98136cb0dd996c"
     masked = mask_api_key(secret)
-    assert masked.startswith("ln_liv")
+    assert masked.startswith("sk-")
     assert "***" in masked
-    assert masked.endswith("o345")
+    assert masked.endswith("996c")
     assert masked != secret
 
 
 def test_mask_api_key_returns_short_secrets_unchanged():
-    short = "ln_1234"
+    short = "sk-1234"
     assert mask_api_key(short) == short
 
 
-def test_stable_masked_key_is_deterministic():
-    assert stable_masked_key(1) == "ln_saved_1"
-    assert stable_masked_key(42) == "ln_saved_42"
+def test_stable_masked_key_uses_sk_prefix_and_id_suffix():
+    assert stable_masked_key(1).startswith("sk-")
+    assert stable_masked_key(42).startswith("sk-")
+    assert stable_masked_key(1).endswith("0001")
+    assert stable_masked_key(42).endswith("0042")
     assert stable_masked_key(1) == stable_masked_key(1)

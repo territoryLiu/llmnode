@@ -1,5 +1,5 @@
 import React, {useMemo, useState} from 'react';
-import {CheckCircle2, Copy, Eye, EyeOff, Globe, Key, Plus, Trash2, X} from 'lucide-react';
+import {Copy, Globe, Key, Plus, Trash2} from 'lucide-react';
 import {useAppContext, type ApiKeyRow} from '../store';
 
 function formatDate(value: string | null) {
@@ -34,9 +34,7 @@ function ToggleButton({
 }
 
 export function ApiKeysView() {
-  const {apiKeys, createApiKey, updateApiKey, deleteApiKey, loading, locale, t, readinessOverview} = useAppContext();
-  const [showNewSecret, setShowNewSecret] = useState<string | null>(null);
-  const [secretVisible, setSecretVisible] = useState(true);
+  const {apiKeys, createApiKey, updateApiKey, deleteApiKey, loading, t, readinessOverview} = useAppContext();
   const [copyDone, setCopyDone] = useState(false);
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -63,16 +61,13 @@ export function ApiKeysView() {
     }
     setCreating(true);
     try {
-      const response = await createApiKey({
+      await createApiKey({
         name: name.trim(),
         scopes,
         rpm_limit: rpmLimit.trim() ? Number(rpmLimit) : null,
         concurrency_limit: concurrencyLimit.trim() ? Number(concurrencyLimit) : null,
         note: note.trim() || null,
       });
-      setShowNewSecret(response.secret);
-      setSecretVisible(true);
-      setCopyDone(false);
       setName('Web Console');
       setScopeAdmin(true);
       setScopeInference(true);
@@ -82,15 +77,6 @@ export function ApiKeysView() {
     } finally {
       setCreating(false);
     }
-  }
-
-  async function handleCopy() {
-    if (!showNewSecret) {
-      return;
-    }
-    await navigator.clipboard.writeText(showNewSecret);
-    setCopyDone(true);
-    setTimeout(() => setCopyDone(false), 1200);
   }
 
   async function copyText(text: string) {
@@ -220,48 +206,6 @@ export function ApiKeysView() {
         </div>
       </div>
 
-      {showNewSecret && (
-        <div className="glass-panel-dark overflow-hidden relative border-emerald-500/30">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/20 rounded-full blur-3xl pointer-events-none" />
-          <div className="p-6 relative z-10">
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex items-center gap-2 text-emerald-400">
-                <CheckCircle2 className="w-5 h-5" />
-                <h3 className="font-semibold text-lg">{t('keys.generated')}</h3>
-              </div>
-              <button onClick={() => setShowNewSecret(null)} className="text-slate-400 hover:text-white transition-colors">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <p className="text-sm text-slate-300 mb-4">
-              {t('keys.saveSecretWarning')}
-            </p>
-
-            <div className="flex items-center gap-3">
-              <code className="flex-1 bg-slate-950/50 p-3 rounded-lg text-emerald-300 font-mono text-sm border border-emerald-500/20 selection:bg-emerald-500/30 break-all">
-                {secretVisible ? showNewSecret : '••••••••••••••••••••'}
-              </code>
-              <button
-                onClick={() => setSecretVisible((v) => !v)}
-                className="p-3 bg-blue-500/20 hover:bg-blue-500/40 text-blue-300 rounded-lg border border-blue-500/50 transition-all"
-                title={secretVisible ? t('keys.hide') : t('keys.show')}
-              >
-                {secretVisible ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-              </button>
-              <button
-                onClick={() => void handleCopy()}
-                className="p-3 bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 rounded-lg border border-emerald-500/50 transition-all"
-                title={t('keys.copy')}
-              >
-                <Copy className="w-5 h-5" />
-              </button>
-            </div>
-            {copyDone && <div className="text-xs text-emerald-300 mt-3">{t('keys.copied')}</div>}
-          </div>
-        </div>
-      )}
-
       <div className="glass-panel flex-1 flex flex-col overflow-hidden">
         <div className="p-4 border-b border-white/40 flex items-center justify-between gap-4 bg-white/20">
           <div className="font-semibold text-slate-800">{t('keys.keyList')}</div>
@@ -299,11 +243,30 @@ export function ApiKeysView() {
                       {key.note && <div className="text-xs text-slate-500 mt-1">{key.note}</div>}
                     </td>
                     <td className="px-5 py-4">
-                      <div className="flex items-center gap-1">
-                        <div className="font-mono text-xs text-slate-600">{key.masked_key}</div>
-                        <button onClick={() => void copyText(key.masked_key)} className="p-0.5 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyMasked')}>
-                          <Copy className="w-3.5 h-3.5" />
-                        </button>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-1">
+                          <div className="font-mono text-xs text-slate-600">{key.masked_key}</div>
+                          <button onClick={() => void copyText(key.masked_key)} className="p-0.5 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyMasked')}>
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        {key.plain_secret && (
+                          <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 px-2.5 py-2">
+                            <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-emerald-700/80">
+                              {t('keys.liveKey')}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <div className="font-mono text-xs text-emerald-800 break-all">{key.plain_secret}</div>
+                              <button
+                                onClick={() => void copyText(key.plain_secret!)}
+                                className="shrink-0 p-0.5 text-emerald-600 hover:text-emerald-800 transition-colors"
+                                title={t('keys.copySecret')}
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </td>
                     <td className="px-5 py-4">

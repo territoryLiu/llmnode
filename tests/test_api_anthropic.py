@@ -3,7 +3,10 @@ import asyncio
 import httpx
 
 from llmnode.api.app import create_app
+from llmnode.config import load_settings
 from llmnode.proxy.vllm_client import VLLMClient
+from llmnode.security import hash_api_key
+from llmnode.storage.db import create_api_key
 
 
 class FakeClient(VLLMClient):
@@ -21,23 +24,37 @@ class FakeClient(VLLMClient):
         }
 
 
+TEST_MODEL = load_settings().vllm.model_name
+
+
+def seed_admin_key(app, secret: str = "sk-admin-test") -> str:
+    create_api_key(
+        app.state.db,
+        name=f"admin-{secret}",
+        key_hash=hash_api_key(secret),
+        scopes=["admin"],
+    )
+    return secret
+
+
 def test_anthropic_messages_endpoint_exists():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = FakeClient()
+        admin_secret = seed_admin_key(app)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             resp = await client.post(
                 "/v1/messages",
-                headers={"Authorization": "Bearer dev-key"},
+                headers={"Authorization": f"Bearer {admin_secret}"},
                 json={
-                    "model": "qwen36-35b-a3b-fp8",
+                    "model": TEST_MODEL,
                     "max_tokens": 16,
                     "messages": [{"role": "user", "content": "hello"}],
                 },
             )
             assert resp.status_code == 200
-            assert resp.json()["content"][0]["text"] == "qwen36-35b-a3b-fp8"
+            assert resp.json()["content"][0]["text"] == TEST_MODEL
 
     asyncio.run(run())
 
@@ -47,6 +64,7 @@ def test_anthropic_messages_returns_503_when_warming_up():
         app = create_app()
         app.state.ctx.backend_client = FakeClient()
         app.state.require_agent_ready = True
+        admin_secret = seed_admin_key(app)
 
         async def fake_agent_state():
             return {
@@ -61,9 +79,9 @@ def test_anthropic_messages_returns_503_when_warming_up():
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             resp = await client.post(
                 "/v1/messages",
-                headers={"Authorization": "Bearer dev-key"},
+                headers={"Authorization": f"Bearer {admin_secret}"},
                 json={
-                    "model": "qwen36-35b-a3b-fp8",
+                    "model": TEST_MODEL,
                     "max_tokens": 16,
                     "stream": True,
                     "messages": [{"role": "user", "content": "hello"}],

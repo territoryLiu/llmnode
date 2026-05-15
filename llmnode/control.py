@@ -28,6 +28,8 @@ from .diagnostics import (
     inspect_container,
     parse_model_config,
 )
+from .security import generate_api_key, hash_api_key
+from .storage.db import create_api_key, init_db
 
 
 def _load_dotenv() -> None:
@@ -1417,9 +1419,38 @@ def _restart_stack(config: RuntimeConfig) -> int:
     return _start_stack(config)
 
 
+def _create_api_key_action(args: argparse.Namespace) -> int:
+    db_path = PROJECT_ROOT / "runtime" / "data" / "gateway.db"
+    conn = init_db(db_path)
+    secret = generate_api_key()
+    try:
+        row = create_api_key(
+            conn,
+            name=args.name,
+            key_hash=hash_api_key(secret),
+            scopes=list(args.scope),
+            rpm_limit=args.rpm_limit,
+            concurrency_limit=args.concurrency_limit,
+            note=args.note,
+            status="disabled" if args.disabled else "active",
+        )
+    except Exception as exc:
+        _print_error(str(exc))
+        return 1
+
+    _print_header("api key created")
+    _print_kv("id", str(row["id"]))
+    _print_kv("name", row["name"])
+    _print_kv("status", row["status"])
+    _print_kv("scopes", ",".join(row["scopes"]))
+    _print_kv("db", str(db_path))
+    _print_info("secret", secret)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m llmnode.control")
-    parser.add_argument("action", choices=["start", "stop", "restart", "status", "doctor", "env", "logs"], nargs="?", default="status")
+    parser.add_argument("action", choices=["start", "stop", "restart", "status", "doctor", "env", "logs", "create-api-key"], nargs="?", default="status")
     parser.add_argument("--service", choices=["agent", "gateway", "vllm"])
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--foreground", action="store_true")
@@ -1429,6 +1460,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grep", type=str, default="", help="Filter log lines by pattern (supports regex)")
     parser.add_argument("--ignore-case", "-i", action="store_true", help="Ignore case when using --grep")
     parser.add_argument("--no-highlight", action="store_true", help="Disable error highlighting")
+    parser.add_argument("--name", type=str, default="")
+    parser.add_argument("--scope", action="append", choices=["admin", "inference"], default=[])
+    parser.add_argument("--rpm-limit", type=int, default=None)
+    parser.add_argument("--concurrency-limit", type=int, default=None)
+    parser.add_argument("--note", type=str, default=None)
+    parser.add_argument("--disabled", action="store_true")
     return parser
 
 
@@ -1467,6 +1504,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             ignore_case=args.ignore_case,
             highlight=not args.no_highlight,
         )
+    if args.action == "create-api-key":
+        if not args.name.strip():
+            parser.error("--name is required for 'create-api-key'")
+        if not args.scope:
+            parser.error("at least one --scope is required for 'create-api-key'")
+        return _create_api_key_action(args)
     return _status_stack(config)
 
 

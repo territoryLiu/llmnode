@@ -24,7 +24,6 @@ class AuthContext:
 
 @dataclass
 class GatewayContext:
-    api_key: str
     backend_client: BackendClient
     models: Dict[str, ModelRoute]
 
@@ -44,20 +43,9 @@ def resolve_auth_context(
     auth_header: str | None,
     x_api_key: str | None,
     *,
-    bootstrap_key: str,
     db: sqlite3.Connection,
 ) -> AuthContext:
     token = extract_api_token(auth_header, x_api_key)
-    if token == bootstrap_key:
-        return AuthContext(
-            source="bootstrap",
-            api_key_id=None,
-            name="bootstrap",
-            scopes=["admin", "inference"],
-            rpm_limit=None,
-            concurrency_limit=None,
-        )
-
     record = get_api_key_by_hash(db, hash_api_key(token))
     if record is None or record["status"] != "active":
         raise HTTPException(status_code=401, detail="invalid api key")

@@ -10,11 +10,18 @@ from llmnode.storage.db import create_api_key
 def test_admin_can_create_and_list_api_keys():
     async def run():
         app = create_app()
+        admin_secret = "sk-admin-seed"
+        create_api_key(
+            app.state.db,
+            name="seed-admin",
+            key_hash=hash_api_key(admin_secret),
+            scopes=["admin"],
+        )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             created = await client.post(
                 "/admin/keys",
-                headers={"Authorization": "Bearer dev-key"},
+                headers={"Authorization": f"Bearer {admin_secret}"},
                 json={
                     "name": "console-admin",
                     "scopes": ["admin"],
@@ -24,14 +31,14 @@ def test_admin_can_create_and_list_api_keys():
             )
             assert created.status_code == 200
             body = created.json()
-            assert body["secret"].startswith("ln_live_")
+            assert body["secret"].startswith("sk-")
             assert body["key"]["name"] == "console-admin"
             # Created key returns masked_key
             assert "masked_key" in body["key"]
-            assert body["key"]["masked_key"].startswith("ln_")
+            assert body["key"]["masked_key"].startswith("sk-")
             assert body["key"]["masked_key"] != body["secret"]
 
-            listed = await client.get("/admin/keys", headers={"Authorization": "Bearer dev-key"})
+            listed = await client.get("/admin/keys", headers={"Authorization": f"Bearer {admin_secret}"})
             assert listed.status_code == 200
             key_row = listed.json()["keys"][0]
             assert key_row["name"] == "console-admin"
@@ -39,7 +46,7 @@ def test_admin_can_create_and_list_api_keys():
             assert "key_hash" not in key_row
             # Listed key returns masked_key
             assert "masked_key" in key_row
-            assert key_row["masked_key"].startswith("ln_saved_")
+            assert key_row["masked_key"].startswith("sk-")
             # Listed key includes usage_summary
             assert "usage_summary" in key_row
             assert "total_requests" in key_row["usage_summary"]
@@ -50,17 +57,24 @@ def test_admin_can_create_and_list_api_keys():
 def test_admin_can_patch_status_and_scopes():
     async def run():
         app = create_app()
+        admin_secret = "sk-admin-seed"
+        create_api_key(
+            app.state.db,
+            name="seed-admin",
+            key_hash=hash_api_key(admin_secret),
+            scopes=["admin"],
+        )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             created = await client.post(
                 "/admin/keys",
-                headers={"Authorization": "Bearer dev-key"},
+                headers={"Authorization": f"Bearer {admin_secret}"},
                 json={"name": "worker", "scopes": ["inference"]},
             )
             key_id = created.json()["key"]["id"]
             patched = await client.patch(
                 f"/admin/keys/{key_id}",
-                headers={"Authorization": "Bearer dev-key"},
+                headers={"Authorization": f"Bearer {admin_secret}"},
                 json={"status": "disabled", "scopes": ["admin", "inference"]},
             )
             assert patched.status_code == 200
@@ -73,19 +87,26 @@ def test_admin_can_patch_status_and_scopes():
 def test_admin_can_delete_api_key():
     async def run():
         app = create_app()
+        admin_secret = "sk-admin-seed"
+        create_api_key(
+            app.state.db,
+            name="seed-admin",
+            key_hash=hash_api_key(admin_secret),
+            scopes=["admin"],
+        )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             created = await client.post(
                 "/admin/keys",
-                headers={"Authorization": "Bearer dev-key"},
+                headers={"Authorization": f"Bearer {admin_secret}"},
                 json={"name": "to-delete", "scopes": ["inference"]},
             )
             key_id = created.json()["key"]["id"]
-            deleted = await client.delete(f"/admin/keys/{key_id}", headers={"Authorization": "Bearer dev-key"})
+            deleted = await client.delete(f"/admin/keys/{key_id}", headers={"Authorization": f"Bearer {admin_secret}"})
             assert deleted.status_code == 200
             assert deleted.json()["deleted"] is True
 
-            listed = await client.get("/admin/keys", headers={"Authorization": "Bearer dev-key"})
+            listed = await client.get("/admin/keys", headers={"Authorization": f"Bearer {admin_secret}"})
             assert all(item["id"] != key_id for item in listed.json()["keys"])
 
     asyncio.run(run())
@@ -97,12 +118,12 @@ def test_non_admin_key_cannot_use_admin_keys_endpoint():
         create_api_key(
             app.state.db,
             name="inference-only",
-            key_hash=hash_api_key("ln_test_456"),
+            key_hash=hash_api_key("sk-test-456"),
             scopes=["inference"],
         )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            resp = await client.get("/admin/keys", headers={"Authorization": "Bearer ln_test_456"})
+            resp = await client.get("/admin/keys", headers={"Authorization": "Bearer sk-test-456"})
             assert resp.status_code == 403
 
     asyncio.run(run())
@@ -111,9 +132,16 @@ def test_non_admin_key_cannot_use_admin_keys_endpoint():
 def test_admin_readiness_overview_returns_base_urls():
     async def run():
         app = create_app()
+        admin_secret = "sk-admin-seed"
+        create_api_key(
+            app.state.db,
+            name="seed-admin",
+            key_hash=hash_api_key(admin_secret),
+            scopes=["admin"],
+        )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            resp = await client.get("/admin/overview/readiness", headers={"Authorization": "Bearer dev-key"})
+            resp = await client.get("/admin/overview/readiness", headers={"Authorization": f"Bearer {admin_secret}"})
             assert resp.status_code == 200
             payload = resp.json()
             assert payload["base_urls"]["local"] == "http://127.0.0.1:4000"

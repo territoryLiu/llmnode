@@ -1,7 +1,8 @@
 gateway:
   host: 0.0.0.0
   port: 4000
-  api_key: dev-key
+  api_key: ""
+  backend_request_timeout_seconds: 300
   agent_base_url: http://127.0.0.1:4010
   agent_status_url: http://127.0.0.1:4010/state
   require_agent_ready: false

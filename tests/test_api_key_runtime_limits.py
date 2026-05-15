@@ -3,6 +3,7 @@ import asyncio
 import httpx
 
 from llmnode.api.app import create_app
+from llmnode.config import load_settings
 from llmnode.proxy.vllm_client import VLLMClient
 from llmnode.runtime import RequestGate
 from llmnode.security import hash_api_key
@@ -35,14 +36,28 @@ class SlowClient(VLLMClient):
         return {"path": path, "model": payload["model"]}
 
 
+TEST_MODEL = load_settings().vllm.model_name
+
+
+def seed_admin_key(app, secret: str = "sk-admin-test") -> str:
+    create_api_key(
+        app.state.db,
+        name=f"admin-{secret}",
+        key_hash=hash_api_key(secret),
+        scopes=["admin"],
+    )
+    return secret
+
+
 def test_db_key_rpm_limit_rejects_second_request():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = FastClient()
+        admin_secret = seed_admin_key(app)
         create_api_key(
             app.state.db,
             name="rpm-key",
-            key_hash=hash_api_key("ln_test_rpm"),
+            key_hash=hash_api_key("sk-test-rpm"),
             scopes=["inference"],
             rpm_limit=1,
         )
@@ -50,9 +65,9 @@ def test_db_key_rpm_limit_rejects_second_request():
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             first = await client.post(
                 "/v1/chat/completions",
-                headers={"Authorization": "Bearer ln_test_rpm"},
+                headers={"Authorization": "Bearer sk-test-rpm"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": TEST_MODEL,
                     "messages": [{"role": "user", "content": "hello"}],
                     "max_tokens": 16,
                 },
@@ -61,9 +76,9 @@ def test_db_key_rpm_limit_rejects_second_request():
 
             second = await client.post(
                 "/v1/chat/completions",
-                headers={"Authorization": "Bearer ln_test_rpm"},
+                headers={"Authorization": "Bearer sk-test-rpm"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": TEST_MODEL,
                     "messages": [{"role": "user", "content": "hello again"}],
                     "max_tokens": 16,
                 },
@@ -71,7 +86,7 @@ def test_db_key_rpm_limit_rejects_second_request():
             assert second.status_code == 429
             assert "rpm" in second.json()["detail"]
 
-            logs = await client.get("/admin/request-logs", headers={"Authorization": "Bearer dev-key"})
+            logs = await client.get("/admin/request-logs", headers={"Authorization": f"Bearer {admin_secret}"})
             assert logs.status_code == 200
             rejected = logs.json()["logs"][0]
             assert rejected["status"] == "rejected"
@@ -85,10 +100,11 @@ def test_queue_full_does_not_consume_api_key_rpm_budget():
         app = create_app()
         app.state.ctx.backend_client = FastClient()
         app.state.request_gate = RequestGate(execution_limit=1, queue_limit=0)
+        admin_secret = seed_admin_key(app)
         create_api_key(
             app.state.db,
             name="queue-full-key",
-            key_hash=hash_api_key("ln_test_queue_full"),
+            key_hash=hash_api_key("sk-test-queue-full"),
             scopes=["inference"],
             rpm_limit=1,
         )
@@ -96,9 +112,9 @@ def test_queue_full_does_not_consume_api_key_rpm_budget():
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             first = await client.post(
                 "/v1/chat/completions",
-                headers={"Authorization": "Bearer ln_test_queue_full"},
+                headers={"Authorization": "Bearer sk-test-queue-full"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": TEST_MODEL,
                     "messages": [{"role": "user", "content": "hello"}],
                     "max_tokens": 16,
                 },
@@ -108,9 +124,9 @@ def test_queue_full_does_not_consume_api_key_rpm_budget():
 
             second = await client.post(
                 "/v1/chat/completions",
-                headers={"Authorization": "Bearer ln_test_queue_full"},
+                headers={"Authorization": "Bearer sk-test-queue-full"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": TEST_MODEL,
                     "messages": [{"role": "user", "content": "hello again"}],
                     "max_tokens": 16,
                 },
@@ -118,7 +134,7 @@ def test_queue_full_does_not_consume_api_key_rpm_budget():
             assert second.status_code == 429
             assert "queue" in second.json()["detail"]
 
-            logs = await client.get("/admin/request-logs", headers={"Authorization": "Bearer dev-key"})
+            logs = await client.get("/admin/request-logs", headers={"Authorization": f"Bearer {admin_secret}"})
             assert logs.status_code == 200
             assert all(item["rejection_reason"] == "queue_full" for item in logs.json()["logs"][:2])
 
@@ -131,10 +147,11 @@ def test_db_key_concurrency_limit_rejects_parallel_request():
         slow_client = SlowClient()
         app.state.ctx.backend_client = slow_client
         app.state.request_gate = RequestGate(execution_limit=4, queue_limit=8)
+        admin_secret = seed_admin_key(app)
         create_api_key(
             app.state.db,
             name="concurrency-key",
-            key_hash=hash_api_key("ln_test_concurrency"),
+            key_hash=hash_api_key("sk-test-concurrency"),
             scopes=["inference"],
             concurrency_limit=1,
         )
@@ -143,9 +160,9 @@ def test_db_key_concurrency_limit_rejects_parallel_request():
             first_task = asyncio.create_task(
                 client.post(
                     "/v1/chat/completions",
-                    headers={"Authorization": "Bearer ln_test_concurrency"},
+                    headers={"Authorization": "Bearer sk-test-concurrency"},
                     json={
-                        "model": "claude-sonnet-4-5-20250929",
+                        "model": TEST_MODEL,
                         "messages": [{"role": "user", "content": "hello"}],
                         "max_tokens": 16,
                     },
@@ -156,9 +173,9 @@ def test_db_key_concurrency_limit_rejects_parallel_request():
             second_task = asyncio.create_task(
                 client.post(
                     "/v1/chat/completions",
-                    headers={"Authorization": "Bearer ln_test_concurrency"},
+                    headers={"Authorization": "Bearer sk-test-concurrency"},
                     json={
-                        "model": "claude-sonnet-4-5-20250929",
+                        "model": TEST_MODEL,
                         "messages": [{"role": "user", "content": "hello again"}],
                         "max_tokens": 16,
                     },
@@ -175,7 +192,7 @@ def test_db_key_concurrency_limit_rejects_parallel_request():
             first = await asyncio.wait_for(first_task, timeout=1)
             assert first.status_code == 200
 
-            logs = await client.get("/admin/request-logs", headers={"Authorization": "Bearer dev-key"})
+            logs = await client.get("/admin/request-logs", headers={"Authorization": f"Bearer {admin_secret}"})
             assert logs.status_code == 200
             rejected = next(item for item in logs.json()["logs"] if item["status"] == "rejected")
             assert rejected["rejection_reason"] == "concurrency_limit_exceeded"

@@ -147,3 +147,11 @@ def test_control_parser_supports_env_action():
     parser = build_parser()
     args = parser.parse_args(["env"])
     assert args.action == "env"
+
+
+def test_control_parser_supports_create_api_key_action():
+    parser = build_parser()
+    args = parser.parse_args(["create-api-key", "--name", "console-admin", "--scope", "admin", "--scope", "inference"])
+    assert args.action == "create-api-key"
+    assert args.name == "console-admin"
+    assert args.scope == ["admin", "inference"]
