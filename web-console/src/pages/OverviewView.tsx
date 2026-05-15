@@ -2,19 +2,14 @@ import React, {useMemo, useState} from 'react';
 import {
   Area,
   AreaChart,
-  Cell,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip as RechartsTooltip,
   XAxis,
   YAxis,
 } from 'recharts';
-import {AlertTriangle, Layers, RefreshCcw, ServerCog, Settings, Zap} from 'lucide-react';
+import {AlertTriangle, Copy, Layers, RefreshCcw, ServerCog, Settings, Zap} from 'lucide-react';
 import {useAppContext} from '../store';
 import {mapRequestStatus} from '../i18n';
-
-const COLORS = ['#3b82f6', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
 function formatClock(value: string) {
   const date = new Date(value);
@@ -25,7 +20,7 @@ function formatClock(value: string) {
 }
 
 export function OverviewView() {
-  const {snapshot, snapshotHistory, usageOverview, refreshSnapshot, loading, setCurrentPage, restartBackend, locale, t} =
+  const {snapshot, snapshotHistory, refreshSnapshot, loading, setCurrentPage, restartBackend, locale, t} =
     useAppContext();
   const [restarting, setRestarting] = useState(false);
 
@@ -34,17 +29,17 @@ export function OverviewView() {
   const modelRoutes = snapshot?.runtime.model_routes ?? [];
   const queueLimit = snapshot?.runtime.gateway.queue_limit ?? 0;
   const errorLogs = recentLogs.filter((log) => log.status !== 'ok');
-  const tokenTrend = usageOverview?.chart.points ?? [];
-  const backendBreakdown = usageOverview?.breakdown.backends ?? [];
+  const enabledModelRoutes = useMemo(
+    () => modelRoutes.filter((route) => route.enabled),
+    [modelRoutes],
+  );
 
-  const modelDistribution = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const log of recentLogs) {
-      const key = log.model_name || 'unknown';
-      counts.set(key, (counts.get(key) || 0) + 1);
+  async function copyText(value: string) {
+    if (!value) {
+      return;
     }
-    return Array.from(counts.entries()).map(([name, value]) => ({name, value}));
-  }, [recentLogs]);
+    await navigator.clipboard.writeText(value);
+  }
 
   async function handleRestart() {
     setRestarting(true);
@@ -102,7 +97,7 @@ export function OverviewView() {
             <span className="p-2 bg-orange-100 rounded-lg flex items-center justify-center">
               <AlertTriangle className="w-5 h-5 text-orange-600" />
             </span>
-            <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">{t('overview.queue')}</span>
+            <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">{t('overview.queueNow')}</span>
           </div>
           <h3 className="text-4xl font-bold text-slate-800 relative z-10">{snapshot?.queue_length ?? 0}</h3>
           <p className="text-sm text-black/50 mt-1 relative z-10">{t('overview.queueLimit', {count: queueLimit})}</p>
@@ -156,106 +151,43 @@ export function OverviewView() {
         </div>
 
         <div className="glass-panel flex flex-col overflow-hidden p-6">
-          <h4 className="font-bold mb-6 text-slate-800">{t('overview.modelDistribution')}</h4>
-          <div className="flex-1 min-h-[200px]">
-            {modelDistribution.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-sm text-slate-500">{t('overview.noModelRequests')}</div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={modelDistribution} innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                    {modelDistribution.map((entry, index) => (
-                      <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <RechartsTooltip
-                    contentStyle={{
-                      borderRadius: '12px',
-                      border: 'none',
-                      background: 'rgba(255,255,255,0.8)',
-                      backdropFilter: 'blur(8px)',
-                    }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-          <div className="flex flex-wrap justify-center gap-4 text-xs text-slate-600 mt-4 pb-1">
-            {modelDistribution.map((item, index) => (
-              <div key={item.name} className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full" style={{background: COLORS[index % COLORS.length]}} />
-                <span>{item.name}</span>
+          <h4 className="font-bold mb-2 text-slate-800">{t('overview.availableModels')}</h4>
+          <p className="mb-6 text-sm text-slate-500">{t('overview.availableModelsHint')}</p>
+          <div className="flex-1 space-y-3">
+            {enabledModelRoutes.length === 0 ? (
+              <div className="rounded-2xl border border-slate-200 bg-white/40 px-4 py-6 text-sm text-slate-500">
+                {t('overview.noAvailableModels')}
               </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="glass-panel lg:col-span-2 overflow-hidden p-6">
-          <h4 className="font-bold mb-6 text-slate-800">{t('usage.tokensPerDay')}</h4>
-          <div className="h-64 w-full">
-            {tokenTrend.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-sm text-slate-500">{t('usage.noTrendData')}</div>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={tokenTrend}>
-                  <defs>
-                    <linearGradient id="colorTokens" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="label" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                  <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                  <RechartsTooltip
-                    formatter={(value: number, name: string) => [value, name === 'total_tokens' ? t('usage.totalTokens') : name]}
-                    labelFormatter={(label) => `${label}`}
-                    contentStyle={{
-                      borderRadius: '12px',
-                      border: 'none',
-                      background: 'rgba(255,255,255,0.88)',
-                      backdropFilter: 'blur(8px)',
-                    }}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="total_tokens"
-                    stroke="#10b981"
-                    strokeWidth={3}
-                    fillOpacity={1}
-                    fill="url(#colorTokens)"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </div>
-
-        <div className="glass-panel flex flex-col overflow-hidden p-6">
-          <h4 className="font-bold mb-6 text-slate-800">{t('usage.backendUsage')}</h4>
-          <div className="space-y-4">
-            {backendBreakdown.length === 0 ? (
-              <div className="text-sm text-slate-500">{t('usage.noTrendData')}</div>
-            ) : (
-              backendBreakdown.map((item, index) => {
-                const maxTokens = Math.max(...backendBreakdown.map((entry) => entry.total_tokens), 1);
-                const width = `${Math.max((item.total_tokens / maxTokens) * 100, 8)}%`;
-                return (
-                  <div key={`${item.group ?? 'unknown'}-${index}`} className="space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-medium text-slate-700">{String(item.group ?? '-')}</span>
-                      <span className="text-slate-500">{item.total_tokens}</span>
+              enabledModelRoutes.map((route) => (
+                <div
+                  key={route.name}
+                  className="rounded-2xl border border-white/60 bg-white/40 px-4 py-3 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                        {t('overview.routeModelName')}
+                      </div>
+                      <div className="mt-1 break-all font-mono text-sm text-slate-800">{route.name}</div>
                     </div>
-                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                      <div
-                        className="h-full rounded-full"
-                        style={{width, background: COLORS[index % COLORS.length]}}
-                      />
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void copyText(route.name)}
+                      className="shrink-0 rounded-full border border-slate-200 bg-white/70 p-2 text-slate-500 transition-colors hover:text-blue-600"
+                      title={t('overview.copyModel')}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
                   </div>
-                );
-              })
+                  <div className="mt-3">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      {t('overview.routeBackendModel')}
+                    </div>
+                    <div className="mt-1 break-all font-mono text-xs text-slate-600">{route.backend_model}</div>
+                  </div>
+                </div>
+              ))
             )}
           </div>
         </div>

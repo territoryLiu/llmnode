@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   LockKeyhole,
   Network,
-  Server,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -43,7 +42,6 @@ export function Layout({children}: {children: React.ReactNode}) {
     {id: 'keys', label: t('layout.nav.keys'), icon: Key},
     {id: 'models', label: t('layout.nav.models'), icon: Network},
     {id: 'schedule', label: t('layout.nav.schedule'), icon: CalendarClock},
-    {id: 'status', label: t('layout.nav.status'), icon: Server},
   ] as const;
 
   return (

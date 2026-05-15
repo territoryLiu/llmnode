@@ -7,7 +7,7 @@ import {
   writeStoredLocale,
 } from './i18n';
 
-export type Page = 'overview' | 'usage' | 'keys' | 'models' | 'schedule' | 'status';
+export type Page = 'overview' | 'usage' | 'keys' | 'models' | 'schedule';
 
 export interface RequestLog {
   id: number;

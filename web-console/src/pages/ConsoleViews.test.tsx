@@ -86,7 +86,22 @@ const emptySnapshot = {
       reasoning_parser: null,
       tool_call_parser: null,
     },
-    model_routes: [],
+    model_routes: [
+      {
+        name: 'qwen36-27b-fp8',
+        display_name: 'Qwen 27B FP8',
+        backend_model: 'Qwen/Qwen3.6-27B-FP8',
+        backend_type: 'vllm',
+        enabled: true,
+      },
+      {
+        name: 'qwen36-35b-a3b-fp8',
+        display_name: 'Qwen 35B A3B FP8',
+        backend_model: 'Qwen/Qwen3.6-35B-A3B-FP8',
+        backend_type: 'vllm',
+        enabled: true,
+      },
+    ],
   },
 };
 
@@ -368,6 +383,20 @@ afterEach(() => {
 });
 
 describe('Console views', () => {
+  it('shows enabled model names in overview and hides removed usage cards', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('当前可访问模型')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('qwen36-27b-fp8')).toBeInTheDocument();
+    expect(screen.getByText('qwen36-35b-a3b-fp8')).toBeInTheDocument();
+    expect(screen.getAllByTitle('复制模型名').length).toBe(2);
+    expect(screen.queryByText('每日 Token 用量')).not.toBeInTheDocument();
+    expect(screen.queryByText('后端用量分布')).not.toBeInTheDocument();
+  });
+
   it('does not show generated secret success panel after creating a key', async () => {
     render(<App />);
 

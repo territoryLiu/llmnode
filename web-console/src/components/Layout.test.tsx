@@ -83,7 +83,15 @@ const emptySnapshot = {
       reasoning_parser: null,
       tool_call_parser: null,
     },
-    model_routes: [],
+    model_routes: [
+      {
+        name: 'qwen36-27b-fp8',
+        display_name: 'Qwen 27B FP8',
+        backend_model: 'Qwen/Qwen3.6-27B-FP8',
+        backend_type: 'vllm',
+        enabled: true,
+      },
+    ],
   },
 };
 
@@ -228,5 +236,15 @@ describe('Layout locale switch', () => {
     expect(screen.getByText('当前未配置 API 密钥。请先用控制命令创建一把 sk- 管理员密钥，然后在这里输入。')).toBeInTheDocument();
     expect(screen.getByRole('button', {name: '保存密钥'})).toBeInTheDocument();
     expect(screen.getByLabelText('输入 sk- 开头的 API 密钥')).toBeInTheDocument();
+  });
+
+  it('does not render legacy system status navigation entry', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByRole('button', {name: '系统状态'})).not.toBeInTheDocument();
   });
 });
