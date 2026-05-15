@@ -10,6 +10,7 @@ from ..models import ModelRoute
 from ..security import hash_api_key
 from ..storage.db import get_api_key_by_hash
 from .backend import BackendClient
+from .executor import NormalizedRequest
 
 
 @dataclass
@@ -72,6 +73,25 @@ def resolve_route(model_name: str, models: Dict[str, ModelRoute]) -> ModelRoute:
     if route and route.enabled:
         return route
     raise HTTPException(status_code=404, detail=f"unknown model: {model_name}")
+
+
+def ensure_route_supports_request(route: ModelRoute, req: NormalizedRequest) -> None:
+    if req.stream and not route.capabilities.supports_stream:
+        raise HTTPException(status_code=400, detail="stream_not_supported_for_model")
+    for tool in req.tools or []:
+        tool_type = tool.get("type")
+        if tool_type != "function" and not route.capabilities.supports_builtin_tools:
+            raise HTTPException(status_code=400, detail="unsupported_builtin_tools")
+        if tool_type == "function" and not route.capabilities.supports_function_tools:
+            raise HTTPException(status_code=400, detail="unsupported_function_tools")
+
+
+def select_upstream_adapter(route: ModelRoute, req: NormalizedRequest) -> str:
+    if route.upstream_protocol == "responses":
+        return "native_responses"
+    if route.upstream_protocol == "chat" and req.client_protocol == "responses":
+        return "responses_to_chat"
+    raise HTTPException(status_code=400, detail="unsupported_route_protocol_combination")
 
 
 async def proxy_openai_chat(payload: Dict[str, Any], ctx: GatewayContext) -> Dict[str, Any]:

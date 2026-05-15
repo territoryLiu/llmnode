@@ -16,6 +16,33 @@ class BackendClient(Protocol):
     async def stream_bytes(self, path: str, payload: Dict[str, Any]) -> AsyncIterator[bytes]: ...
 
 
+async def post_json_to(
+    base_url: str,
+    path: str,
+    payload: Dict[str, Any],
+    headers: dict[str, str] | None = None,
+    timeout_seconds: int = 300,
+) -> Dict[str, Any]:
+    async with httpx.AsyncClient(base_url=base_url, timeout=timeout_seconds) as client:
+        response = await client.post(path, json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+async def stream_bytes_from(
+    base_url: str,
+    path: str,
+    payload: Dict[str, Any],
+    headers: dict[str, str] | None = None,
+) -> AsyncIterator[bytes]:
+    async with httpx.AsyncClient(base_url=base_url, timeout=None) as client:
+        async with client.stream("POST", path, json=payload, headers=headers) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                if chunk:
+                    yield chunk
+
+
 @dataclass
 class VLLMBackendClient:
     base_url: str

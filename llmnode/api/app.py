@@ -18,14 +18,15 @@ from fastapi.responses import JSONResponse, StreamingResponse, PlainTextResponse
 
 from ..config import PROJECT_ROOT, load_settings
 from ..logging import setup_logging
-from ..models import ModelRoute, load_model_catalog, logical_models_for_api, model_routes_for_admin
+from ..models import ModelRoute, load_model_catalog, logical_models_for_api, model_route_from_row, model_routes_for_admin
 from ..protocols import AnthropicMessagesRequest, OpenAIChatCompletionsRequest, OpenAIResponsesRequest
-from ..proxy.backend import VLLMBackendClient
+from ..proxy.backend import VLLMBackendClient, post_json_to
 from ..proxy.router import (
     AuthContext,
     GatewayContext,
     proxy_anthropic_messages,
     proxy_openai_chat,
+    resolve_route,
     require_scope,
     resolve_auth_context,
     stream_anthropic_messages,
@@ -333,6 +334,15 @@ def _parse_openai_stream_event(chunk: bytes) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _build_upstream_headers(route: ModelRoute) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if route.upstream_auth_kind == "bearer":
+        headers["authorization"] = "Bearer routed-upstream-token"
+    elif route.upstream_auth_kind == "x_api_key":
+        headers["x-api-key"] = "routed-upstream-token"
+    return headers
+
+
 def _sanitize_api_key_row(row: dict[str, Any], *, masked_key: str | None = None) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -451,7 +461,7 @@ def create_app() -> FastAPI:
     )
     ctx = GatewayContext(
         backend_client=backend_client,
-        models={item["name"]: ModelRoute(**item) for item in list_model_routes(db)},
+        models={item["name"]: model_route_from_row(item) for item in list_model_routes(db)},
     )
     request_gate = RequestGate(
         execution_limit=settings.gateway.execution_limit,
@@ -468,6 +478,7 @@ def create_app() -> FastAPI:
     app.state.agent_status_url = settings.gateway.agent_status_url
     app.state.require_agent_ready = settings.gateway.require_agent_ready
     app.state.schedule = schedule_state
+    app.state.post_json_to = post_json_to
 
     async def fetch_agent_state() -> dict | None:
         if not app.state.agent_status_url:
@@ -1210,6 +1221,7 @@ def create_app() -> FastAPI:
             input_items = payload.input_items()
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        route = resolve_route(payload.model, request.app.state.ctx.models)
         request_id = _request_id(request)
         response_id = f"resp_{uuid.uuid4().hex}"
         started_at = datetime.now(timezone.utc)
@@ -1408,6 +1420,56 @@ def create_app() -> FastAPI:
                 **log_context,
             )
             response = StreamingResponse(body(), media_type="text/event-stream")
+            response.headers["x-request-id"] = request_id
+            return response
+
+        if route.upstream_protocol == "responses":
+            upstream_payload = dict(raw)
+            upstream_payload["model"] = route.resolved_upstream_model() or payload.model
+            result = await request.app.state.post_json_to(
+                route.upstream_base_url or "",
+                "/v1/responses",
+                upstream_payload,
+                headers=_build_upstream_headers(route),
+            )
+            await key_lease.finish()
+            finished_at = datetime.now(timezone.utc)
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="responses",
+                status="ok",
+                started_at=started_at,
+                finished_at=finished_at,
+                response_payload={
+                    "usage": {
+                        "prompt_tokens": result.get("usage", {}).get("input_tokens"),
+                        "completion_tokens": result.get("usage", {}).get("output_tokens"),
+                        "total_tokens": result.get("usage", {}).get("total_tokens"),
+                    }
+                },
+                backend_type=route.backend_type or request.app.state.ctx.backend_client.backend_type,
+                api_key_id=auth.api_key_id,
+            )
+            upsert_response_state(
+                request.app.state.db,
+                response_id=response_id,
+                request_id=request_id,
+                model_name=payload.model,
+                input_items=input_items,
+                output_items=result.get("output", []),
+                messages=messages_for_state,
+            )
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "ok",
+                "responses",
+                **log_context,
+            )
+            response = JSONResponse(result)
             response.headers["x-request-id"] = request_id
             return response
 

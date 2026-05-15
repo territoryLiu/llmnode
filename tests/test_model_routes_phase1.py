@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from llmnode.models import ModelRoute
+import pytest
+from fastapi import HTTPException
+
+from llmnode.models import ModelCapabilities, ModelRoute
+from llmnode.proxy.executor import NormalizedRequest
+from llmnode.proxy.router import ensure_route_supports_request, select_upstream_adapter
 from llmnode.storage.db import init_db, list_model_routes, upsert_model_route
 
 
@@ -49,3 +54,42 @@ def test_model_route_defaults_keep_managed_local_chat_shape():
     assert route.lifecycle_mode == "managed_local"
     assert route.upstream_protocol == "chat"
     assert route.resolved_upstream_model() == "qwen36-27b-fp8"
+
+
+def test_chat_native_route_selects_responses_to_chat_adapter():
+    route = ModelRoute(
+        name="qwen36-27b-fp8",
+        display_name="Qwen",
+        backend_model="qwen36-27b-fp8",
+        upstream_protocol="chat",
+        capabilities=ModelCapabilities(
+            supports_responses=False,
+            supports_chat=True,
+            supports_stream=True,
+            supports_function_tools=True,
+        ),
+    )
+    req = NormalizedRequest(client_protocol="responses", model="qwen36-27b-fp8", messages=[])
+    assert select_upstream_adapter(route, req) == "responses_to_chat"
+
+
+def test_chat_native_route_rejects_builtin_tools():
+    route = ModelRoute(
+        name="qwen36-27b-fp8",
+        display_name="Qwen",
+        backend_model="qwen36-27b-fp8",
+        upstream_protocol="chat",
+        capabilities=ModelCapabilities(
+            supports_builtin_tools=False,
+            supports_function_tools=True,
+        ),
+    )
+    req = NormalizedRequest(
+        client_protocol="responses",
+        model="qwen36-27b-fp8",
+        messages=[],
+        tools=[{"type": "web_search"}],
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_route_supports_request(route, req)
+    assert exc_info.value.detail == "unsupported_builtin_tools"

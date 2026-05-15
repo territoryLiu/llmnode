@@ -52,6 +52,28 @@ def load_model_catalog(path=None) -> Dict[str, ModelRoute]:
     return {route.name: route}
 
 
+def model_route_from_row(row: dict[str, Any]) -> ModelRoute:
+    capabilities_payload = row.get("capabilities_json") or {}
+    if isinstance(capabilities_payload, ModelCapabilities):
+        capabilities = capabilities_payload
+    else:
+        capabilities = ModelCapabilities(**capabilities_payload)
+    return ModelRoute(
+        name=row["name"],
+        display_name=row["display_name"],
+        backend_model=row.get("backend_model"),
+        backend_type=row.get("backend_type"),
+        enabled=bool(row.get("enabled", True)),
+        lifecycle_mode=row.get("lifecycle_mode", "managed_local"),
+        upstream_protocol=row.get("upstream_protocol", "chat"),
+        upstream_base_url=row.get("upstream_base_url"),
+        upstream_model=row.get("upstream_model"),
+        upstream_auth_kind=row.get("upstream_auth_kind", "none"),
+        upstream_auth_ref=row.get("upstream_auth_ref"),
+        capabilities=capabilities,
+    )
+
+
 def logical_models_for_api(catalog: Dict[str, ModelRoute]) -> list[dict]:
     return [
         {
