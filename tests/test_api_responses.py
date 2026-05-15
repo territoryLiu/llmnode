@@ -197,6 +197,43 @@ def test_responses_previous_response_id_replays_prior_context():
     asyncio.run(run())
 
 
+def test_chat_route_previous_response_id_replays_local_messages_not_upstream_id():
+    async def run():
+        app = create_app()
+        backend = ResponsesSyncFakeClient()
+        app.state.ctx.backend_client = backend
+        secret = seed_inference_key(app, "sk-responses-local-replay")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            first = await client.post(
+                "/v1/responses",
+                headers={"Authorization": f"Bearer {secret}"},
+                json={"model": TEST_MODEL, "input": "first turn"},
+            )
+            assert first.status_code == 200
+            previous_response_id = first.json()["id"]
+
+            second = await client.post(
+                "/v1/responses",
+                headers={"Authorization": f"Bearer {secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "previous_response_id": previous_response_id,
+                    "input": "second turn",
+                },
+            )
+            assert second.status_code == 200
+            _, forwarded = backend.calls[-1]
+            assert "previous_response_id" not in forwarded
+            assert forwarded["messages"] == [
+                {"role": "user", "content": "first turn"},
+                {"role": "assistant", "content": "hello from responses"},
+                {"role": "user", "content": "second turn"},
+            ]
+
+    asyncio.run(run())
+
+
 def test_responses_maps_tool_calls_into_output_items():
     async def run():
         app = create_app()

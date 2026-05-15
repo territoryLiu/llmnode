@@ -82,6 +82,7 @@
 
 - 对外 API：
   - `GET /v1/models`
+  - `POST /v1/responses`
   - `POST /v1/chat/completions`
   - `POST /v1/messages`
 - 控制面命令：
@@ -120,6 +121,7 @@
   - API 协议兼容
   - 模型路由
   - 请求审计
+  - `/v1/responses` native/chat 双路径兼容
 - `node-agent`
   - 后端启停
   - 容器健康检查
@@ -311,6 +313,14 @@
 - 三后端代码实现全部落地（ContainerSpec / BackendDriver / service.py / control.py / api/app.py 均已按 `backend_type` 动态路由）
 - 多后端配置与实现之间的一致性已收敛（`config/defaults.yaml + config/backends/*.yaml` 与代码路由行为对齐）
 - 对外 API 已扩展支持三种接口协议：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`
+- 一期路由重构已开始把模型语义拆为三层：
+  - `backend_type`：本地受控推理后端类型
+  - `upstream_protocol`：对上游发请求时使用的协议
+  - `lifecycle_mode`：本地受控 route 与外部上游 route 的生命周期归属
+- `/v1/responses` 当前已具备最小双路径能力（2026-05-15）：
+  - external route 可按 `upstream_protocol=responses` 走原生 upstream `/v1/responses`
+  - 本地 Qwen 等 chat-native route 继续走 `responses -> chat` 适配
+  - `previous_response_id` 已支持 native upstream continuation 与 local replay continuation 两种基础模式
 - **三后端线上联调验证已完成（2026-05-12）**：vLLM / llama.cpp / SGLang 各自跑通推理链路，`reasoning_content` / `content` 干净分离已确认
 - **控制面诊断能力增强已完成（2026-05-12）**：
   - `doctor` 命令支持三后端特定检查、GPU 信息、模型格式检测、智能建议

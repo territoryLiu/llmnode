@@ -21,6 +21,7 @@ from ..logging import setup_logging
 from ..models import ModelRoute, load_model_catalog, logical_models_for_api, model_route_from_row, model_routes_for_admin
 from ..protocols import AnthropicMessagesRequest, OpenAIChatCompletionsRequest, OpenAIResponsesRequest
 from ..proxy.backend import VLLMBackendClient, post_json_to
+from ..proxy.adapters import build_responses_chat_payload
 from ..proxy.router import (
     AuthContext,
     GatewayContext,
@@ -1228,13 +1229,17 @@ def create_app() -> FastAPI:
         log_context = _request_log_context(request, auth)
 
         previous_messages: list[dict[str, Any]] = []
+        previous_state: dict[str, Any] | None = None
         if payload.previous_response_id:
             previous_state = get_response_state(request.app.state.db, payload.previous_response_id)
             if previous_state is None:
                 raise HTTPException(status_code=404, detail=f"unknown response: {payload.previous_response_id}")
-            previous_messages = list(previous_state["messages"])
+            if route.capabilities.supports_previous_response_id_native:
+                previous_messages = []
+            else:
+                previous_messages = list(previous_state["messages"])
 
-        chat_payload = payload.to_chat_payload(payload.model, previous_messages)
+        chat_payload = build_responses_chat_payload(route, payload, previous_messages)
         messages_for_state = payload.to_chat_messages(previous_messages)
 
         try:
@@ -1426,6 +1431,10 @@ def create_app() -> FastAPI:
         if route.upstream_protocol == "responses":
             upstream_payload = dict(raw)
             upstream_payload["model"] = route.resolved_upstream_model() or payload.model
+            if previous_state is not None and route.capabilities.supports_previous_response_id_native:
+                upstream_previous_id = previous_state.get("upstream_response_id")
+                if upstream_previous_id:
+                    upstream_payload["previous_response_id"] = upstream_previous_id
             result = await request.app.state.post_json_to(
                 route.upstream_base_url or "",
                 "/v1/responses",
@@ -1460,6 +1469,13 @@ def create_app() -> FastAPI:
                 input_items=input_items,
                 output_items=result.get("output", []),
                 messages=messages_for_state,
+                parent_response_id=payload.previous_response_id,
+                route_name=route.name,
+                client_protocol="responses",
+                upstream_protocol=route.upstream_protocol,
+                upstream_response_id=result.get("id"),
+                request_payload=upstream_payload,
+                output_payload=result,
             )
             write_request_log(
                 request.app.state.db,

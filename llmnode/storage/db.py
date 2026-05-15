@@ -230,6 +230,19 @@ def init_db(path: Path) -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_response_states_created_at "
         "ON response_states(created_at)"
     )
+    _ensure_columns(
+        conn,
+        "response_states",
+        {
+            "parent_response_id": "TEXT",
+            "route_name": "TEXT",
+            "client_protocol": "TEXT",
+            "upstream_protocol": "TEXT",
+            "upstream_response_id": "TEXT",
+            "request_json": "TEXT",
+            "output_json": "TEXT",
+        },
+    )
     conn.commit()
     return conn
 
@@ -381,6 +394,13 @@ def upsert_response_state(
     input_items: list[dict[str, Any]],
     output_items: list[dict[str, Any]],
     messages: list[dict[str, Any]],
+    parent_response_id: str | None = None,
+    route_name: str | None = None,
+    client_protocol: str | None = None,
+    upstream_protocol: str | None = None,
+    upstream_response_id: str | None = None,
+    request_payload: dict[str, Any] | None = None,
+    output_payload: dict[str, Any] | None = None,
 ) -> None:
     conn.execute(
         """
@@ -391,15 +411,29 @@ def upsert_response_state(
             input_items_json,
             output_items_json,
             messages_json,
+            parent_response_id,
+            route_name,
+            client_protocol,
+            upstream_protocol,
+            upstream_response_id,
+            request_json,
+            output_json,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(response_id) DO UPDATE SET
             request_id = excluded.request_id,
             model_name = excluded.model_name,
             input_items_json = excluded.input_items_json,
             output_items_json = excluded.output_items_json,
             messages_json = excluded.messages_json,
+            parent_response_id = excluded.parent_response_id,
+            route_name = excluded.route_name,
+            client_protocol = excluded.client_protocol,
+            upstream_protocol = excluded.upstream_protocol,
+            upstream_response_id = excluded.upstream_response_id,
+            request_json = excluded.request_json,
+            output_json = excluded.output_json,
             updated_at = CURRENT_TIMESTAMP
         """,
         (
@@ -409,6 +443,13 @@ def upsert_response_state(
             json.dumps(input_items, ensure_ascii=False),
             json.dumps(output_items, ensure_ascii=False),
             json.dumps(messages, ensure_ascii=False),
+            parent_response_id,
+            route_name,
+            client_protocol,
+            upstream_protocol,
+            upstream_response_id,
+            json.dumps(request_payload or {}, ensure_ascii=False),
+            json.dumps(output_payload or {}, ensure_ascii=False),
         ),
     )
     conn.commit()
@@ -417,7 +458,9 @@ def upsert_response_state(
 def get_response_state(conn: sqlite3.Connection, response_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
-        SELECT response_id, request_id, model_name, input_items_json, output_items_json, messages_json, created_at, updated_at
+        SELECT response_id, request_id, model_name, input_items_json, output_items_json, messages_json,
+               parent_response_id, route_name, client_protocol, upstream_protocol, upstream_response_id,
+               request_json, output_json, created_at, updated_at
         FROM response_states
         WHERE response_id = ?
         """,
@@ -432,8 +475,15 @@ def get_response_state(conn: sqlite3.Connection, response_id: str) -> dict[str, 
         "input_items": json.loads(row[3]),
         "output_items": json.loads(row[4]),
         "messages": json.loads(row[5]),
-        "created_at": row[6],
-        "updated_at": row[7],
+        "parent_response_id": row[6],
+        "route_name": row[7],
+        "client_protocol": row[8],
+        "upstream_protocol": row[9],
+        "upstream_response_id": row[10],
+        "request_payload": json.loads(row[11]) if row[11] else {},
+        "output_payload": json.loads(row[12]) if row[12] else {},
+        "created_at": row[13],
+        "updated_at": row[14],
     }
 
 

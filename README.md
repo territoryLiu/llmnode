@@ -3,6 +3,7 @@
 `llmnode` 是一个单机本地 LLM 节点控制与网关系统。  
 它对外统一兼容：
 
+- `POST /v1/responses`
 - `POST /v1/chat/completions`
 - `POST /v1/messages`
 - `GET /v1/models`
@@ -77,6 +78,7 @@ python -m llmnode.control start
   [docs/contracts/control-plane.md](/proj02/liuheshan/llmnode/docs/contracts/control-plane.md:1)
 - 模型路由与 `backend_type` 语义：
   [docs/contracts/backend-routing.md](/proj02/liuheshan/llmnode/docs/contracts/backend-routing.md:1)
+  当前一期重构已开始拆分 `backend_type / upstream_protocol / lifecycle_mode`
 - 三后端联调经验与已知问题：
   [docs/knowledge/backend_integration_qa.md](/proj02/liuheshan/llmnode/docs/knowledge/backend_integration_qa.md:1)
 - 模型支持矩阵与 profile 命名：

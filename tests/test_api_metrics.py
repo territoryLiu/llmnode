@@ -241,6 +241,19 @@ class StreamingUsageFakeClient(VLLMClient):
             yield chunk
 
 
+class NativeResponsesUsageClient:
+    backend_type = "external"
+
+    async def health(self) -> bool:
+        return True
+
+    async def post_json(self, path, payload):
+        raise AssertionError("native responses path should not use backend_client.post_json")
+
+    async def stream_bytes(self, path, payload):
+        raise AssertionError("native responses sync path should not use backend_client.stream_bytes")
+
+
 def test_streaming_chat_records_metrics_on_completion():
     async def run():
         app = create_app()
@@ -270,5 +283,84 @@ def test_streaming_chat_records_metrics_on_completion():
             assert metrics["success_count"] == 1
             assert metrics["total_tokens"] == 10
             assert metrics["cache_read_tokens"] == 3
+
+    asyncio.run(run())
+
+
+def test_native_responses_sync_records_metrics_on_completion():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = NativeResponsesUsageClient()
+
+        async def fake_post_json_to(base_url, path, payload, headers=None):
+            assert path == "/v1/responses"
+            return {
+                "id": "resp_native_metrics_1",
+                "object": "response",
+                "status": "completed",
+                "model": payload["model"],
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "ok"}],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 7,
+                    "total_tokens": 19,
+                },
+            }
+
+        app.state.post_json_to = fake_post_json_to
+        app.state.ctx.models = {
+            "gpt-4o": __import__("llmnode.models", fromlist=["ModelRoute", "ModelCapabilities"]).ModelRoute(
+                name="gpt-4o",
+                display_name="GPT-4o",
+                backend_model=None,
+                backend_type=None,
+                enabled=True,
+                lifecycle_mode="external",
+                upstream_protocol="responses",
+                upstream_base_url="https://api.openai.com/v1",
+                upstream_model="gpt-4o",
+                upstream_auth_kind="bearer",
+                upstream_auth_ref="openai-prod",
+                capabilities=__import__("llmnode.models", fromlist=["ModelCapabilities"]).ModelCapabilities(
+                    supports_responses=True,
+                    supports_chat=True,
+                    supports_messages=False,
+                    supports_stream=True,
+                    supports_function_tools=True,
+                    supports_builtin_tools=True,
+                    supports_previous_response_id_native=True,
+                    supports_json_schema=True,
+                ),
+            )
+        }
+        create_api_key(
+            app.state.db,
+            name="native-responses-metrics",
+            key_hash=hash_api_key("sk-native-resp-metrics"),
+            scopes=["inference"],
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/responses",
+                headers={"Authorization": "Bearer sk-native-resp-metrics"},
+                json={"model": "gpt-4o", "input": "hello"},
+            )
+            assert resp.status_code == 200
+
+        metrics = aggregate_request_metrics(app.state.db)
+        assert metrics["request_count"] == 1
+        assert metrics["success_count"] == 1
+        assert metrics["total_tokens"] == 19
+        row = app.state.db.execute(
+            "SELECT protocol, status, backend_type FROM request_metrics"
+        ).fetchone()
+        assert row == ("responses", "ok", "external")
 
     asyncio.run(run())
