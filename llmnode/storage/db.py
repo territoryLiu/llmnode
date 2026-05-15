@@ -199,6 +199,24 @@ def init_db(path: Path) -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_request_metrics_model_name "
         "ON request_metrics(model_name)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS response_states (
+            response_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            input_items_json TEXT NOT NULL,
+            output_items_json TEXT NOT NULL,
+            messages_json TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_response_states_created_at "
+        "ON response_states(created_at)"
+    )
     conn.commit()
     return conn
 
@@ -339,6 +357,71 @@ def write_request_metric(
         ),
     )
     conn.commit()
+
+
+def upsert_response_state(
+    conn: sqlite3.Connection,
+    *,
+    response_id: str,
+    request_id: str,
+    model_name: str,
+    input_items: list[dict[str, Any]],
+    output_items: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO response_states(
+            response_id,
+            request_id,
+            model_name,
+            input_items_json,
+            output_items_json,
+            messages_json,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(response_id) DO UPDATE SET
+            request_id = excluded.request_id,
+            model_name = excluded.model_name,
+            input_items_json = excluded.input_items_json,
+            output_items_json = excluded.output_items_json,
+            messages_json = excluded.messages_json,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            response_id,
+            request_id,
+            model_name,
+            json.dumps(input_items, ensure_ascii=False),
+            json.dumps(output_items, ensure_ascii=False),
+            json.dumps(messages, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+
+
+def get_response_state(conn: sqlite3.Connection, response_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT response_id, request_id, model_name, input_items_json, output_items_json, messages_json, created_at, updated_at
+        FROM response_states
+        WHERE response_id = ?
+        """,
+        (response_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "response_id": row[0],
+        "request_id": row[1],
+        "model_name": row[2],
+        "input_items": json.loads(row[3]),
+        "output_items": json.loads(row[4]),
+        "messages": json.loads(row[5]),
+        "created_at": row[6],
+        "updated_at": row[7],
+    }
 
 
 def _percentile(values: list[float], ratio: float) -> float | None:

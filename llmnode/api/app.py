@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, PlainTextResponse
 from ..config import PROJECT_ROOT, load_settings
 from ..logging import setup_logging
 from ..models import ModelRoute, load_model_catalog, logical_models_for_api, model_routes_for_admin
-from ..protocols import AnthropicMessagesRequest, OpenAIChatCompletionsRequest
+from ..protocols import AnthropicMessagesRequest, OpenAIChatCompletionsRequest, OpenAIResponsesRequest
 from ..proxy.backend import VLLMBackendClient
 from ..proxy.router import (
     AuthContext,
@@ -46,6 +46,7 @@ from ..storage.db import (
     delete_api_key,
     get_api_key_by_id,
     get_request_log_detail,
+    get_response_state,
     init_db,
     list_agent_events,
     list_api_keys,
@@ -56,6 +57,7 @@ from ..storage.db import (
     seed_model_routes,
     stable_masked_key,
     update_api_key,
+    upsert_response_state,
     upsert_model_route,
     upsert_schedule_config,
     write_request_metric,
@@ -213,6 +215,122 @@ def _extract_anthropic_stream_usage(chunk: bytes) -> dict[str, Any] | None:
             ),
         }
     }
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _response_usage_from_chat(payload: dict[str, Any]) -> dict[str, Any]:
+    usage = _extract_usage(payload)
+    return {
+        "input_tokens": usage["prompt_tokens"],
+        "output_tokens": usage["completion_tokens"],
+        "total_tokens": usage["total_tokens"],
+        "input_token_details": {
+            "cache_creation_tokens": usage["cache_creation_tokens"],
+            "cache_read_tokens": usage["cache_read_tokens"],
+            "cache_miss_tokens": usage["cache_miss_tokens"],
+        },
+    }
+
+
+def _assistant_message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def _tool_call_output_item(tool_call: dict[str, Any]) -> dict[str, Any]:
+    function = tool_call.get("function") if isinstance(tool_call, dict) else None
+    return {
+        "type": "function_call",
+        "call_id": tool_call.get("id"),
+        "name": function.get("name") if isinstance(function, dict) else None,
+        "arguments": function.get("arguments") if isinstance(function, dict) else None,
+    }
+
+
+def _responses_output_from_chat(chat_payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    choices = chat_payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return [], []
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return [], []
+
+    output: list[dict[str, Any]] = []
+    conversation_messages: list[dict[str, Any]] = []
+    text = _assistant_message_text(message)
+    if text:
+        output.append(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }
+        )
+        conversation_messages.append({"role": "assistant", "content": text})
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tool_call in tool_calls:
+            if isinstance(tool_call, dict):
+                output.append(_tool_call_output_item(tool_call))
+                conversation_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [tool_call],
+                    }
+                )
+    return output, conversation_messages
+
+
+def _responses_payload_from_chat(
+    *,
+    chat_payload: dict[str, Any],
+    request_payload: OpenAIResponsesRequest,
+    response_id: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    output, assistant_messages = _responses_output_from_chat(chat_payload)
+    payload = {
+        "id": response_id,
+        "object": "response",
+        "created_at": _now_iso(),
+        "status": "completed",
+        "model": request_payload.model,
+        "output": output,
+        "usage": _response_usage_from_chat(chat_payload),
+    }
+    return payload, assistant_messages
+
+
+def _format_sse_event(event: str, payload: dict[str, Any]) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n".encode()
+
+
+def _parse_openai_stream_event(chunk: bytes) -> dict[str, Any] | None:
+    if not chunk.startswith(b"data: "):
+        return None
+    data = chunk[6:].strip()
+    if not data or data == b"[DONE]":
+        return None
+    try:
+        payload = json.loads(data)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _sanitize_api_key_row(row: dict[str, Any], *, masked_key: str | None = None) -> dict[str, Any]:
@@ -1079,6 +1197,310 @@ def create_app() -> FastAPI:
             **log_context,
         )
         response = JSONResponse(result)
+        response.headers["x-request-id"] = request_id
+        return response
+
+    @app.post("/v1/responses")
+    async def responses(request: Request):
+        auth = _resolve_auth(request, "inference")
+        await ensure_agent_ready()
+        raw = await _read_json_body(request)
+        try:
+            payload = OpenAIResponsesRequest.model_validate(raw)
+            input_items = payload.input_items()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        request_id = _request_id(request)
+        response_id = f"resp_{uuid.uuid4().hex}"
+        started_at = datetime.now(timezone.utc)
+        log_context = _request_log_context(request, auth)
+
+        previous_messages: list[dict[str, Any]] = []
+        if payload.previous_response_id:
+            previous_state = get_response_state(request.app.state.db, payload.previous_response_id)
+            if previous_state is None:
+                raise HTTPException(status_code=404, detail=f"unknown response: {payload.previous_response_id}")
+            previous_messages = list(previous_state["messages"])
+
+        chat_payload = payload.to_chat_payload(payload.model, previous_messages)
+        messages_for_state = payload.to_chat_messages(previous_messages)
+
+        try:
+            key_lease = await request.app.state.api_key_gate.begin(
+                auth.api_key_id,
+                rpm_limit=auth.rpm_limit,
+                concurrency_limit=auth.concurrency_limit,
+            )
+        except ApiKeyRateLimitError as exc:
+            log_context["rejection_reason"] = "rpm_limit_exceeded"
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "rejected",
+                "responses",
+                str(exc),
+                **log_context,
+            )
+            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+        except ApiKeyConcurrencyError as exc:
+            log_context["rejection_reason"] = "concurrency_limit_exceeded"
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "rejected",
+                "responses",
+                str(exc),
+                **log_context,
+            )
+            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+
+        if payload.stream:
+            gate = request.app.state.request_gate.slot()
+            try:
+                await gate.__aenter__()
+                stream = await stream_openai_chat(chat_payload, request.app.state.ctx)
+            except QueueFullError as exc:
+                await key_lease.reject()
+                finished_at = datetime.now(timezone.utc)
+                log_context["rejection_reason"] = "queue_full"
+                _record_request_metric(
+                    request.app,
+                    request_id=request_id,
+                    model_name=payload.model,
+                    protocol="responses",
+                    status="rejected",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
+                write_request_log(
+                    request.app.state.db,
+                    request_id,
+                    payload.model,
+                    "rejected",
+                    "responses",
+                    str(exc),
+                    **log_context,
+                )
+                raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+            except QueueTimeoutError as exc:
+                await key_lease.reject()
+                finished_at = datetime.now(timezone.utc)
+                log_context["rejection_reason"] = "queue_timeout"
+                _record_request_metric(
+                    request.app,
+                    request_id=request_id,
+                    model_name=payload.model,
+                    protocol="responses",
+                    status="timeout",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
+                write_request_log(
+                    request.app.state.db,
+                    request_id,
+                    payload.model,
+                    "timeout",
+                    "responses",
+                    str(exc),
+                    **log_context,
+                )
+                raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
+            except Exception:
+                await key_lease.reject()
+                await gate.__aexit__(None, None, None)
+                raise
+
+            async def body():
+                last_usage_payload: dict[str, Any] | None = None
+                output_text_parts: list[str] = []
+                yield _format_sse_event(
+                    "response.created",
+                    {
+                        "id": response_id,
+                        "object": "response",
+                        "status": "in_progress",
+                        "model": payload.model,
+                    },
+                )
+                try:
+                    async for chunk in stream:
+                        usage_payload = _extract_openai_stream_usage(chunk)
+                        if usage_payload is not None:
+                            last_usage_payload = usage_payload
+
+                        event_payload = _parse_openai_stream_event(chunk)
+                        if event_payload is None:
+                            continue
+                        choices = event_payload.get("choices")
+                        if not isinstance(choices, list) or not choices:
+                            continue
+                        delta = choices[0].get("delta")
+                        if not isinstance(delta, dict):
+                            continue
+                        content = delta.get("content")
+                        if isinstance(content, str) and content:
+                            output_text_parts.append(content)
+                            yield _format_sse_event(
+                                "response.output_text.delta",
+                                {
+                                    "response_id": response_id,
+                                    "delta": content,
+                                },
+                            )
+                finally:
+                    await key_lease.finish()
+                    await gate.__aexit__(None, None, None)
+                    finished_at = datetime.now(timezone.utc)
+                    if last_usage_payload is not None:
+                        _record_request_metric(
+                            request.app,
+                            request_id=request_id,
+                            model_name=payload.model,
+                            protocol="responses",
+                            status="ok",
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            response_payload=last_usage_payload,
+                            backend_type=request.app.state.ctx.backend_client.backend_type,
+                            api_key_id=auth.api_key_id,
+                        )
+                    final_output: list[dict[str, Any]] = []
+                    final_messages: list[dict[str, Any]] = list(messages_for_state)
+                    if output_text_parts:
+                        text = "".join(output_text_parts)
+                        final_output.append(
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": text}],
+                            }
+                        )
+                        final_messages.append({"role": "assistant", "content": text})
+                    upsert_response_state(
+                        request.app.state.db,
+                        response_id=response_id,
+                        request_id=request_id,
+                        model_name=payload.model,
+                        input_items=input_items,
+                        output_items=final_output,
+                        messages=final_messages,
+                    )
+                    yield _format_sse_event(
+                        "response.completed",
+                        {
+                            "id": response_id,
+                            "object": "response",
+                            "status": "completed",
+                            "model": payload.model,
+                            "output": final_output,
+                            "usage": _response_usage_from_chat(last_usage_payload or {}),
+                        },
+                    )
+
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "streaming",
+                "responses",
+                **log_context,
+            )
+            response = StreamingResponse(body(), media_type="text/event-stream")
+            response.headers["x-request-id"] = request_id
+            return response
+
+        try:
+            async with request.app.state.request_gate.slot():
+                result = await proxy_openai_chat(chat_payload, request.app.state.ctx)
+        except QueueFullError as exc:
+            await key_lease.reject()
+            finished_at = datetime.now(timezone.utc)
+            log_context["rejection_reason"] = "queue_full"
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="responses",
+                status="rejected",
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "rejected",
+                "responses",
+                str(exc),
+                **log_context,
+            )
+            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+        except QueueTimeoutError as exc:
+            await key_lease.reject()
+            finished_at = datetime.now(timezone.utc)
+            log_context["rejection_reason"] = "queue_timeout"
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="responses",
+                status="timeout",
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "timeout",
+                "responses",
+                str(exc),
+                **log_context,
+            )
+            raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
+        except Exception:
+            await key_lease.finish()
+            raise
+
+        await key_lease.finish()
+        finished_at = datetime.now(timezone.utc)
+        _record_request_metric(
+            request.app,
+            request_id=request_id,
+            model_name=payload.model,
+            protocol="responses",
+            status="ok",
+            started_at=started_at,
+            finished_at=finished_at,
+            response_payload=result,
+            backend_type=request.app.state.ctx.backend_client.backend_type,
+            api_key_id=auth.api_key_id,
+        )
+        response_payload, assistant_messages = _responses_payload_from_chat(
+            chat_payload=result,
+            request_payload=payload,
+            response_id=response_id,
+        )
+        upsert_response_state(
+            request.app.state.db,
+            response_id=response_id,
+            request_id=request_id,
+            model_name=payload.model,
+            input_items=input_items,
+            output_items=response_payload["output"],
+            messages=[*messages_for_state, *assistant_messages],
+        )
+        write_request_log(
+            request.app.state.db,
+            request_id,
+            payload.model,
+            "ok",
+            "responses",
+            **log_context,
+        )
+        response = JSONResponse(response_payload)
         response.headers["x-request-id"] = request_id
         return response
 
