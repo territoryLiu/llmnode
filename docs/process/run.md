@@ -26,12 +26,20 @@ cd /proj02/liuheshan/llmnode
 ## 2. 最小启动
 
 ```bash
+python -m llmnode.control create-api-key --name console-admin --scope admin
 python -m llmnode.control start
 ```
+
+说明：
+
+- 当前网关不再内置默认 `dev-key`
+- 首次使用前，需要先通过本地控制命令创建至少一把数据库管理员密钥
+- 创建后请保存输出的明文 `sk-...` 密钥；管理台与 API 调用都依赖它
 
 ## 3. 常用命令
 
 ```bash
+python -m llmnode.control create-api-key --name console-admin --scope admin
 python -m llmnode.control status
 python -m llmnode.control doctor
 python -m llmnode.control logs --target all --lines 20
@@ -70,6 +78,9 @@ python -m llmnode.control stop
   - `backend_not_ready`：后端 HTTP 不可达
   - `agent_state_unavailable`：agent 状态获取失败
   - `agent_not_ready`：agent 状态非 ready
+- 事件面至少可观察到：
+  - `stream_not_ready`：HTTP 已通，但推理探针仍未通过
+  - `backend_recovered`：从 `warming_up / degraded / recovering` 恢复到 `ready`
 
 ### 5.1 推理后端 ready
 
@@ -136,3 +147,23 @@ python -m llmnode.control stop --service gateway
 python -m llmnode.control stop --service agent
 python -m llmnode.control stop --service vllm
 ```
+
+## 8. API Key 初始化
+
+推荐初始化命令：
+
+```bash
+python -m llmnode.control create-api-key --name console-admin --scope admin
+```
+
+如果同时需要让这把 key 调用推理接口，可以加上：
+
+```bash
+python -m llmnode.control create-api-key --name console-admin --scope admin --scope inference
+```
+
+初始化后的使用边界：
+
+- 对外 API 和管理台都只认数据库中的 API key
+- 真实密钥统一为 `sk-<64hex>`
+- `web-console` 顶部可手工输入并保存这把 `sk-...` 密钥

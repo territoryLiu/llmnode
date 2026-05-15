@@ -37,6 +37,7 @@ python -m llmnode.control <action>
 - `env`
 - `doctor`
 - `logs`
+- `create-api-key`
 
 如果后续新增命令，应同步更新：
 
@@ -166,6 +167,11 @@ python -m llmnode.control <action>
   - `last_probe_error`: 最近一次探针失败原因
   - `last_probe_latency_ms`: 最近一次探针延迟（毫秒）
   - `last_transition_at`: 上次状态切换时间
+- `GET /events` 返回的 agent readiness 事件至少包含：
+  - `event_type`: 结构化事件名，例如 `stream_not_ready / backend_ready / backend_recovered / backend_error`
+  - `readiness_state`: 该事件对应的 readiness 状态
+  - `http_ready` / `inference_ready`: 事件发生时的布尔快照
+  - `metadata`: 附加探针信息，如 `last_probe_error`、`last_probe_latency_ms`、`retry_after_seconds`
 
 ### 三后端特定检查
 - **vLLM**: GPU 可用性、显存容量、模型格式（HuggingFace）、镜像版本
@@ -220,7 +226,31 @@ python -m llmnode.control stop --service vllm
 - `gateway / agent` 支持前台与后台运行
 - `vllm` 当前更偏 daemon 风格
 
-## 12. 命令变更后的回流要求
+## 12. `create-api-key`
+
+### 职责
+- 在本地 SQLite 账本中创建正式 API key
+- 为首把管理员密钥初始化提供无 bootstrap 后门的正式入口
+
+### 典型用法
+
+```bash
+python -m llmnode.control create-api-key --name console-admin --scope admin
+python -m llmnode.control create-api-key --name hybrid --scope admin --scope inference
+```
+
+### 输出要求
+- 显示创建结果标题
+- 显示 key id / name / status / scopes
+- 显示数据库路径
+- 显示一次性明文密钥
+
+### 当前边界
+- 真实密钥格式统一为 `sk-<64hex>`
+- 未创建数据库密钥前，网关不应再接受默认 `dev-key` 或其他 bootstrap key
+- 该命令是首把管理员密钥的正式初始化路径
+
+## 13. 命令变更后的回流要求
 
 如果控制面发生变化，至少要检查是否同步更新：
 

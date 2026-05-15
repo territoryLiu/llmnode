@@ -47,6 +47,8 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
         return bool(snapshot.get("exists")) and str(snapshot.get("status")) == "running"
 
     async def _refresh_state() -> bool:
+        previous_status = app.state.agent.status
+
         # Stage 1: HTTP health check
         http_ready = await app.state.backend_driver.health(app.state.backend_url)
         app.state.agent.http_ready = http_ready
@@ -64,14 +66,21 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
                 app.state.agent.mark("stopped", "manual stop requested")
                 write_agent_event(
                     app.state.db, "stopped", "manual stop requested",
-                    readiness_state="stopped", http_ready=False, inference_ready=False,
+                    event_type="backend_stopped",
+                    readiness_state="stopped",
+                    http_ready=False,
+                    inference_ready=False,
                 )
                 return False
             if app.state.agent.status == "ready":
                 app.state.agent.mark("degraded", "backend became unavailable")
                 write_agent_event(
                     app.state.db, "degraded", "backend became unavailable",
-                    readiness_state="degraded", http_ready=False, inference_ready=False,
+                    event_type="backend_error",
+                    readiness_state="degraded",
+                    http_ready=False,
+                    inference_ready=False,
+                    metadata={"last_probe_error": app.state.agent.last_probe_error},
                 )
             elif app.state.agent.status == "starting":
                 app.state.agent.mark("starting", "waiting for backend")
@@ -104,7 +113,10 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
             app.state.agent.mark("stopped", "manual stop requested")
             write_agent_event(
                 app.state.db, "stopped", "manual stop requested",
-                readiness_state="stopped", http_ready=True, inference_ready=app.state.agent.inference_ready,
+                event_type="backend_stopped",
+                readiness_state="stopped",
+                http_ready=True,
+                inference_ready=app.state.agent.inference_ready,
             )
             return False
 
@@ -116,17 +128,33 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
                 app.state.agent.mark("ready")
                 write_agent_event(
                     app.state.db, "ready", "backend healthy",
-                    readiness_state="ready", http_ready=True, inference_ready=True,
+                    event_type=(
+                        "backend_recovered"
+                        if previous_status in {"warming_up", "degraded", "recovering"}
+                        else "backend_ready"
+                    ),
+                    readiness_state="ready",
+                    http_ready=True,
+                    inference_ready=True,
+                    metadata={"last_probe_latency_ms": app.state.agent.last_probe_latency_ms},
                 )
             return True
         else:
             # HTTP ready but inference not ready — warming up
             if app.state.agent.status != "warming_up":
                 app.state.agent.mark("warming_up", "backend http ready, inference probe pending")
-                write_agent_event(
-                    app.state.db, "warming_up", "backend http ready, inference probe pending",
-                    readiness_state="warming_up", http_ready=True, inference_ready=False,
-                )
+            write_agent_event(
+                app.state.db, "warming_up", "backend http ready, inference probe pending",
+                event_type="stream_not_ready",
+                readiness_state="warming_up",
+                http_ready=True,
+                inference_ready=False,
+                metadata={
+                    "last_probe_error": app.state.agent.last_probe_error,
+                    "retry_after_seconds": app.state.agent.retry_after_seconds,
+                    "last_probe_latency_ms": app.state.agent.last_probe_latency_ms,
+                },
+            )
             return False
 
     async def _recover_if_needed() -> None:

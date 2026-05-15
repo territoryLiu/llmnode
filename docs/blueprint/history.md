@@ -107,6 +107,12 @@
   **文档系统第二轮收口已完成**：`docs/knowledge/*` 已固定为常驻参考层，`docs/superpowers/*` 已固定为进行中工作区；`README.md` 的失效文档入口已清理，文档边界统一回流到 `development-workflow / glossary / current / roadmap`。这标志着文档系统从”第一轮分层”进入”第二轮边界固化”阶段。
 - 补充里程碑（2026-05-14）：
   **默认模型 profile 切换与 API Key 管理台能力补齐**：默认 profile 由 `vllm_qwen36-35b-a3b-fp8` 切换为 `vllm_qwen36-27b-FP8`；API Key 管理台后端返回 `masked_key` 脱敏字段和 `usage_summary` 用量统计，新增 `/admin/overview/readiness` 端点统一下发 Base URL；管理台密钥页面支持 Base URL 展示/复制、新建密钥显示/隐藏切换、历史密钥 masked_key 和用量展示。
+- 补充里程碑（2026-05-15）：
+  **Usage Ledger 与聚合视图落地**：`request_metrics` 已扩展 `backend_type`、`api_key_id` 与 cache token 字段；后端聚合查询支持 summary / trend / breakdown / key usage；管理面新增 `/admin/overview/usage` 和 `/admin/keys/{id}/usage`；流式请求在 stream 结束后写入 metric；管理台总览和请求记录页已接入总 Token、缓存 Token、趋势图和后端分布；SQLite 迁移兼容与索引已补齐。
+- 补充里程碑（2026-05-15）：
+  **默认密钥后门已移除，API Key 初始化路径正式化**：网关已移除默认 `dev-key` / bootstrap key 放行，正式鉴权统一收敛到数据库 API key；真实密钥格式改为 `sk-<64hex>`，历史列表脱敏展示改为 `sk-****` 风格；控制面新增 `python -m llmnode.control create-api-key` 作为首把管理员密钥初始化路径；管理台顶部新增轻量 API key 输入入口，不再依赖默认预置密钥。
+- 补充里程碑（2026-05-15）：
+  **Readiness 热身语义与结构化事件已正式化**：`node-agent` 已拆分 `http_ready / inference_ready` 双阶段就绪语义；网关在热身窗口返回 `503 + Retry-After`，并使用固定 `detail` 枚举；`agent_events` 已扩展 `event_type / readiness_state / http_ready / inference_ready / metadata_json`，其中热身失败和恢复路径会记录 `stream_not_ready`、`backend_recovered` 等结构化事件，管理台与排障接口可直接消费。
 - 对应历史蓝图：
   未来方向已回流到 [roadmap.md](roadmap.md)，相关正式边界已进入 [current.md](current.md) 与相关 `contracts / process` 文档。
 

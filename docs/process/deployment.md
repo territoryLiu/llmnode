@@ -64,6 +64,7 @@ python -m llmnode.control start
 - `http://127.0.0.1:5173` 可访问，表示默认前端入口 ready
 - `python -m llmnode.control status` 能看到整栈摘要
 - 后端热身窗口期内，推理请求会返回 `503 + Retry-After`，表示 Agent 已就绪但后端模型仍在加载中
+- readiness 相关事件可通过 agent 事件流读取，至少包括 `stream_not_ready` 和恢复后的 `backend_recovered`
 - 管理台密钥页面通过 `/admin/overview/readiness` 获取 Base URL（本地地址 / 局域网地址），供客户端复制使用
 
 它不适用于：

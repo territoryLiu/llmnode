@@ -7,7 +7,7 @@ import httpx
 
 from llmnode.agent.service import create_agent_app
 from llmnode.agent.state import AgentState
-from llmnode.storage.db import write_request_metric
+from llmnode.storage.db import list_agent_events, write_request_metric
 
 
 def test_state_machine_has_ready_state():
@@ -76,6 +76,79 @@ def test_agent_warming_up_when_http_ready_but_probe_fails():
             assert payload["http_ready"] is True
             assert payload["inference_ready"] is False
             assert payload["retry_after_seconds"] == 5
+
+    asyncio.run(run())
+
+
+def test_agent_warming_up_event_records_stream_not_ready_metadata():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+
+        async def fake_health(_):
+            return True
+
+        async def fake_probe(*_args, **_kwargs):
+            raise RuntimeError("stream not ready")
+
+        app.state.backend_driver.health = fake_health
+        app.state.backend_driver.probe = fake_probe
+        app.state.warming_up_retry_after = 5
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/state")
+            assert resp.status_code == 200
+            events = list_agent_events(app.state.db, limit=5)
+            assert events
+            latest = events[0]
+            assert latest["status"] == "warming_up"
+            assert latest["event_type"] == "stream_not_ready"
+            assert latest["readiness_state"] == "warming_up"
+            assert latest["http_ready"] is True
+            assert latest["inference_ready"] is False
+            assert latest["metadata"]["last_probe_error"] == "stream not ready"
+            assert latest["metadata"]["retry_after_seconds"] == 5
+
+    asyncio.run(run())
+
+
+def test_agent_ready_after_warming_up_records_backend_recovered_event():
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+        probe_attempts = {"count": 0}
+
+        async def fake_health(_):
+            return True
+
+        async def fake_probe(*_args, **_kwargs):
+            probe_attempts["count"] += 1
+            if probe_attempts["count"] == 1:
+                raise RuntimeError("stream not ready")
+            return {"ok": True, "latency_ms": 12.5}
+
+        app.state.backend_driver.health = fake_health
+        app.state.backend_driver.probe = fake_probe
+        app.state.warming_up_retry_after = 5
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            first = await client.get("/state")
+            assert first.status_code == 200
+            assert first.json()["status"] == "warming_up"
+
+            second = await client.get("/state")
+            assert second.status_code == 200
+            payload = second.json()
+            assert payload["status"] == "ready"
+            assert payload["inference_ready"] is True
+
+            events = list_agent_events(app.state.db, limit=5)
+            assert len(events) >= 2
+            assert events[0]["status"] == "ready"
+            assert events[0]["event_type"] == "backend_recovered"
+            assert events[0]["readiness_state"] == "ready"
+            assert events[0]["http_ready"] is True
+            assert events[0]["inference_ready"] is True
+            assert "last_probe_latency_ms" in events[0]["metadata"]
+            assert events[1]["event_type"] == "stream_not_ready"
 
     asyncio.run(run())
 

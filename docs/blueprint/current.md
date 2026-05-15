@@ -92,6 +92,7 @@
   - `env`
   - `doctor`
   - `logs`
+  - `create-api-key`
 - 管理台：
   - 总览状态卡片
   - 实时 SSE 面板
@@ -186,6 +187,25 @@
   - 新增 `/admin/overview/readiness` 端点，统一下发 Base URL 和就绪状态
   - 管理台密钥页面展示 Base URL 卡片、复制按钮、密钥显示/隐藏切换
   - 历史 key 列表中展示 masked_key 和用量统计
+- 正式 usage ledger 已落地（2026-05-15）：
+  - `request_metrics` 表支持 `backend_type`、`api_key_id`、cache token 字段
+  - 聚合查询支持按模型 / 后端 / API Key / 日月年维度输出 summary / trend / breakdown
+  - 管理面新增 `/admin/overview/usage` 与 `/admin/keys/{id}/usage` 视图端点
+  - 管理台总览与请求记录页已接入总 Token、缓存 Token、趋势图和后端分布
+  - 流式请求会在 stream 结束后补写 metric，缺失 usage 字段时保持 `null`，不伪装为 `0`
+- Readiness 语义与热身期错误边界已收口（2026-05-15）：
+  - `node-agent` 已正式区分 `http_ready` 与 `inference_ready`
+  - 后端 HTTP 可达但推理探针未通过时，状态为 `warming_up`
+  - 网关在未就绪时返回 `503 + Retry-After`，`detail` 使用固定枚举 `backend_warming_up / backend_not_ready / agent_state_unavailable / agent_not_ready`
+  - `agent_events` 已记录结构化 readiness 事件，包含 `event_type`、`readiness_state`、`http_ready`、`inference_ready` 与 `metadata_json`
+  - 热身探针失败与恢复至少会落库 `stream_not_ready`、`backend_recovered` 事件，供管理台与排障读取
+- API Key 正式边界已收紧（2026-05-15）：
+  - 网关已移除默认 `dev-key` / bootstrap key 放行路径
+  - 正式鉴权只接受数据库中的 API key，默认必须先创建密钥才能使用
+  - 新建真实密钥统一使用 `sk-<64hex>` 格式
+  - 历史列表展示的 `masked_key` 已改为 `sk-****` 风格，不再使用 `ln_saved_n`
+  - 控制面新增 `python -m llmnode.control create-api-key --name <name> --scope admin` 用于首把管理员密钥初始化
+  - 管理台顶部提供轻量 API key 输入入口，不再依赖默认内置密钥
 
 当前模型选择建议也已经收敛：
 
@@ -219,6 +239,12 @@
 - Python 控制入口：`llmnode/control.py`
 - 网关配置加载：`llmnode/config.py`
 - 当前系统真相：本文
+
+当前安全边界补充：
+
+- `config/defaults.yaml` 中 `gateway.api_key` 已默认置空，不再作为正式 bootstrap 鉴权入口
+- 首把管理员密钥的正式创建路径是本地控制命令 `python -m llmnode.control create-api-key`
+- 浏览器端仅保存用户手工输入的 `sk-...` 密钥，不再默认预填 `dev-key`
 
 这意味着如果出现“README 说法、旧蓝图说法、代码行为不一致”的情况，优先应对照：
 
@@ -296,5 +322,4 @@
 当前最值得继续补厚的方向包括：
 
 - 诊断建议的持续优化（新增错误模式识别）
-- 性能指标采集（请求总数、成功率、延迟、吞吐量）
 - 节点平台化预留（保持单机前提下的对象边界收口）
