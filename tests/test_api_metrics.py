@@ -1,10 +1,12 @@
 import asyncio
+import json
 
 import httpx
 
 from llmnode.api.app import create_app
 from llmnode.proxy.vllm_client import VLLMClient
-from llmnode.storage.db import aggregate_request_metrics
+from llmnode.security import hash_api_key
+from llmnode.storage.db import aggregate_request_metrics, create_api_key
 
 
 class UsageFakeClient(VLLMClient):
@@ -28,17 +30,37 @@ class UsageFakeClient(VLLMClient):
         }
 
 
+TEST_MODEL = "qwen36-27b-fp8"
+
+
+def seed_admin_key(app, secret: str = "sk-admin-test") -> str:
+    create_api_key(
+        app.state.db,
+        name=f"admin-{secret}",
+        key_hash=hash_api_key(secret),
+        scopes=["admin"],
+    )
+    return secret
+
+
 def test_chat_completions_write_metrics_for_success():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = UsageFakeClient()
+        admin_secret = seed_admin_key(app)
+        admin_row = create_api_key(
+            app.state.db,
+            name="inference-success-key",
+            key_hash=hash_api_key("sk-success-metrics"),
+            scopes=["inference"],
+        )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             resp = await client.post(
                 "/v1/chat/completions",
-                headers={"Authorization": "Bearer dev-key"},
+                headers={"Authorization": "Bearer sk-success-metrics"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": TEST_MODEL,
                     "messages": [{"role": "user", "content": "hello"}],
                     "max_tokens": 16,
                 },
@@ -49,6 +71,13 @@ def test_chat_completions_write_metrics_for_success():
             assert metrics["success_count"] == 1
             assert metrics["tokens_observed_requests"] == 1
             assert metrics["throughput_tokens_per_s"] > 0
+            row = app.state.db.execute(
+                """
+                SELECT backend_type, api_key_id, cache_creation_tokens, cache_read_tokens, cache_miss_tokens
+                FROM request_metrics
+                """
+            ).fetchone()
+            assert row == ("vllm", admin_row["id"], None, None, None)
 
     asyncio.run(run())
 
@@ -74,13 +103,14 @@ def test_queue_rejection_writes_metrics_record():
         app = create_app()
         app.state.ctx.backend_client = UsageFakeClient()
         app.state.request_gate._queue_limit = 0
+        admin_secret = seed_admin_key(app)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             resp = await client.post(
                 "/v1/chat/completions",
-                headers={"Authorization": "Bearer dev-key"},
+                headers={"Authorization": f"Bearer {admin_secret}"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": TEST_MODEL,
                     "messages": [{"role": "user", "content": "hello"}],
                     "max_tokens": 16,
                 },
@@ -98,13 +128,14 @@ def test_success_without_usage_still_writes_latency_metrics():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = NoUsageFakeClient()
+        admin_secret = seed_admin_key(app)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             resp = await client.post(
                 "/v1/chat/completions",
-                headers={"Authorization": "Bearer dev-key"},
+                headers={"Authorization": f"Bearer {admin_secret}"},
                 json={
-                    "model": "claude-sonnet-4-5-20250929",
+                    "model": TEST_MODEL,
                     "messages": [{"role": "user", "content": "hello"}],
                     "max_tokens": 16,
                 },
@@ -115,5 +146,129 @@ def test_success_without_usage_still_writes_latency_metrics():
             assert metrics["success_count"] == 1
             assert metrics["tokens_observed_requests"] == 0
             assert metrics["avg_latency_ms"] > 0
+
+    asyncio.run(run())
+
+
+def test_admin_usage_overview_and_key_usage_endpoints():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = UsageFakeClient()
+        admin_secret = seed_admin_key(app)
+        created = create_api_key(
+            app.state.db,
+            name="custom-inference-key",
+            key_hash=hash_api_key("sk-test-usage-key"),
+            scopes=["inference"],
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": "Bearer sk-test-usage-key"},
+                json={
+                    "model": TEST_MODEL,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "max_tokens": 16,
+                },
+            )
+            assert resp.status_code == 200
+
+            overview = await client.get("/admin/overview/usage", headers={"Authorization": f"Bearer {admin_secret}"})
+            assert overview.status_code == 200
+            payload = overview.json()
+            assert "summary" in payload
+            assert "trend" in payload
+            assert "breakdown" in payload
+            assert "chart" in payload
+            assert payload["summary"]["request_count"] == 1
+            assert payload["breakdown"]["api_keys"][0]["group"] == created["id"]
+            assert payload["chart"]["window"] == "12h"
+            assert payload["chart"]["group_by"] == "backend_type"
+
+            key_usage = await client.get(
+                f"/admin/keys/{created['id']}/usage",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+            )
+            assert key_usage.status_code == 200
+            assert key_usage.json()["summary"]["api_key_id"] == created["id"]
+            assert key_usage.json()["summary"]["request_count"] == 1
+
+            by_device = await client.get(
+                "/admin/overview/usage?window=day&group_by=device_type",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+            )
+            assert by_device.status_code == 200
+            assert by_device.json()["chart"]["group_by"] == "device_type"
+
+    asyncio.run(run())
+
+
+class StreamingUsageFakeClient(VLLMClient):
+    def __init__(self):
+        super().__init__(base_url="http://fake")
+
+    async def health(self) -> bool:
+        return True
+
+    async def stream_bytes(self, path, payload):
+        assert path == "/v1/chat/completions"
+        chunks = [
+            b'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"he"}}]}\n\n',
+            (
+                'data: '
+                + json.dumps(
+                    {
+                        "id": "chatcmpl-1",
+                        "choices": [{"delta": {}, "finish_reason": "stop"}],
+                        "usage": {
+                            "prompt_tokens": 4,
+                            "completion_tokens": 6,
+                            "total_tokens": 10,
+                            "cache": {
+                                "creation_tokens": 2,
+                                "read_tokens": 3,
+                                "miss_tokens": 1,
+                            },
+                        },
+                    }
+                )
+                + "\n\n"
+            ).encode(),
+            b"data: [DONE]\n\n",
+        ]
+        for chunk in chunks:
+            yield chunk
+
+
+def test_streaming_chat_records_metrics_on_completion():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = StreamingUsageFakeClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            async with client.stream(
+                "POST",
+                    "/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {admin_secret}"},
+                    json={
+                    "model": TEST_MODEL,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "max_tokens": 16,
+                        "stream": True,
+                },
+            ) as resp:
+                assert resp.status_code == 200
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                assert b"data: [DONE]" in body
+
+            metrics = aggregate_request_metrics(app.state.db)
+            assert metrics["request_count"] == 1
+            assert metrics["success_count"] == 1
+            assert metrics["total_tokens"] == 10
+            assert metrics["cache_read_tokens"] == 3
 
     asyncio.run(run())

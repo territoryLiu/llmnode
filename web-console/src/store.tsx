@@ -24,6 +24,40 @@ export interface RequestLog {
   rejection_reason: string | null;
 }
 
+export interface RequestLogsResponse {
+  logs: RequestLog[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RequestMetricDetail {
+  request_id: string;
+  model_name: string;
+  protocol: string;
+  status: string;
+  latency_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  tokens_per_second: number | null;
+  started_at: string;
+  finished_at: string | null;
+  backend_type: string | null;
+  api_key_id: number | null;
+  cache_creation_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_miss_tokens: number | null;
+  error_code: string | null;
+  status_detail: string | null;
+}
+
+export interface RequestLogDetail {
+  request_id: string;
+  log: RequestLog;
+  metrics: RequestMetricDetail | null;
+}
+
 export interface AgentEvent {
   id: number;
   status: string;
@@ -35,6 +69,7 @@ export interface ApiKeyRow {
   id: number;
   name: string;
   masked_key: string;
+  plain_secret?: string | null;
   status: 'active' | 'disabled';
   scopes: string[];
   rpm_limit: number | null;
@@ -73,6 +108,77 @@ export interface ScheduleConfig {
   auto_stop_enabled: boolean;
   auto_start_enabled: boolean;
   cooldown_minutes: number;
+}
+
+export interface UsageSummary {
+  request_count: number;
+  success_count: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  p95_latency_ms: number;
+  p99_latency_ms: number;
+  throughput_tokens_per_s: number;
+  tokens_observed_requests: number;
+  total_tokens: number | null;
+  cache_creation_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_miss_tokens: number | null;
+  cache_read_observed_requests: number;
+}
+
+export interface UsageTrendPoint {
+  bucket: string;
+  request_count: number;
+  total_tokens: number;
+  cache_read_tokens: number | null;
+  cache_read_observed: number;
+}
+
+export interface UsageChartPoint {
+  bucket: string;
+  label: string;
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+  cache_miss_tokens: number;
+  cache_tokens: number;
+  total_tokens: number;
+}
+
+export interface UsageChartGroup {
+  group: string;
+  label: string;
+  totals: Omit<UsageChartPoint, 'bucket' | 'label' | 'request_count'>;
+  points: UsageChartPoint[];
+}
+
+export interface UsageChart {
+  window: '12h' | 'day' | 'month' | 'year';
+  group_by: 'backend_type' | 'model_name' | 'device_type';
+  totals: Omit<UsageChartPoint, 'bucket' | 'label' | 'request_count'>;
+  points: UsageChartPoint[];
+  groups: UsageChartGroup[];
+}
+
+export interface UsageBreakdownItem {
+  group: string | number | null;
+  request_count: number;
+  total_tokens: number;
+  cache_read_tokens: number | null;
+  cache_read_observed: number;
+}
+
+export interface UsageOverview {
+  summary: UsageSummary;
+  trend: UsageTrendPoint[];
+  breakdown: {
+    models: UsageBreakdownItem[];
+    backends: UsageBreakdownItem[];
+    api_keys: UsageBreakdownItem[];
+  };
+  chart: UsageChart;
 }
 
 export interface SnapshotHistoryPoint {
@@ -220,6 +326,7 @@ interface LoadingState {
   apiKeys: boolean;
   modelRoutes: boolean;
   schedule: boolean;
+  usageOverview: boolean;
 }
 
 interface AppState {
@@ -241,20 +348,45 @@ interface AppState {
   snapshot: AdminSnapshot | null;
   snapshotHistory: SnapshotHistoryPoint[];
   requestLogs: RequestLog[];
+  requestLogDetail: RequestLogDetail | null;
+  requestLogsTotal: number;
+  requestLogsLimit: number;
+  requestLogsOffset: number;
   apiKeys: ApiKeyRow[];
   modelRoutes: ModelRouteRow[];
   schedule: ScheduleConfig | null;
   diagnostics: DiagnosticsStatus | null;
   readinessOverview: ReadinessOverview | null;
+  usageOverview: UsageOverview | null;
   loading: LoadingState;
   refreshAll: () => Promise<void>;
   refreshSnapshot: () => Promise<void>;
-  refreshRequestLogs: (limit?: number) => Promise<void>;
+  refreshRequestLogs: (options?: {
+    limit?: number;
+    offset?: number;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    status?: string | null;
+    query?: string | null;
+  }) => Promise<void>;
+  fetchRequestLogDetail: (requestId: string) => Promise<RequestLogDetail>;
+  clearRequestLogDetail: () => void;
+  exportRequestLogsCsv: (options?: {
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    status?: string | null;
+    query?: string | null;
+  }) => Promise<void>;
   refreshApiKeys: () => Promise<void>;
   refreshModelRoutes: () => Promise<void>;
   refreshSchedule: () => Promise<void>;
   refreshDiagnostics: () => Promise<void>;
   refreshReadinessOverview: () => Promise<void>;
+  refreshUsageOverview: (options?: {
+    granularity?: 'day' | 'month' | 'year';
+    window?: '12h' | 'day' | 'month' | 'year';
+    groupBy?: 'backend_type' | 'model_name' | 'device_type';
+  }) => Promise<void>;
   createApiKey: (payload: CreateApiKeyPayload) => Promise<{secret: string; key: ApiKeyRow}>;
   updateApiKey: (id: number, payload: UpdateApiKeyPayload) => Promise<ApiKeyRow>;
   deleteApiKey: (id: number) => Promise<void>;
@@ -275,7 +407,7 @@ function inferDefaultApiBase(): string {
 }
 
 const defaultApiBase = localStorage.getItem('vllm-console-api-base') || inferDefaultApiBase();
-const defaultApiKey = localStorage.getItem('vllm-console-api-key') || 'dev-key';
+const defaultApiKey = localStorage.getItem('vllm-console-api-key') || '';
 
 const AppContext = createContext<AppState | undefined>(undefined);
 
@@ -330,17 +462,23 @@ export function AppProvider({children}: {children: ReactNode}) {
   const [snapshot, setSnapshot] = useState<AdminSnapshot | null>(null);
   const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistoryPoint[]>([]);
   const [requestLogs, setRequestLogs] = useState<RequestLog[]>([]);
+  const [requestLogDetail, setRequestLogDetail] = useState<RequestLogDetail | null>(null);
+  const [requestLogsTotal, setRequestLogsTotal] = useState(0);
+  const [requestLogsLimit, setRequestLogsLimit] = useState(50);
+  const [requestLogsOffset, setRequestLogsOffset] = useState(0);
   const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([]);
   const [modelRoutes, setModelRoutes] = useState<ModelRouteRow[]>([]);
   const [schedule, setSchedule] = useState<ScheduleConfig | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [readinessOverview, setReadinessOverview] = useState<ReadinessOverview | null>(null);
+  const [usageOverview, setUsageOverview] = useState<UsageOverview | null>(null);
   const [loading, setLoading] = useState<LoadingState>({
     snapshot: true,
     requestLogs: true,
     apiKeys: true,
     modelRoutes: true,
     schedule: true,
+    usageOverview: true,
   });
   const streamAbortRef = useRef<AbortController | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -421,11 +559,36 @@ export function AppProvider({children}: {children: ReactNode}) {
     }
   }
 
-  async function refreshRequestLogs(limit = 200) {
+  async function refreshRequestLogs(options?: {
+    limit?: number;
+    offset?: number;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    status?: string | null;
+    query?: string | null;
+  }) {
     setLoading((previous) => ({...previous, requestLogs: true}));
     try {
-      const payload = await requestJson<{logs: RequestLog[]}>(`/admin/request-logs?limit=${limit}`);
+      const params = new URLSearchParams();
+      params.set('limit', String(options?.limit ?? 200));
+      params.set('offset', String(options?.offset ?? 0));
+      if (options?.dateFrom) {
+        params.set('date_from', options.dateFrom);
+      }
+      if (options?.dateTo) {
+        params.set('date_to', options.dateTo);
+      }
+      if (options?.status && options.status !== 'all') {
+        params.set('status', options.status);
+      }
+      if (options?.query?.trim()) {
+        params.set('query', options.query.trim());
+      }
+      const payload = await requestJson<RequestLogsResponse>(`/admin/request-logs?${params.toString()}`);
       setRequestLogs(payload.logs);
+      setRequestLogsTotal(payload.total);
+      setRequestLogsLimit(payload.limit);
+      setRequestLogsOffset(payload.offset);
       setGlobalError(null);
       setLastUpdated(new Date());
     } catch (error) {
@@ -509,6 +672,31 @@ export function AppProvider({children}: {children: ReactNode}) {
     }
   }
 
+  async function refreshUsageOverview(options?: {
+    granularity?: 'day' | 'month' | 'year';
+    window?: '12h' | 'day' | 'month' | 'year';
+    groupBy?: 'backend_type' | 'model_name' | 'device_type';
+  }) {
+    setLoading((previous) => ({...previous, usageOverview: true}));
+    try {
+      const granularity = options?.granularity ?? 'day';
+      const window = options?.window ?? '12h';
+      const groupBy = options?.groupBy ?? 'backend_type';
+      const payload = await requestJson<UsageOverview>(
+        `/admin/overview/usage?granularity=${encodeURIComponent(granularity)}&window=${encodeURIComponent(window)}&group_by=${encodeURIComponent(groupBy)}`,
+      );
+      setUsageOverview(payload);
+      setGlobalError(null);
+      setLastUpdated(new Date());
+    } catch (error) {
+      const message = toErrorMessage(error, '无法获取用量概览');
+      setGlobalError(message);
+      throw error;
+    } finally {
+      setLoading((previous) => ({...previous, usageOverview: false}));
+    }
+  }
+
   async function refreshAll() {
     await Promise.allSettled([
       refreshSnapshot(),
@@ -518,6 +706,7 @@ export function AppProvider({children}: {children: ReactNode}) {
       refreshSchedule(),
       refreshDiagnostics(),
       refreshReadinessOverview(),
+      refreshUsageOverview(),
     ]);
   }
 
@@ -527,7 +716,7 @@ export function AppProvider({children}: {children: ReactNode}) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
     });
-    setApiKeys((previous) => [response.key, ...previous]);
+    setApiKeys((previous) => [{...response.key, plain_secret: response.secret}, ...previous]);
     setLastUpdated(new Date());
     setGlobalError(null);
     return response;
@@ -589,6 +778,53 @@ export function AppProvider({children}: {children: ReactNode}) {
     window.setTimeout(() => {
       void refreshSnapshot();
     }, 1500);
+  }
+
+  async function exportRequestLogsCsv(options?: {
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    status?: string | null;
+    query?: string | null;
+  }) {
+    const params = new URLSearchParams();
+    if (options?.dateFrom) {
+      params.set('date_from', options.dateFrom);
+    }
+    if (options?.dateTo) {
+      params.set('date_to', options.dateTo);
+    }
+    if (options?.status && options.status !== 'all') {
+      params.set('status', options.status);
+    }
+    if (options?.query?.trim()) {
+      params.set('query', options.query.trim());
+    }
+    const response = await fetch(buildUrl(apiBase, `/admin/request-logs/export?${params.toString()}`), {
+      headers: authHeaders(apiKey),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const text = await response.text();
+    const blob = new Blob([text], {type: 'text/csv;charset=utf-8'});
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = 'request-logs.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  async function fetchRequestLogDetail(requestId: string) {
+    const payload = await requestJson<RequestLogDetail>(`/admin/request-logs/${encodeURIComponent(requestId)}`);
+    setRequestLogDetail(payload);
+    return payload;
+  }
+
+  function clearRequestLogDetail() {
+    setRequestLogDetail(null);
   }
 
   useEffect(() => {
@@ -711,20 +947,29 @@ export function AppProvider({children}: {children: ReactNode}) {
         snapshot,
         snapshotHistory,
         requestLogs,
+        requestLogDetail,
+        requestLogsTotal,
+        requestLogsLimit,
+        requestLogsOffset,
         apiKeys,
         modelRoutes,
         schedule,
         diagnostics,
         readinessOverview,
+        usageOverview,
         loading,
         refreshAll,
         refreshSnapshot,
         refreshRequestLogs,
+        fetchRequestLogDetail,
+        clearRequestLogDetail,
         refreshApiKeys,
         refreshModelRoutes,
         refreshSchedule,
         refreshDiagnostics,
         refreshReadinessOverview,
+        refreshUsageOverview,
+        exportRequestLogsCsv,
         createApiKey,
         updateApiKey,
         deleteApiKey,

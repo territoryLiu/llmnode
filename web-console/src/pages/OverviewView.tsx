@@ -25,7 +25,7 @@ function formatClock(value: string) {
 }
 
 export function OverviewView() {
-  const {snapshot, snapshotHistory, refreshSnapshot, loading, setCurrentPage, restartBackend, locale, t} =
+  const {snapshot, snapshotHistory, usageOverview, refreshSnapshot, loading, setCurrentPage, restartBackend, locale, t} =
     useAppContext();
   const [restarting, setRestarting] = useState(false);
 
@@ -34,6 +34,8 @@ export function OverviewView() {
   const modelRoutes = snapshot?.runtime.model_routes ?? [];
   const queueLimit = snapshot?.runtime.gateway.queue_limit ?? 0;
   const errorLogs = recentLogs.filter((log) => log.status !== 'ok');
+  const tokenTrend = usageOverview?.chart.points ?? [];
+  const backendBreakdown = usageOverview?.breakdown.backends ?? [];
 
   const modelDistribution = useMemo(() => {
     const counts = new Map<string, number>();
@@ -185,6 +187,76 @@ export function OverviewView() {
                 <span>{item.name}</span>
               </div>
             ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="glass-panel lg:col-span-2 overflow-hidden p-6">
+          <h4 className="font-bold mb-6 text-slate-800">{t('usage.tokensPerDay')}</h4>
+          <div className="h-64 w-full">
+            {tokenTrend.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-sm text-slate-500">{t('usage.noTrendData')}</div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={tokenTrend}>
+                  <defs>
+                    <linearGradient id="colorTokens" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="label" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                  <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                  <RechartsTooltip
+                    formatter={(value: number, name: string) => [value, name === 'total_tokens' ? t('usage.totalTokens') : name]}
+                    labelFormatter={(label) => `${label}`}
+                    contentStyle={{
+                      borderRadius: '12px',
+                      border: 'none',
+                      background: 'rgba(255,255,255,0.88)',
+                      backdropFilter: 'blur(8px)',
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="total_tokens"
+                    stroke="#10b981"
+                    strokeWidth={3}
+                    fillOpacity={1}
+                    fill="url(#colorTokens)"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+
+        <div className="glass-panel flex flex-col overflow-hidden p-6">
+          <h4 className="font-bold mb-6 text-slate-800">{t('usage.backendUsage')}</h4>
+          <div className="space-y-4">
+            {backendBreakdown.length === 0 ? (
+              <div className="text-sm text-slate-500">{t('usage.noTrendData')}</div>
+            ) : (
+              backendBreakdown.map((item, index) => {
+                const maxTokens = Math.max(...backendBreakdown.map((entry) => entry.total_tokens), 1);
+                const width = `${Math.max((item.total_tokens / maxTokens) * 100, 8)}%`;
+                return (
+                  <div key={`${item.group ?? 'unknown'}-${index}`} className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-slate-700">{String(item.group ?? '-')}</span>
+                      <span className="text-slate-500">{item.total_tokens}</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                      <div
+                        className="h-full rounded-full"
+                        style={{width, background: COLORS[index % COLORS.length]}}
+                      />
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       </div>

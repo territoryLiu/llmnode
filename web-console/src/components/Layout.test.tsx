@@ -7,14 +7,19 @@ import App from '../App';
 vi.mock('recharts', async () => {
   const actual = await vi.importActual<typeof import('recharts')>('recharts');
   const passthrough = ({children}: {children?: React.ReactNode}) => children ?? null;
+  const chartShell = () => null;
   return {
     ...actual,
     ResponsiveContainer: passthrough,
-    AreaChart: passthrough,
-    PieChart: passthrough,
+    AreaChart: chartShell,
+    LineChart: chartShell,
+    PieChart: chartShell,
     Area: () => null,
+    Line: () => null,
     Pie: passthrough,
     Cell: () => null,
+    CartesianGrid: () => null,
+    Legend: () => null,
     XAxis: () => null,
     YAxis: () => null,
     Tooltip: () => null,
@@ -33,18 +38,18 @@ const emptySnapshot = {
   logs: [],
   events: [],
   runtime: {
-    gateway: {
-      host: '127.0.0.1',
-      port: 4000,
-      backend_url: 'http://127.0.0.1:8000',
-      backend_model: 'Qwen',
+      gateway: {
+        host: '127.0.0.1',
+        port: 4000,
+        backend_url: 'http://127.0.0.1:8000',
+        backend_model: 'Qwen',
       agent_base_url: 'http://127.0.0.1:4010',
       agent_status_url: 'http://127.0.0.1:4010/admin/status',
-      require_agent_ready: true,
-      queue_limit: 8,
-      execution_limit: 1,
-      api_key_configured: true,
-    },
+        require_agent_ready: true,
+        queue_limit: 8,
+        execution_limit: 1,
+        api_key_configured: false,
+      },
     agent: {
       host: '127.0.0.1',
       port: 4010,
@@ -91,6 +96,45 @@ function jsonResponse(body: unknown) {
   );
 }
 
+const emptyUsageOverview = {
+  summary: {
+    request_count: 0,
+    success_count: 0,
+    success_rate: 0,
+    avg_latency_ms: 0,
+    p95_latency_ms: 0,
+    p99_latency_ms: 0,
+    throughput_tokens_per_s: 0,
+    tokens_observed_requests: 0,
+    total_tokens: null,
+    cache_creation_tokens: null,
+    cache_read_tokens: null,
+    cache_miss_tokens: null,
+    cache_read_observed_requests: 0,
+  },
+  trend: [],
+  breakdown: {
+    models: [],
+    backends: [],
+    api_keys: [],
+  },
+  chart: {
+    window: '12h',
+    group_by: 'backend_type',
+    totals: {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+      cache_miss_tokens: 0,
+      cache_tokens: 0,
+      total_tokens: 0,
+    },
+    points: [],
+    groups: [],
+  },
+};
+
 beforeEach(() => {
   vi.stubGlobal(
     'fetch',
@@ -100,10 +144,21 @@ beforeEach(() => {
         return jsonResponse(emptySnapshot);
       }
       if (url.includes('/admin/request-logs')) {
-        return jsonResponse({logs: []});
+        if (url.includes('/admin/request-logs/export')) {
+          return Promise.resolve(
+            new Response('id,request_id\n', {
+              status: 200,
+              headers: {'Content-Type': 'text/csv'},
+            }),
+          );
+        }
+        return jsonResponse({logs: [], total: 0, limit: 50, offset: 0});
       }
       if (url.includes('/admin/keys')) {
         return jsonResponse({keys: []});
+      }
+      if (url.includes('/admin/overview/usage')) {
+        return jsonResponse(emptyUsageOverview);
       }
       if (url.includes('/admin/models')) {
         return jsonResponse({models: []});
@@ -115,6 +170,7 @@ beforeEach(() => {
         const stream = new ReadableStream({
           start(controller) {
             controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(emptySnapshot)}\n\n`));
+            controller.close();
           },
         });
         return Promise.resolve(
@@ -159,7 +215,18 @@ describe('Layout locale switch', () => {
 
     expect(screen.queryByText('连接配置')).not.toBeInTheDocument();
     expect(screen.queryByText('API 地址')).not.toBeInTheDocument();
-    expect(screen.queryByText('API 密钥')).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue('http://127.0.0.1:5173')).not.toBeInTheDocument();
+  });
+
+  it('renders api key input banner when no key is configured', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.getByText('当前未配置 API 密钥。请先用控制命令创建一把 sk- 管理员密钥，然后在这里输入。')).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: '保存密钥'})).toBeInTheDocument();
+    expect(screen.getByLabelText('输入 sk- 开头的 API 密钥')).toBeInTheDocument();
   });
 });

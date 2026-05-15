@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import os
 import sqlite3
@@ -12,7 +14,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, PlainTextResponse
 
 from ..config import PROJECT_ROOT, load_settings
 from ..logging import setup_logging
@@ -35,10 +37,15 @@ from ..runtime import QueueFullError, QueueTimeoutError, RequestGate
 from ..runtime import ApiKeyConcurrencyError, ApiKeyGate, ApiKeyRateLimitError
 from ..security import generate_api_key, hash_api_key
 from ..storage.db import (
+    aggregate_request_metrics,
+    aggregate_usage_breakdown,
+    aggregate_usage_chart,
     aggregate_usage_for_api_key,
+    aggregate_usage_trend,
     create_api_key,
     delete_api_key,
     get_api_key_by_id,
+    get_request_log_detail,
     init_db,
     list_agent_events,
     list_api_keys,
@@ -79,7 +86,6 @@ def _resolve_auth(request: Request, scope: str) -> AuthContext:
     auth = resolve_auth_context(
         request.headers.get("authorization"),
         request.headers.get("x-api-key"),
-        bootstrap_key=request.app.state.ctx.api_key,
         db=request.app.state.db,
     )
     require_scope(auth, scope)
@@ -100,14 +106,28 @@ def _elapsed_ms(started_at: datetime, finished_at: datetime) -> float:
     return (finished_at - started_at).total_seconds() * 1000.0
 
 
-def _extract_usage(payload: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+def _extract_usage(payload: dict[str, Any]) -> dict[str, int | None]:
     usage = payload.get("usage")
     if not isinstance(usage, dict):
-        return None, None, None
-    prompt_tokens = usage.get("prompt_tokens")
-    completion_tokens = usage.get("completion_tokens")
-    total_tokens = usage.get("total_tokens")
-    return prompt_tokens, completion_tokens, total_tokens
+        return {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "cache_creation_tokens": None,
+            "cache_read_tokens": None,
+            "cache_miss_tokens": None,
+        }
+    cache = usage.get("cache")
+    if not isinstance(cache, dict):
+        cache = {}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "cache_creation_tokens": cache.get("creation_tokens"),
+        "cache_read_tokens": cache.get("read_tokens"),
+        "cache_miss_tokens": cache.get("miss_tokens"),
+    }
 
 
 def _record_request_metric(
@@ -120,12 +140,14 @@ def _record_request_metric(
     started_at: datetime,
     finished_at: datetime,
     response_payload: dict[str, Any] | None = None,
+    backend_type: str | None = None,
+    api_key_id: int | None = None,
 ) -> None:
-    prompt_tokens, completion_tokens, total_tokens = _extract_usage(response_payload or {})
+    usage = _extract_usage(response_payload or {})
     latency_ms = _elapsed_ms(started_at, finished_at)
     tokens_per_second = None
-    if completion_tokens is not None and latency_ms > 0:
-        tokens_per_second = completion_tokens / (latency_ms / 1000.0)
+    if usage["completion_tokens"] is not None and latency_ms > 0:
+        tokens_per_second = usage["completion_tokens"] / (latency_ms / 1000.0)
     with suppress(Exception):
         write_request_metric(
             app.state.db,
@@ -134,13 +156,63 @@ def _record_request_metric(
             protocol=protocol,
             status=status,
             latency_ms=latency_ms,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
+            prompt_tokens=usage["prompt_tokens"],
+            completion_tokens=usage["completion_tokens"],
+            total_tokens=usage["total_tokens"],
             tokens_per_second=tokens_per_second,
             started_at=started_at.isoformat(),
             finished_at=finished_at.isoformat(),
+            backend_type=backend_type,
+            api_key_id=api_key_id,
+            cache_creation_tokens=usage["cache_creation_tokens"],
+            cache_read_tokens=usage["cache_read_tokens"],
+            cache_miss_tokens=usage["cache_miss_tokens"],
         )
+
+
+def _extract_openai_stream_usage(chunk: bytes) -> dict[str, Any] | None:
+    if not chunk.startswith(b"data: "):
+        return None
+    data = chunk[6:].strip()
+    if not data or data == b"[DONE]":
+        return None
+    try:
+        payload = json.loads(data)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(payload, dict) and isinstance(payload.get("usage"), dict):
+        return payload
+    return None
+
+
+def _extract_anthropic_stream_usage(chunk: bytes) -> dict[str, Any] | None:
+    event_type: str | None = None
+    data_lines: list[str] = []
+    for raw_line in chunk.decode("utf-8", errors="ignore").splitlines():
+        if raw_line.startswith("event: "):
+            event_type = raw_line[7:].strip()
+        elif raw_line.startswith("data: "):
+            data_lines.append(raw_line[6:])
+    if event_type != "message_delta" or not data_lines:
+        return None
+    try:
+        payload = json.loads("\n".join(data_lines))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    return {
+        "usage": {
+            "prompt_tokens": usage.get("input_tokens"),
+            "completion_tokens": usage.get("output_tokens"),
+            "total_tokens": (
+                (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+                if usage.get("input_tokens") is not None or usage.get("output_tokens") is not None
+                else None
+            ),
+        }
+    }
 
 
 def _sanitize_api_key_row(row: dict[str, Any], *, masked_key: str | None = None) -> dict[str, Any]:
@@ -246,9 +318,7 @@ def create_app() -> FastAPI:
     settings = load_settings()
     db_path = PROJECT_ROOT / "runtime" / "data" / "gateway.db"
     if os.getenv("PYTEST_CURRENT_TEST"):
-        db_path = PROJECT_ROOT / "runtime" / "data" / "gateway-test.db"
-        with suppress(FileNotFoundError):
-            db_path.unlink()
+        db_path = PROJECT_ROOT / "runtime" / "data" / f"gateway-test-{uuid.uuid4().hex}.db"
     catalog = load_model_catalog()
     db = init_db(db_path)
     seed_model_routes(db, model_routes_for_admin(catalog))
@@ -256,9 +326,12 @@ def create_app() -> FastAPI:
     if schedule_state is None:
         schedule_state = asdict(settings.schedule)
         upsert_schedule_config(db, schedule_state)
-    backend_client = VLLMBackendClient(base_url=settings.gateway.backend_url, backend_type=settings.vllm.backend_type)
+    backend_client = VLLMBackendClient(
+        base_url=settings.gateway.backend_url,
+        backend_type=settings.vllm.backend_type,
+        request_timeout_seconds=settings.gateway.backend_request_timeout_seconds,
+    )
     ctx = GatewayContext(
-        api_key=settings.gateway.api_key,
         backend_client=backend_client,
         models={item["name"]: ModelRoute(**item) for item in list_model_routes(db)},
     )
@@ -402,6 +475,9 @@ def create_app() -> FastAPI:
             except Exception:
                 backend_container = None
         return {
+            "api_key_configured": app.state.db.execute(
+                "SELECT 1 FROM api_keys WHERE status = 'active' LIMIT 1"
+            ).fetchone() is not None,
             "backend_type": app.state.ctx.backend_client.backend_type,
             "backend_ready": backend_ready,
             "backend_error": backend_error,
@@ -410,7 +486,7 @@ def create_app() -> FastAPI:
             "require_agent_ready": app.state.require_agent_ready,
             "queue_length": app.state.request_gate.waiting,
             "models": logical_models_for_api(app.state.ctx.models),
-            "logs": list_request_logs(app.state.db, limit=20),
+            "logs": list_request_logs(app.state.db, limit=20)["logs"],
             "events": list_agent_events(app.state.db, limit=20),
             "runtime": {
                 "gateway": {
@@ -423,7 +499,9 @@ def create_app() -> FastAPI:
                     "require_agent_ready": settings.gateway.require_agent_ready,
                     "queue_limit": settings.gateway.queue_limit,
                     "execution_limit": settings.gateway.execution_limit,
-                    "api_key_configured": bool(settings.gateway.api_key),
+                    "api_key_configured": app.state.db.execute(
+                        "SELECT 1 FROM api_keys WHERE status = 'active' LIMIT 1"
+                    ).fetchone() is not None,
                 },
                 "agent": {
                     "host": settings.agent.host,
@@ -488,19 +566,111 @@ def create_app() -> FastAPI:
         return response
 
     @app.get("/admin/request-logs")
-    async def admin_request_logs(request: Request, limit: int = 50):
+    async def admin_request_logs(
+        request: Request,
+        limit: int = 50,
+        offset: int = 0,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        status: str | None = None,
+        query: str | None = None,
+    ):
         _resolve_auth(request, "admin")
         request_id = _request_id(request)
-        response = JSONResponse({"logs": list_request_logs(request.app.state.db, limit=limit)})
+        response = JSONResponse(
+            list_request_logs(
+                request.app.state.db,
+                limit=limit,
+                offset=offset,
+                date_from=date_from,
+                date_to=date_to,
+                status=status,
+                query=query,
+            )
+        )
         response.headers["x-request-id"] = request_id
         return response
 
     @app.get("/admin/logs")
-    async def admin_logs(request: Request, limit: int = 50):
+    async def admin_logs(
+        request: Request,
+        limit: int = 50,
+        offset: int = 0,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        status: str | None = None,
+        query: str | None = None,
+    ):
         _resolve_auth(request, "admin")
         request_id = _request_id(request)
-        response = JSONResponse({"logs": list_request_logs(request.app.state.db, limit=limit)})
+        response = JSONResponse(
+            list_request_logs(
+                request.app.state.db,
+                limit=limit,
+                offset=offset,
+                date_from=date_from,
+                date_to=date_to,
+                status=status,
+                query=query,
+            )
+        )
         response.headers["x-request-id"] = request_id
+        return response
+
+    @app.get("/admin/request-logs/export")
+    async def admin_request_logs_export(
+        request: Request,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        status: str | None = None,
+        query: str | None = None,
+    ):
+        _resolve_auth(request, "admin")
+        rows = list_request_logs(
+            request.app.state.db,
+            limit=500,
+            offset=0,
+            date_from=date_from,
+            date_to=date_to,
+            status=status,
+            query=query,
+            export_all=True,
+        )["logs"]
+        request_id = _request_id(request)
+        output = io.StringIO()
+        writer = csv.DictWriter(
+            output,
+            fieldnames=[
+                "id",
+                "request_id",
+                "model_name",
+                "status",
+                "protocol",
+                "created_at",
+                "api_key_id",
+                "auth_source",
+                "client_ip",
+                "user_agent",
+                "rejection_reason",
+                "error_message",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+        response = PlainTextResponse(output.getvalue(), media_type="text/csv; charset=utf-8")
+        response.headers["x-request-id"] = request_id
+        response.headers["content-disposition"] = 'attachment; filename="request-logs.csv"'
+        return response
+
+    @app.get("/admin/request-logs/{request_id}")
+    async def admin_request_log_detail(request: Request, request_id: str):
+        _resolve_auth(request, "admin")
+        detail = get_request_log_detail(request.app.state.db, request_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"unknown request: {request_id}")
+        response_request_id = _request_id(request)
+        response = JSONResponse(detail)
+        response.headers["x-request-id"] = response_request_id
         return response
 
     @app.get("/admin/events")
@@ -561,6 +731,42 @@ def create_app() -> FastAPI:
                 "lan": "http://10.18.90.100:4000",
             },
         })
+        response.headers["x-request-id"] = request_id
+        return response
+
+    @app.get("/admin/overview/usage")
+    async def admin_usage_overview(
+        request: Request,
+        granularity: str = "day",
+        window: str = "12h",
+        group_by: str = "backend_type",
+    ):
+        _resolve_auth(request, "admin")
+        request_id = _request_id(request)
+        response = JSONResponse({
+            "summary": aggregate_request_metrics(request.app.state.db),
+            "trend": aggregate_usage_trend(request.app.state.db, granularity=granularity),
+            "breakdown": {
+                "models": aggregate_usage_breakdown(request.app.state.db, group_by="model_name"),
+                "backends": aggregate_usage_breakdown(request.app.state.db, group_by="backend_type"),
+                "api_keys": aggregate_usage_breakdown(request.app.state.db, group_by="api_key_id"),
+            },
+            "chart": aggregate_usage_chart(
+                request.app.state.db,
+                window=window,
+                group_by=group_by,
+            ),
+        })
+        response.headers["x-request-id"] = request_id
+        return response
+
+    @app.get("/admin/keys/{key_id}/usage")
+    async def admin_key_usage(request: Request, key_id: int):
+        _resolve_auth(request, "admin")
+        request_id = _request_id(request)
+        response = JSONResponse(
+            aggregate_usage_for_api_key(request.app.state.db, api_key_id=key_id)
+        )
         response.headers["x-request-id"] = request_id
         return response
 
@@ -761,12 +967,30 @@ def create_app() -> FastAPI:
                 raise
 
             async def body():
+                last_usage_payload: dict[str, Any] | None = None
                 try:
                     async for chunk in stream:
+                        usage_payload = _extract_openai_stream_usage(chunk)
+                        if usage_payload is not None:
+                            last_usage_payload = usage_payload
                         yield chunk
                 finally:
                     await key_lease.finish()
                     await gate.__aexit__(None, None, None)
+                    if last_usage_payload is not None:
+                        finished_at = datetime.now(timezone.utc)
+                        _record_request_metric(
+                            request.app,
+                            request_id=request_id,
+                            model_name=payload.model,
+                            protocol="openai",
+                            status="ok",
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            response_payload=last_usage_payload,
+                            backend_type=request.app.state.ctx.backend_client.backend_type,
+                            api_key_id=auth.api_key_id,
+                        )
 
             write_request_log(
                 request.app.state.db,
@@ -843,6 +1067,8 @@ def create_app() -> FastAPI:
             started_at=started_at,
             finished_at=finished_at,
             response_payload=result,
+            backend_type=request.app.state.ctx.backend_client.backend_type,
+            api_key_id=auth.api_key_id,
         )
         write_request_log(
             request.app.state.db,
@@ -952,12 +1178,30 @@ def create_app() -> FastAPI:
                 raise
 
             async def body():
+                last_usage_payload: dict[str, Any] | None = None
                 try:
                     async for chunk in stream:
+                        usage_payload = _extract_anthropic_stream_usage(chunk)
+                        if usage_payload is not None:
+                            last_usage_payload = usage_payload
                         yield chunk
                 finally:
                     await key_lease.finish()
                     await gate.__aexit__(None, None, None)
+                    if last_usage_payload is not None:
+                        finished_at = datetime.now(timezone.utc)
+                        _record_request_metric(
+                            request.app,
+                            request_id=request_id,
+                            model_name=payload.model,
+                            protocol="anthropic",
+                            status="ok",
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            response_payload=last_usage_payload,
+                            backend_type=request.app.state.ctx.backend_client.backend_type,
+                            api_key_id=auth.api_key_id,
+                        )
 
             write_request_log(
                 request.app.state.db,
@@ -1034,6 +1278,8 @@ def create_app() -> FastAPI:
             started_at=started_at,
             finished_at=finished_at,
             response_payload=result,
+            backend_type=request.app.state.ctx.backend_client.backend_type,
+            api_key_id=auth.api_key_id,
         )
         write_request_log(
             request.app.state.db,

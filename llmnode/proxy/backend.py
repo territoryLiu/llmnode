@@ -20,15 +20,17 @@ class BackendClient(Protocol):
 class VLLMBackendClient:
     base_url: str
     backend_type: str = "vllm"
+    request_timeout_seconds: int = 300
+    health_timeout_seconds: int = 10
 
     async def post_json(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=120) as client:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.request_timeout_seconds) as client:
             response = await client.post(path, json=payload)
             response.raise_for_status()
             return response.json()
 
     async def health(self) -> bool:
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=10) as client:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.health_timeout_seconds) as client:
             response = await client.get("/v1/models")
             return response.status_code == 200
 
