@@ -9,6 +9,7 @@ DEFAULTS_FILE = PROJECT_ROOT / "config" / "defaults.yaml"
 BACKENDS_DIR = PROJECT_ROOT / "config" / "backends"
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 DATA_DIR = RUNTIME_DIR / "data"
+BENCHMARK_DIR = DATA_DIR / "benchmarks"
 RUN_DIR = RUNTIME_DIR / "run"
 LOG_DIR = RUNTIME_DIR / "logs"
 DEFAULT_BACKEND_PROFILE = "vllm_qwen36-35b-a3b-fp8"
@@ -20,9 +21,10 @@ DEFAULT_MODEL_DIR = PROJECT_ROOT / "models" / "Qwen" / "Qwen3.6-35B-A3B-FP8"
 class GatewaySettings:
     host: str = "0.0.0.0"
     port: int = 4000
-    api_key: str = "dev-key"
+    api_key: str = ""
     backend_url: str = f"http://127.0.0.1:{DEFAULT_BACKEND_PORT}"
     backend_model: str = "qwen36-35b-a3b-fp8"
+    backend_request_timeout_seconds: int = 300
     agent_base_url: str = "http://127.0.0.1:4010"
     agent_status_url: str = "http://127.0.0.1:4010/state"
     require_agent_ready: bool = False
@@ -137,7 +139,7 @@ def load_settings(path: Path | None = None) -> AppSettings:
         gateway=GatewaySettings(
             host=os.getenv("VLLM_CLAUDE_GATEWAY_HOST", gateway.get("host", "0.0.0.0")),
             port=int(os.getenv("VLLM_CLAUDE_GATEWAY_PORT", gateway.get("port", 4000))),
-            api_key=os.getenv("VLLM_CLAUDE_GATEWAY_KEY", gateway.get("api_key", "dev-key")),
+            api_key=os.getenv("VLLM_CLAUDE_GATEWAY_KEY", gateway.get("api_key", "")),
             backend_url=os.getenv(
                 "VLLM_CLAUDE_BACKEND_URL",
                 gateway.get("backend_url", f"http://127.0.0.1:{resolved_host_port}"),
@@ -145,6 +147,12 @@ def load_settings(path: Path | None = None) -> AppSettings:
             backend_model=os.getenv(
                 "VLLM_CLAUDE_BACKEND_MODEL",
                 gateway.get("backend_model", resolved_model_name),
+            ),
+            backend_request_timeout_seconds=int(
+                os.getenv(
+                    "VLLM_CLAUDE_BACKEND_REQUEST_TIMEOUT_SECONDS",
+                    gateway.get("backend_request_timeout_seconds", 300),
+                )
             ),
             agent_base_url=os.getenv(
                 "VLLM_CLAUDE_AGENT_BASE_URL",
