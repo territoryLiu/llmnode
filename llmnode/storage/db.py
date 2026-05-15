@@ -107,11 +107,24 @@ def init_db(path: Path) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS model_routes (
             name TEXT PRIMARY KEY,
             display_name TEXT NOT NULL,
-            backend_model TEXT NOT NULL,
-            backend_type TEXT NOT NULL,
+            backend_model TEXT,
+            backend_type TEXT,
             enabled INTEGER NOT NULL DEFAULT 1
         )
         """
+    )
+    _ensure_columns(
+        conn,
+        "model_routes",
+        {
+            "lifecycle_mode": "TEXT NOT NULL DEFAULT 'managed_local'",
+            "upstream_protocol": "TEXT NOT NULL DEFAULT 'chat'",
+            "upstream_base_url": "TEXT",
+            "upstream_model": "TEXT",
+            "upstream_auth_kind": "TEXT NOT NULL DEFAULT 'none'",
+            "upstream_auth_ref": "TEXT",
+            "capabilities_json": "TEXT NOT NULL DEFAULT '{}'",
+        },
     )
     conn.execute(
         """
@@ -813,7 +826,9 @@ def delete_api_key(conn: sqlite3.Connection, key_id: int) -> bool:
 def list_model_routes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     cursor = conn.execute(
         """
-        SELECT name, display_name, backend_model, backend_type, enabled
+        SELECT name, display_name, backend_model, backend_type, enabled,
+               lifecycle_mode, upstream_protocol, upstream_base_url, upstream_model,
+               upstream_auth_kind, upstream_auth_ref, capabilities_json
         FROM model_routes
         ORDER BY name
         """
@@ -826,6 +841,13 @@ def list_model_routes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "backend_model": row[2],
             "backend_type": row[3],
             "enabled": bool(row[4]),
+            "lifecycle_mode": row[5],
+            "upstream_protocol": row[6],
+            "upstream_base_url": row[7],
+            "upstream_model": row[8],
+            "upstream_auth_kind": row[9],
+            "upstream_auth_ref": row[10],
+            "capabilities_json": json.loads(row[11]) if row[11] else {},
         }
         for row in rows
     ]
@@ -844,13 +866,24 @@ def seed_model_routes(conn: sqlite3.Connection, routes: list[dict[str, Any]]) ->
     for route in routes:
         conn.execute(
             """
-            INSERT INTO model_routes(name, display_name, backend_model, backend_type, enabled)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO model_routes(
+                name, display_name, backend_model, backend_type, enabled,
+                lifecycle_mode, upstream_protocol, upstream_base_url, upstream_model,
+                upstream_auth_kind, upstream_auth_ref, capabilities_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 display_name=excluded.display_name,
                 backend_model=excluded.backend_model,
                 backend_type=excluded.backend_type,
-                enabled=excluded.enabled
+                enabled=excluded.enabled,
+                lifecycle_mode=excluded.lifecycle_mode,
+                upstream_protocol=excluded.upstream_protocol,
+                upstream_base_url=excluded.upstream_base_url,
+                upstream_model=excluded.upstream_model,
+                upstream_auth_kind=excluded.upstream_auth_kind,
+                upstream_auth_ref=excluded.upstream_auth_ref,
+                capabilities_json=excluded.capabilities_json
             """,
             (
                 route["name"],
@@ -858,6 +891,13 @@ def seed_model_routes(conn: sqlite3.Connection, routes: list[dict[str, Any]]) ->
                 route["backend_model"],
                 route["backend_type"],
                 int(bool(route.get("enabled", True))),
+                route.get("lifecycle_mode", "managed_local"),
+                route.get("upstream_protocol", "chat"),
+                route.get("upstream_base_url"),
+                route.get("upstream_model", route.get("backend_model")),
+                route.get("upstream_auth_kind", "none"),
+                route.get("upstream_auth_ref"),
+                json.dumps(route.get("capabilities_json", {}), ensure_ascii=False),
             ),
         )
     conn.commit()
@@ -866,13 +906,24 @@ def seed_model_routes(conn: sqlite3.Connection, routes: list[dict[str, Any]]) ->
 def upsert_model_route(conn: sqlite3.Connection, route: dict[str, Any]) -> None:
     conn.execute(
         """
-        INSERT INTO model_routes(name, display_name, backend_model, backend_type, enabled)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO model_routes(
+            name, display_name, backend_model, backend_type, enabled,
+            lifecycle_mode, upstream_protocol, upstream_base_url, upstream_model,
+            upstream_auth_kind, upstream_auth_ref, capabilities_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
             display_name=excluded.display_name,
             backend_model=excluded.backend_model,
             backend_type=excluded.backend_type,
-            enabled=excluded.enabled
+            enabled=excluded.enabled,
+            lifecycle_mode=excluded.lifecycle_mode,
+            upstream_protocol=excluded.upstream_protocol,
+            upstream_base_url=excluded.upstream_base_url,
+            upstream_model=excluded.upstream_model,
+            upstream_auth_kind=excluded.upstream_auth_kind,
+            upstream_auth_ref=excluded.upstream_auth_ref,
+            capabilities_json=excluded.capabilities_json
         """,
         (
             route["name"],
@@ -880,6 +931,13 @@ def upsert_model_route(conn: sqlite3.Connection, route: dict[str, Any]) -> None:
             route["backend_model"],
             route["backend_type"],
             int(bool(route.get("enabled", True))),
+            route.get("lifecycle_mode", "managed_local"),
+            route.get("upstream_protocol", "chat"),
+            route.get("upstream_base_url"),
+            route.get("upstream_model", route.get("backend_model")),
+            route.get("upstream_auth_kind", "none"),
+            route.get("upstream_auth_ref"),
+            json.dumps(route.get("capabilities_json", {}), ensure_ascii=False),
         ),
     )
     conn.commit()

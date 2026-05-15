@@ -6,8 +6,9 @@
 它回答的是：
 
 1. `backend_type` 的正式语义是什么。
-2. 哪些字段属于正式路由契约。
-3. 当前已落地和未来目标分别是什么。
+2. `upstream_protocol` 与 `lifecycle_mode` 的正式语义是什么。
+3. 哪些字段属于正式路由契约。
+4. 当前已落地和未来目标分别是什么。
 
 它不负责：
 
@@ -21,10 +22,10 @@
 
 1. 客户端请求逻辑模型名
 2. `gateway-api` 读取当前 `ModelRoute`
-3. 路由层根据 `backend_model + backend_type` 决定目标后端
+3. 路由层根据 route 字段决定目标上游和本地后端语义
 4. 请求被转发到实际推理服务
 
-当前对外暴露的是逻辑模型名；`backend_model` 与 `backend_type` 属于网关、控制面、管理台和存储层共同理解的内部正式字段。
+当前对外暴露的是逻辑模型名；`backend_model`、`backend_type`、`upstream_protocol` 与 `lifecycle_mode` 属于网关、控制面、管理台和存储层共同理解的内部正式字段。
 
 ## 2. 目标
 
@@ -68,6 +69,13 @@
 - `display_name`
 - `backend_model`
 - `backend_type`
+- `lifecycle_mode`
+- `upstream_protocol`
+- `upstream_base_url`
+- `upstream_model`
+- `upstream_auth_kind`
+- `upstream_auth_ref`
+- `capabilities_json`
 - `enabled`
 
 后续如果扩展容器与 profile，应继续保证这些字段仍然存在且语义稳定。
@@ -81,7 +89,21 @@
 - `backend_model`
   - 实际传给后端的模型标识
 - `backend_type`
-  - 表示这条路由绑定到哪类推理后端
+  - 表示这条路由绑定到哪类本地受控推理后端
+- `lifecycle_mode`
+  - 表示该 route 属于本地受控还是外部上游
+- `upstream_protocol`
+  - 表示该 route 实际对上游发请求时使用的协议
+- `upstream_base_url`
+  - 表示该 route 请求发往的上游根地址
+- `upstream_model`
+  - 表示实际发给上游的模型标识
+- `upstream_auth_kind`
+  - 表示访问上游时采用的鉴权方式
+- `upstream_auth_ref`
+  - 表示访问上游时引用的凭据标识
+- `capabilities_json`
+  - 表示该 route 可声明的协议与能力边界
 - `enabled`
   - 控制逻辑模型是否对正式 API 暴露
 
@@ -95,10 +117,15 @@
 ### 约束
 - `backend_type` 是客户端不可见、但网关和控制面必须理解的内部正式字段
 - 它决定：
-  - 目标后端驱动
-  - 请求适配逻辑
+  - 目标本地后端驱动
   - 健康检查逻辑
   - 管理台状态展示维度
+
+第一阶段补充约束：
+
+- `backend_type` 只描述本地受控推理后端类型，不再单独承担上游协议语义
+- `upstream_protocol` 描述实际对上游发请求时使用的协议
+- `lifecycle_mode` 描述该 route 是本地受控还是外部上游
 
 ## 7. 当前真实行为
 
@@ -108,11 +135,13 @@
 - `config/backends/*.yaml` 提供模型目录、端口与后端参数初值
 - `llmnode/models.py` 中 `ModelRoute.backend_type` 默认值是 `vllm`
 - 如果 profile 里未显式写 `backend_type`，加载后会默认落成 `vllm`
+- 对现有本地受控 route，`lifecycle_mode` 默认应为 `managed_local`
+- 对现有本地受控 route，`upstream_protocol` 默认应为 `chat`
 - 启动后，模型路由会进入 SQLite 的 `model_routes` 表作为运行态存储
-- 管理面可以更新 `display_name / backend_model / backend_type / enabled`
+- 管理面应逐步扩展为可更新 `display_name / backend_model / backend_type / lifecycle_mode / upstream_protocol / enabled`
 - `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值（`_VALID_BACKEND_TYPES`）
 
-因此当前结论是：字段层面与运行时均已支持三后端，控制面（`control.py`、`service.py`）和管理接口均已按 `backend_type` 动态路由。
+因此当前结论是：字段层面已开始从“本地后端类型”与“上游协议类型”两层语义拆分；控制面（`control.py`、`service.py`）当前仍主要按 `backend_type` 驱动本地受控路径。
 
 ## 8. 运行时约束 / 校验入口
 
@@ -120,8 +149,10 @@
 
 - 配置加载约束
   - `llmnode/models.py` 会为缺省路由补 `backend_type="vllm"`
+  - `llmnode/models.py` 会为缺省路由补 `lifecycle_mode="managed_local"`
+  - `llmnode/models.py` 会为缺省路由补 `upstream_protocol="chat"`
 - 存储约束
-  - `llmnode/storage/db.py` 中 `model_routes.backend_type` 为 `NOT NULL`
+  - `llmnode/storage/db.py` 中 `model_routes` 应持久化 `upstream_protocol / lifecycle_mode / capabilities_json`
 - 管理面约束
   - `llmnode/api/app.py` 的 `/admin/models/{name}` 接受 `vllm / llama.cpp / sglang`
 - API 暴露约束
@@ -129,8 +160,11 @@
 
 这些约束意味着：
 
-- 字段层面与运行时均已支持三后端
-- `backend_type` 决定 ContainerSpec、BackendDriver、健康检查和状态展示的全链路行为
+- 字段层面应同时表达：
+  - 本地受控后端类型
+  - 实际上游协议类型
+  - route 生命周期归属
+- `backend_type` 仍决定 ContainerSpec、BackendDriver、健康检查和状态展示的本地受控链路行为
 
 ## 9. 路由职责
 
