@@ -268,6 +268,28 @@ def test_responses_maps_tool_calls_into_output_items():
     asyncio.run(run())
 
 
+def test_chat_route_rejects_builtin_tools():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = ResponsesSyncFakeClient()
+        secret = seed_inference_key(app, "sk-responses-builtin-tools")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/responses",
+                headers={"Authorization": f"Bearer {secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "input": "search this",
+                    "tools": [{"type": "web_search"}],
+                },
+            )
+            assert resp.status_code == 400
+            assert resp.json()["detail"] == "unsupported_builtin_tools"
+
+    asyncio.run(run())
+
+
 def test_responses_stream_emits_event_style_sse():
     async def run():
         app = create_app()

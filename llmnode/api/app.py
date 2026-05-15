@@ -20,13 +20,14 @@ from ..config import PROJECT_ROOT, load_settings
 from ..logging import setup_logging
 from ..models import ModelRoute, load_model_catalog, logical_models_for_api, model_route_from_row, model_routes_for_admin
 from ..protocols import AnthropicMessagesRequest, OpenAIChatCompletionsRequest, OpenAIResponsesRequest
-from ..proxy.backend import VLLMBackendClient, post_json_to
+from ..proxy.backend import VLLMBackendClient, post_json_to, stream_bytes_from
 from ..proxy.adapters import build_responses_chat_payload
 from ..proxy.router import (
     AuthContext,
     GatewayContext,
     proxy_anthropic_messages,
     proxy_openai_chat,
+    ensure_route_supports_request,
     resolve_route,
     require_scope,
     resolve_auth_context,
@@ -480,6 +481,7 @@ def create_app() -> FastAPI:
     app.state.require_agent_ready = settings.gateway.require_agent_ready
     app.state.schedule = schedule_state
     app.state.post_json_to = post_json_to
+    app.state.stream_bytes_from = stream_bytes_from
 
     async def fetch_agent_state() -> dict | None:
         if not app.state.agent_status_url:
@@ -1223,6 +1225,13 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         route = resolve_route(payload.model, request.app.state.ctx.models)
+        ensure_route_supports_request(
+            route,
+            type("Req", (), {
+                "stream": payload.stream,
+                "tools": payload.tools,
+            })(),
+        )
         request_id = _request_id(request)
         response_id = f"resp_{uuid.uuid4().hex}"
         started_at = datetime.now(timezone.utc)
@@ -1274,6 +1283,81 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
 
         if payload.stream:
+            if route.upstream_protocol == "responses":
+                upstream_payload = dict(raw)
+                upstream_payload["model"] = route.resolved_upstream_model() or payload.model
+                if previous_state is not None and route.capabilities.supports_previous_response_id_native:
+                    upstream_previous_id = previous_state.get("upstream_response_id")
+                    if upstream_previous_id:
+                        upstream_payload["previous_response_id"] = upstream_previous_id
+
+                async def native_body():
+                    completed_payload: dict[str, Any] | None = None
+                    try:
+                        async for chunk in request.app.state.stream_bytes_from(
+                            route.upstream_base_url or "",
+                            "/v1/responses",
+                            upstream_payload,
+                            headers=_build_upstream_headers(route),
+                        ):
+                            text = chunk.decode("utf-8", errors="ignore")
+                            if "event: response.completed" in text:
+                                parts = text.split("data: ", 1)
+                                if len(parts) == 2:
+                                    with suppress(json.JSONDecodeError, ValueError):
+                                        completed_payload = json.loads(parts[1].strip())
+                            yield chunk
+                    finally:
+                        await key_lease.finish()
+                        finished_at = datetime.now(timezone.utc)
+                        if completed_payload is not None:
+                            _record_request_metric(
+                                request.app,
+                                request_id=request_id,
+                                model_name=payload.model,
+                                protocol="responses",
+                                status="ok",
+                                started_at=started_at,
+                                finished_at=finished_at,
+                                response_payload={
+                                    "usage": {
+                                        "prompt_tokens": completed_payload.get("usage", {}).get("input_tokens"),
+                                        "completion_tokens": completed_payload.get("usage", {}).get("output_tokens"),
+                                        "total_tokens": completed_payload.get("usage", {}).get("total_tokens"),
+                                    }
+                                },
+                                backend_type=route.backend_type or "external",
+                                api_key_id=auth.api_key_id,
+                            )
+                            upsert_response_state(
+                                request.app.state.db,
+                                response_id=response_id,
+                                request_id=request_id,
+                                model_name=payload.model,
+                                input_items=input_items,
+                                output_items=completed_payload.get("output", []),
+                                messages=messages_for_state,
+                                parent_response_id=payload.previous_response_id,
+                                route_name=route.name,
+                                client_protocol="responses",
+                                upstream_protocol=route.upstream_protocol,
+                                upstream_response_id=completed_payload.get("id"),
+                                request_payload=upstream_payload,
+                                output_payload=completed_payload,
+                            )
+
+                write_request_log(
+                    request.app.state.db,
+                    request_id,
+                    payload.model,
+                    "streaming",
+                    "responses",
+                    **log_context,
+                )
+                response = StreamingResponse(native_body(), media_type="text/event-stream")
+                response.headers["x-request-id"] = request_id
+                return response
+
             gate = request.app.state.request_gate.slot()
             try:
                 await gate.__aenter__()
