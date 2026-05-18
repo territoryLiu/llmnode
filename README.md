@@ -8,8 +8,8 @@
 - `POST /v1/messages`
 - `GET /v1/models`
 
-当前正式运行主路径仍然是单后端 `vLLM`。  
-后续未来规划统一收口到 `vLLM / llama.cpp / SGLang` 三后端方向，并要求每个后端各自使用官方 Docker，由 Python 控制面统一编排。
+当前正式运行形态仍然是单机部署。  
+当前实际使用哪个后端、模型与运行参数，由当前激活的 profile 和对应配置决定；`vLLM / llama.cpp / SGLang` 三后端已纳入统一控制面编排边界。
 
 ## 项目总览
 
@@ -47,10 +47,9 @@ python -m llmnode.control start
 
 ## 当前边界
 
-- 当前正式默认后端：`vLLM`
-- 默认激活 profile：`config/backends/vllm_qwen36-35b-a3b-fp8.yaml`
-- 默认模型目录：`models/Qwen/Qwen3.6-35B-A3B-FP8`
-- 默认后端端口：`15673`
+- 当前运行真相以 `config/defaults.yaml` 中的激活 profile 为准
+- 具体后端、模型目录和运行参数以 `config/backends/*.yaml` 为准
+- 当前常用后端端口通常为 `15673`，如 profile 另有声明则以该 profile 为准
 - 当前正式控制入口不再依赖 `scripts/*.sh`
 - `docs/blueprint/roadmap.md` 是唯一未来规划入口
 - `docs/knowledge/*` 是常驻参考层，不承担正式真相
@@ -78,7 +77,8 @@ python -m llmnode.control start
   [docs/contracts/control-plane.md](/proj02/liuheshan/llmnode/docs/contracts/control-plane.md:1)
 - 模型路由与 `backend_type` 语义：
   [docs/contracts/backend-routing.md](/proj02/liuheshan/llmnode/docs/contracts/backend-routing.md:1)
-  当前一期重构已开始拆分 `backend_type / upstream_protocol / lifecycle_mode`
+  当前一期重构已正式拆分 `backend_type / upstream_protocol / lifecycle_mode`
+  `/v1/responses` 已支持按 route 选择 `native responses`、`responses -> chat`、`responses -> messages` 三路径
 - 三后端联调经验与已知问题：
   [docs/knowledge/backend_integration_qa.md](/proj02/liuheshan/llmnode/docs/knowledge/backend_integration_qa.md:1)
 - 模型支持矩阵与 profile 命名：

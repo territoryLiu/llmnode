@@ -93,6 +93,22 @@ const emptySnapshot = {
         backend_model: 'Qwen/Qwen3.6-27B-FP8',
         backend_type: 'vllm',
         enabled: true,
+        lifecycle_mode: 'managed_local',
+        upstream_protocol: 'chat',
+        upstream_base_url: 'http://127.0.0.1:8000/v1',
+        upstream_model: 'Qwen/Qwen3.6-27B-FP8',
+        upstream_auth_kind: 'none',
+        upstream_auth_ref: null,
+        capabilities_json: {
+          supports_responses: false,
+          supports_chat: true,
+          supports_messages: true,
+          supports_stream: true,
+          supports_function_tools: true,
+          supports_builtin_tools: false,
+          supports_previous_response_id_native: false,
+          supports_json_schema: false,
+        },
       },
       {
         name: 'qwen36-35b-a3b-fp8',
@@ -100,6 +116,22 @@ const emptySnapshot = {
         backend_model: 'Qwen/Qwen3.6-35B-A3B-FP8',
         backend_type: 'vllm',
         enabled: true,
+        lifecycle_mode: 'managed_local',
+        upstream_protocol: 'chat',
+        upstream_base_url: 'http://127.0.0.1:8000/v1',
+        upstream_model: 'Qwen/Qwen3.6-35B-A3B-FP8',
+        upstream_auth_kind: 'none',
+        upstream_auth_ref: null,
+        capabilities_json: {
+          supports_responses: false,
+          supports_chat: true,
+          supports_messages: true,
+          supports_stream: true,
+          supports_function_tools: true,
+          supports_builtin_tools: false,
+          supports_previous_response_id_native: false,
+          supports_json_schema: false,
+        },
       },
     ],
   },
@@ -492,5 +524,135 @@ describe('Console views', () => {
     expect(within(drawer).getByText('demo')).toBeInTheDocument();
     expect(within(drawer).getByText('vllm')).toBeInTheDocument();
     expect(within(drawer).getByText('30')).toBeInTheDocument();
+  });
+
+  it('submits extended external route payload from models view', async () => {
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/admin/status')) {
+        return jsonResponse(emptySnapshot);
+      }
+      if (url.includes('/admin/request-logs')) {
+        return jsonResponse(requestLogsResponse);
+      }
+      if (url.includes('/admin/overview/usage')) {
+        return jsonResponse(usageOverview);
+      }
+      if (url.includes('/admin/keys')) {
+        return jsonResponse(keyListResponse);
+      }
+      if (url.includes('/admin/models') && init?.method === 'PATCH') {
+        const payload = JSON.parse(String(init.body));
+        return jsonResponse({
+          model: {
+            name: 'qwen36-27b-fp8',
+            display_name: payload.display_name,
+            backend_model: payload.backend_model,
+            backend_type: payload.backend_type,
+            enabled: payload.enabled,
+            lifecycle_mode: payload.lifecycle_mode,
+            upstream_protocol: payload.upstream_protocol,
+            upstream_base_url: payload.upstream_base_url,
+            upstream_model: payload.upstream_model,
+            upstream_auth_kind: payload.upstream_auth_kind,
+            upstream_auth_ref: payload.upstream_auth_ref,
+            capabilities_json: payload.capabilities_json,
+          },
+        });
+      }
+      if (url.includes('/admin/models')) {
+        return jsonResponse({models: emptySnapshot.runtime.model_routes});
+      }
+      if (url.includes('/admin/schedule')) {
+        return jsonResponse({schedule: emptySnapshot.runtime.schedule});
+      }
+      if (url.includes('/admin/overview/readiness')) {
+        return jsonResponse({
+          readiness: {status: 'ready'},
+          base_urls: {
+            local: 'http://127.0.0.1:4000',
+            lan: 'http://10.18.90.100:4000',
+          },
+        });
+      }
+      if (url.includes('/admin/stream')) {
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(emptySnapshot)}\n\n`));
+            controller.close();
+          },
+        });
+        return Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: {'Content-Type': 'text/event-stream'},
+          }),
+        );
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('模型路由')[0]);
+
+    const row = await screen.findByText('qwen36-27b-fp8');
+    expect(row).toBeInTheDocument();
+
+    const displayInputs = screen.getAllByDisplayValue('Qwen 27B FP8');
+    await userEvent.clear(displayInputs[0]);
+    await userEvent.type(displayInputs[0], 'External GPT Route');
+
+    const upstreamBaseInput = screen.getAllByDisplayValue('http://127.0.0.1:8000/v1')[0];
+    await userEvent.clear(upstreamBaseInput);
+    await userEvent.type(upstreamBaseInput, 'https://api.openai.com/v1');
+
+    const upstreamModelInput = screen.getAllByDisplayValue('Qwen/Qwen3.6-27B-FP8')[1];
+    await userEvent.clear(upstreamModelInput);
+    await userEvent.type(upstreamModelInput, 'gpt-4o');
+
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'external');
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[1], 'responses');
+    await userEvent.selectOptions(screen.getAllByRole('combobox')[3], 'bearer');
+
+    const supportResponses = screen.getAllByRole('checkbox', {name: 'Responses'})[0];
+    if (!supportResponses.hasAttribute('checked')) {
+      await userEvent.click(supportResponses);
+    }
+    const supportBuiltinTools = screen.getAllByRole('checkbox', {name: 'Builtin Tools'})[0];
+    await userEvent.click(supportBuiltinTools);
+    const supportPrevResp = screen.getAllByRole('checkbox', {name: 'Previous Response'})[0];
+    await userEvent.click(supportPrevResp);
+    const supportSchema = screen.getAllByRole('checkbox', {name: 'JSON Schema'})[0];
+    await userEvent.click(supportSchema);
+
+    await userEvent.click(screen.getAllByRole('button', {name: '保存'})[0]);
+
+    await waitFor(() => {
+      const patchCall = fetchMock.mock.calls.find(
+        (call) => String(call[0]).includes('/admin/models/qwen36-27b-fp8') && call[1]?.method === 'PATCH',
+      );
+      expect(patchCall).toBeTruthy();
+      const payload = JSON.parse(String(patchCall?.[1]?.body));
+      expect(payload).toMatchObject({
+        display_name: 'External GPT Route',
+        lifecycle_mode: 'external',
+        upstream_protocol: 'responses',
+        upstream_base_url: 'https://api.openai.com/v1',
+        upstream_model: 'gpt-4o',
+        upstream_auth_kind: 'bearer',
+      });
+      expect(payload.capabilities_json).toMatchObject({
+        supports_responses: true,
+        supports_builtin_tools: true,
+        supports_previous_response_id_native: true,
+        supports_json_schema: true,
+      });
+    });
   });
 });

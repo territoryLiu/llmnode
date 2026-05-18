@@ -90,8 +90,8 @@ python -m llmnode.control stop
 
 其中 `<host_port>` 由当前激活后端决定：
 
-- 当前正式默认 profile：`15673`
-- 其他 profile 也建议统一使用 `15673`，如需例外以具体 `config/backends/*.yaml` 为准
+- 当前常见 profile 使用 `15673`
+- 如某个 profile 显式声明了其他端口，则以具体 `config/backends/*.yaml` 为准
 
 这说明推理后端已可服务，但还不等于整个对外入口都已可用。
 
@@ -107,9 +107,9 @@ python -m llmnode.control stop
 - `gateway-api` 可用
 - 当前对外推理主链路已经成立
 
-### 5.3 默认整栈 ready
+### 5.3 整栈 ready
 
-如果本次是默认整栈启动，还应额外确认：
+如果本次是整栈启动，还应额外确认：
 
 - `web-console` 可访问
 
@@ -117,7 +117,7 @@ python -m llmnode.control stop
 
 - `<host_port>` 正常（按当前后端类型确认）：后端 ready
 - `4000` 正常：对外主链路 ready
-- `5173` 也正常：默认整栈入口基本齐备
+- `5173` 也正常：整栈入口基本齐备
 
 在此之前，即使：
 

@@ -20,7 +20,6 @@
 当前项目的真实部署前提是：
 
 - 正式控制入口统一为 `python -m llmnode.control`
-- 当前正式默认后端仍然是 `vLLM`
 - 当前正式运行形态仍然是单机部署
 - 控制面运行在本地 Python 环境中
 - 推理后端由控制面通过 Docker 拉起和管理
@@ -32,23 +31,23 @@
 - 已准备好的模型目录
 - `config/defaults.yaml`
 - `config/backends/*.yaml`
-- 如果需要默认整栈，则还需要 `web-console` 前端依赖
+- 如果需要整栈前端界面，则还需要 `web-console` 前端依赖
 
 ## 2. 当前正式支持的部署模板
 
-## 2.1 模板 A：本地单机默认整栈部署
+## 2.1 模板 A：本地单机整栈部署
 
 适用场景：
 
 - 日常本机使用
 - 需要同时使用控制面、网关和前端管理台
-- 需要一条最完整、最接近正式默认体验的运行路径
+- 需要一条最完整、最接近正式运行体验的运行路径
 
 最小前置条件：
 
 - 已激活 `paper2any` 环境
 - Docker 可用
-- `models/Qwen/Qwen3.6-27B-FP8` 或配置中的目标模型目录已准备好
+- 当前激活 profile 所需的目标模型目录已准备好
 - `web-console` 依赖已安装
 
 最小启动方式：
@@ -61,7 +60,7 @@ python -m llmnode.control start
 
 - `http://127.0.0.1:15673/v1/models` 正常，表示当前激活后端 ready
 - `http://127.0.0.1:4000/v1/models` 正常，表示对外主链路 ready
-- `http://127.0.0.1:5173` 可访问，表示默认前端入口 ready
+- `http://127.0.0.1:5173` 可访问，表示前端入口 ready
 - `python -m llmnode.control status` 能看到整栈摘要
 - 后端热身窗口期内，推理请求会返回 `503 + Retry-After`，表示 Agent 已就绪但后端模型仍在加载中
 - readiness 相关事件可通过 agent 事件流读取，至少包括 `stream_not_ready` 和恢复后的 `backend_recovered`
@@ -71,13 +70,13 @@ python -m llmnode.control start
 
 - 只想调试控制面或网关，不想拉起前端
 - 前端依赖未安装的环境
-- 想把未来三后端能力误当成已落地能力的场景
+- 想把 route 管理能力误当成完整模型注册中心的场景
 
 ## 2.2 模板 B：本地后端 / 控制面优先部署
 
 适用场景：
 
-- 调试 `node-agent`、`gateway-api`、`vLLM` 这条后端主链路
+- 调试 `node-agent`、`gateway-api` 和当前激活后端这条主链路
 - 暂时不依赖 `web-console`
 - 需要分服务排障或逐段验证启动问题
 
@@ -106,15 +105,15 @@ python -m llmnode.control start --service gateway --daemon
 它不适用于：
 
 - 需要管理台交互配置的场景
-- 需要验证默认整栈体验的场景
-- 需要把“网关可用”误判为“整个默认栈都 ready”的场景
+- 需要验证整栈体验的场景
+- 需要把“网关可用”误判为“整个整栈都 ready”的场景
 
-## 2.3 模板 C：未来三后端 Docker 化部署方向
+## 2.3 模板 C：单机三后端 Docker 化部署
 
 适用场景：
 
-- 规划未来运行形态
-- 为 `vLLM / llama.cpp / SGLang` 的统一控制面做设计展开
+- 需要在单机上切换或验证 `vLLM / llama.cpp / SGLang`
+- 为三后端统一控制面做部署与排障
 - 讨论 Python 控制面如何与多个官方 Docker 后端交互
 
 当前方向：
@@ -125,9 +124,9 @@ python -m llmnode.control start --service gateway --daemon
 
 当前边界：
 
-- 这是未来方向，不是当前已经正式落地的部署模板
-- 当前正式默认后端仍然只有 `vLLM`
-- 当前不应把 `llama.cpp` 与 `SGLang` 误写成“已正式支持”
+- 三后端代码、控制面和联调验证已落地
+- 当前仍应把它理解为“单机切换 / 单机治理”能力，而不是多后端同时编排平台
+- 当前不应把三后端支持误写成“多节点或 K8s 级平台能力”
 
 它不适用于：
 
@@ -153,7 +152,7 @@ python -m llmnode.control start --service gateway --daemon
 
 ## 4. 部署形态变化后的回流要求
 
-如果部署形态、默认启动对象或正式边界发生变化，至少要同步检查：
+如果部署形态、启动对象或正式边界发生变化，至少要同步检查：
 
 - 本文
 - `docs/process/run.md`

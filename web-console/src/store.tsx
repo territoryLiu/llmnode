@@ -87,9 +87,25 @@ export interface ApiKeyRow {
 export interface ModelRouteRow {
   name: string;
   display_name: string;
-  backend_model: string;
-  backend_type: string;
+  backend_model: string | null;
+  backend_type: string | null;
   enabled: boolean;
+  lifecycle_mode: 'managed_local' | 'external';
+  upstream_protocol: 'responses' | 'chat' | 'messages';
+  upstream_base_url: string | null;
+  upstream_model: string | null;
+  upstream_auth_kind: 'none' | 'bearer' | 'x_api_key';
+  upstream_auth_ref: string | null;
+  capabilities_json: {
+    supports_responses: boolean;
+    supports_chat: boolean;
+    supports_messages: boolean;
+    supports_stream: boolean;
+    supports_function_tools: boolean;
+    supports_builtin_tools: boolean;
+    supports_previous_response_id_native: boolean;
+    supports_json_schema: boolean;
+  };
 }
 
 export interface ReadinessOverview {
@@ -315,9 +331,16 @@ interface UpdateApiKeyPayload {
 
 interface UpdateModelRoutePayload {
   display_name?: string;
-  backend_model?: string;
+  backend_model?: string | null;
   enabled?: boolean;
-  backend_type?: string;
+  backend_type?: string | null;
+  lifecycle_mode?: 'managed_local' | 'external';
+  upstream_protocol?: 'responses' | 'chat' | 'messages';
+  upstream_base_url?: string | null;
+  upstream_model?: string | null;
+  upstream_auth_kind?: 'none' | 'bearer' | 'x_api_key';
+  upstream_auth_ref?: string | null;
+  capabilities_json?: ModelRouteRow['capabilities_json'];
 }
 
 interface LoadingState {

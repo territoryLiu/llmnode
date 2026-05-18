@@ -102,6 +102,7 @@
   - 表示访问上游时采用的鉴权方式
 - `upstream_auth_ref`
   - 表示访问上游时引用的凭据标识
+  - phase1 当前正式语义：环境变量名，而不是数据库内嵌 secret
 - `capabilities_json`
   - 表示该 route 可声明的协议与能力边界
 - `enabled`
@@ -133,13 +134,36 @@
 
 - `config/defaults.yaml` 只决定当前激活的 backend profile
 - `config/backends/*.yaml` 提供模型目录、端口与后端参数初值
+- 当前激活哪个 profile，就使用哪个 profile 所声明的后端、模型与运行参数；不存在脱离配置单独定义的“默认模型”
 - `llmnode/models.py` 中 `ModelRoute.backend_type` 默认值是 `vllm`
 - 如果 profile 里未显式写 `backend_type`，加载后会默认落成 `vllm`
 - 对现有本地受控 route，`lifecycle_mode` 默认应为 `managed_local`
 - 对现有本地受控 route，`upstream_protocol` 默认应为 `chat`
 - 启动后，模型路由会进入 SQLite 的 `model_routes` 表作为运行态存储
+- 当前启动流程会以当前 catalog 重新 seed `model_routes`；因此现阶段更接近“配置派生的运行态 route”，而不是完整的长期持久化模型注册中心
 - 管理面应逐步扩展为可更新 `display_name / backend_model / backend_type / lifecycle_mode / upstream_protocol / enabled`
+- 管理台与 `/admin/models/{name}` 现已可更新：
+  - `display_name`
+  - `backend_model`
+  - `backend_type`
+  - `enabled`
+  - `lifecycle_mode`
+  - `upstream_protocol`
+  - `upstream_base_url`
+  - `upstream_model`
+  - `upstream_auth_kind`
+  - `upstream_auth_ref`
+  - `capabilities_json`
 - `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值（`_VALID_BACKEND_TYPES`）
+- 协议入口当前的 route-aware 分发状态：
+  - `/v1/responses`
+    - 可按 route 选择 `native responses`、`responses -> chat` 或 `responses -> messages` 适配
+  - `/v1/chat/completions`
+    - `managed_local + chat` 继续走本地后端
+    - `external + chat` 已可直连外部 `/v1/chat/completions`
+  - `/v1/messages`
+    - `managed_local + chat` 继续保留现有 anthropic facade 兼容路径
+    - `external + messages` 已可直连外部 `/v1/messages`
 
 因此当前结论是：字段层面已开始从“本地后端类型”与“上游协议类型”两层语义拆分；控制面（`control.py`、`service.py`）当前仍主要按 `backend_type` 驱动本地受控路径。
 
@@ -155,6 +179,13 @@
   - `llmnode/storage/db.py` 中 `model_routes` 应持久化 `upstream_protocol / lifecycle_mode / capabilities_json`
 - 管理面约束
   - `llmnode/api/app.py` 的 `/admin/models/{name}` 接受 `vllm / llama.cpp / sglang`
+  - `lifecycle_mode` 仅允许 `managed_local / external`
+  - `upstream_protocol` 仅允许 `responses / chat / messages`
+  - `upstream_auth_kind` 仅允许 `none / bearer / x_api_key`
+  - `managed_local` route 必须保留 `backend_type` 和 `backend_model`
+  - `external` route 必须显式提供 `upstream_base_url` 和 `upstream_model`
+  - 当 `upstream_auth_kind != none` 时，必须提供 `upstream_auth_ref`
+  - 当 `upstream_auth_kind != none` 时，运行时必须能从 `os.environ[upstream_auth_ref]` 读到真实 secret，否则请求失败
 - API 暴露约束
   - `enabled=false` 的逻辑模型不应出现在正式模型列表里
 
@@ -165,6 +196,7 @@
   - 实际上游协议类型
   - route 生命周期归属
 - `backend_type` 仍决定 ContainerSpec、BackendDriver、健康检查和状态展示的本地受控链路行为
+- external upstream 的鉴权 secret 当前不入库，只保留引用名，运行时由网关进程从环境变量解析
 
 ## 9. 路由职责
 
@@ -176,7 +208,6 @@
 
 当前正式状态：
 
-- 正式默认后端：`vllm`
 - 正式可写运行值：`vllm / llama.cpp / sglang`
 - 控制面（`control.py`、`service.py`）与网关管理接口均已完整支持三后端
 - 三后端均已完成线上联调验证（2026-05-12）：推理链路打通，`reasoning_content / content` 干净分离已确认
@@ -191,6 +222,7 @@
 
 - 诊断建议的持续优化（新增错误模式识别）
 - 性能指标采集的多维分组与时间窗口查询
+- route 生命周期管理闭环：新增 / 删除 / 持久化策略与 catalog 同步边界
 
 ## 11. 诊断 API 端点
 

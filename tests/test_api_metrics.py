@@ -1,5 +1,6 @@
 import asyncio
 import json
+from unittest.mock import patch
 
 import httpx
 
@@ -326,7 +327,7 @@ def test_native_responses_sync_records_metrics_on_completion():
                 upstream_base_url="https://api.openai.com/v1",
                 upstream_model="gpt-4o",
                 upstream_auth_kind="bearer",
-                upstream_auth_ref="openai-prod",
+                upstream_auth_ref="OPENAI_RESPONSES_METRICS_TOKEN",
                 capabilities=__import__("llmnode.models", fromlist=["ModelCapabilities"]).ModelCapabilities(
                     supports_responses=True,
                     supports_chat=True,
@@ -346,13 +347,14 @@ def test_native_responses_sync_records_metrics_on_completion():
             scopes=["inference"],
         )
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            resp = await client.post(
-                "/v1/responses",
-                headers={"Authorization": "Bearer sk-native-resp-metrics"},
-                json={"model": "gpt-4o", "input": "hello"},
-            )
-            assert resp.status_code == 200
+        with patch.dict("os.environ", {"OPENAI_RESPONSES_METRICS_TOKEN": "sk-upstream-openai-metrics"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/v1/responses",
+                    headers={"Authorization": "Bearer sk-native-resp-metrics"},
+                    json={"model": "gpt-4o", "input": "hello"},
+                )
+                assert resp.status_code == 200
 
         metrics = aggregate_request_metrics(app.state.db)
         assert metrics["request_count"] == 1

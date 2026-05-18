@@ -18,13 +18,14 @@ from fastapi.responses import JSONResponse, StreamingResponse, PlainTextResponse
 
 from ..config import PROJECT_ROOT, load_settings
 from ..logging import setup_logging
-from ..models import ModelRoute, load_model_catalog, logical_models_for_api, model_route_from_row, model_routes_for_admin
+from ..models import ModelCapabilities, ModelRoute, load_model_catalog, logical_models_for_api, model_route_from_row, model_routes_for_admin
 from ..protocols import AnthropicMessagesRequest, OpenAIChatCompletionsRequest, OpenAIResponsesRequest
 from ..proxy.backend import VLLMBackendClient, post_json_to, stream_bytes_from
-from ..proxy.adapters import build_responses_chat_payload
+from ..proxy.adapters import build_responses_chat_payload, build_responses_messages_payload
 from ..proxy.router import (
     AuthContext,
     GatewayContext,
+    build_upstream_headers,
     proxy_anthropic_messages,
     proxy_openai_chat,
     ensure_route_supports_request,
@@ -70,6 +71,19 @@ from ..storage.db import (
 _MISSING = object()
 _ALLOWED_SCOPES = {"admin", "inference"}
 _ALLOWED_STATUSES = {"active", "disabled"}
+_VALID_LIFECYCLE_MODES = {"managed_local", "external"}
+_VALID_UPSTREAM_PROTOCOLS = {"responses", "chat", "messages"}
+_VALID_UPSTREAM_AUTH_KINDS = {"none", "bearer", "x_api_key"}
+_CAPABILITY_FIELDS = {
+    "supports_responses",
+    "supports_chat",
+    "supports_messages",
+    "supports_stream",
+    "supports_function_tools",
+    "supports_builtin_tools",
+    "supports_previous_response_id_native",
+    "supports_json_schema",
+}
 
 
 def _request_id(request: Request) -> str:
@@ -319,6 +333,59 @@ def _responses_payload_from_chat(
     return payload, assistant_messages
 
 
+def _assistant_message_text_from_anthropic(message_payload: dict[str, Any]) -> str:
+    content = message_payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "".join(parts)
+
+
+def _responses_payload_from_anthropic(
+    *,
+    message_payload: dict[str, Any],
+    request_payload: OpenAIResponsesRequest,
+    response_id: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    text = _assistant_message_text_from_anthropic(message_payload)
+    output: list[dict[str, Any]] = []
+    assistant_messages: list[dict[str, Any]] = []
+    if text:
+        output.append(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }
+        )
+        assistant_messages.append({"role": "assistant", "content": text})
+    usage = message_payload.get("usage") if isinstance(message_payload.get("usage"), dict) else {}
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    total_tokens = None
+    if input_tokens is not None or output_tokens is not None:
+        total_tokens = (input_tokens or 0) + (output_tokens or 0)
+    payload = {
+        "id": response_id,
+        "object": "response",
+        "created_at": _now_iso(),
+        "status": "completed",
+        "model": request_payload.model,
+        "output": output,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        },
+    }
+    return payload, assistant_messages
+
+
 def _format_sse_event(event: str, payload: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n".encode()
 
@@ -336,13 +403,21 @@ def _parse_openai_stream_event(chunk: bytes) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _build_upstream_headers(route: ModelRoute) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    if route.upstream_auth_kind == "bearer":
-        headers["authorization"] = "Bearer routed-upstream-token"
-    elif route.upstream_auth_kind == "x_api_key":
-        headers["x-api-key"] = "routed-upstream-token"
-    return headers
+def _parse_anthropic_stream_event(chunk: bytes) -> tuple[str | None, dict[str, Any] | None]:
+    event_type: str | None = None
+    data_lines: list[str] = []
+    for raw_line in chunk.decode("utf-8", errors="ignore").splitlines():
+        if raw_line.startswith("event: "):
+            event_type = raw_line[7:].strip()
+        elif raw_line.startswith("data: "):
+            data_lines.append(raw_line[6:])
+    if not data_lines:
+        return event_type, None
+    try:
+        payload = json.loads("\n".join(data_lines))
+    except (json.JSONDecodeError, ValueError):
+        return event_type, None
+    return event_type, payload if isinstance(payload, dict) else None
 
 
 def _sanitize_api_key_row(row: dict[str, Any], *, masked_key: str | None = None) -> dict[str, Any]:
@@ -412,6 +487,161 @@ def _normalize_optional_note(value: Any) -> str | None:
     return value.strip() or None
 
 
+def _normalize_bool(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a boolean")
+    return value
+
+
+def _normalize_optional_string(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a string or null")
+    return value.strip() or None
+
+
+def _normalize_optional_backend_type(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="backend_type must be a string or null")
+    backend_type = value.strip()
+    if backend_type not in _VALID_BACKEND_TYPES:
+        raise HTTPException(status_code=400, detail=f"unsupported backend_type: {backend_type}")
+    return backend_type
+
+
+def _normalize_capabilities_payload(payload: Any, current: ModelRoute) -> dict[str, bool]:
+    capabilities = {
+        "supports_responses": current.capabilities.supports_responses,
+        "supports_chat": current.capabilities.supports_chat,
+        "supports_messages": current.capabilities.supports_messages,
+        "supports_stream": current.capabilities.supports_stream,
+        "supports_function_tools": current.capabilities.supports_function_tools,
+        "supports_builtin_tools": current.capabilities.supports_builtin_tools,
+        "supports_previous_response_id_native": current.capabilities.supports_previous_response_id_native,
+        "supports_json_schema": current.capabilities.supports_json_schema,
+    }
+    if payload is _MISSING:
+        return capabilities
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="capabilities_json must be an object")
+    for key, value in payload.items():
+        if key not in _CAPABILITY_FIELDS:
+            raise HTTPException(status_code=400, detail=f"unsupported capability: {key}")
+        capabilities[key] = _normalize_bool(value, f"capabilities_json.{key}")
+    return capabilities
+
+
+def _build_model_route_storage_payload(route: ModelRoute) -> dict[str, Any]:
+    return {
+        "name": route.name,
+        "display_name": route.display_name,
+        "backend_model": route.backend_model,
+        "backend_type": route.backend_type,
+        "enabled": route.enabled,
+        "lifecycle_mode": route.lifecycle_mode,
+        "upstream_protocol": route.upstream_protocol,
+        "upstream_base_url": route.upstream_base_url,
+        "upstream_model": route.upstream_model,
+        "upstream_auth_kind": route.upstream_auth_kind,
+        "upstream_auth_ref": route.upstream_auth_ref,
+        "capabilities_json": _normalize_capabilities_payload(_MISSING, route),
+    }
+
+
+def _validate_update_model_route_payload(payload: dict[str, Any], route: ModelRoute) -> ModelRoute:
+    display_name = route.display_name
+    if "display_name" in payload:
+        display_name = _normalize_name(payload["display_name"], "display_name")
+
+    enabled = route.enabled
+    if "enabled" in payload:
+        enabled = _normalize_bool(payload["enabled"], "enabled")
+
+    lifecycle_mode = route.lifecycle_mode
+    if "lifecycle_mode" in payload:
+        if not isinstance(payload["lifecycle_mode"], str):
+            raise HTTPException(status_code=400, detail="lifecycle_mode must be a string")
+        lifecycle_mode = payload["lifecycle_mode"].strip()
+    if lifecycle_mode not in _VALID_LIFECYCLE_MODES:
+        raise HTTPException(status_code=400, detail=f"unsupported lifecycle_mode: {lifecycle_mode}")
+
+    upstream_protocol = route.upstream_protocol
+    if "upstream_protocol" in payload:
+        if not isinstance(payload["upstream_protocol"], str):
+            raise HTTPException(status_code=400, detail="upstream_protocol must be a string")
+        upstream_protocol = payload["upstream_protocol"].strip()
+    if upstream_protocol not in _VALID_UPSTREAM_PROTOCOLS:
+        raise HTTPException(status_code=400, detail=f"unsupported upstream_protocol: {upstream_protocol}")
+
+    upstream_auth_kind = route.upstream_auth_kind
+    if "upstream_auth_kind" in payload:
+        if not isinstance(payload["upstream_auth_kind"], str):
+            raise HTTPException(status_code=400, detail="upstream_auth_kind must be a string")
+        upstream_auth_kind = payload["upstream_auth_kind"].strip()
+    if upstream_auth_kind not in _VALID_UPSTREAM_AUTH_KINDS:
+        raise HTTPException(status_code=400, detail=f"unsupported upstream_auth_kind: {upstream_auth_kind}")
+
+    backend_type = route.backend_type
+    if "backend_type" in payload:
+        backend_type = _normalize_optional_backend_type(payload["backend_type"])
+
+    backend_model = route.backend_model
+    if "backend_model" in payload:
+        backend_model = _normalize_optional_string(payload["backend_model"], "backend_model")
+
+    upstream_base_url = route.upstream_base_url
+    if "upstream_base_url" in payload:
+        upstream_base_url = _normalize_optional_string(payload["upstream_base_url"], "upstream_base_url")
+
+    upstream_model = route.upstream_model
+    if "upstream_model" in payload:
+        upstream_model = _normalize_optional_string(payload["upstream_model"], "upstream_model")
+
+    upstream_auth_ref = route.upstream_auth_ref
+    if "upstream_auth_ref" in payload:
+        upstream_auth_ref = _normalize_optional_string(payload["upstream_auth_ref"], "upstream_auth_ref")
+
+    capabilities_json = _normalize_capabilities_payload(payload.get("capabilities_json", _MISSING), route)
+
+    if lifecycle_mode == "managed_local":
+        if backend_type not in _VALID_BACKEND_TYPES:
+            raise HTTPException(status_code=400, detail=f"unsupported backend_type: {backend_type}")
+        if not backend_model:
+            raise HTTPException(status_code=400, detail="backend_model is required for managed_local routes")
+        if not upstream_model:
+            upstream_model = backend_model
+    else:
+        backend_type = None
+        backend_model = None
+        if not upstream_base_url:
+            raise HTTPException(status_code=400, detail="upstream_base_url is required for external routes")
+        if not upstream_model:
+            raise HTTPException(status_code=400, detail="upstream_model is required for external routes")
+
+    if upstream_auth_kind == "none":
+        upstream_auth_ref = None
+    elif not upstream_auth_ref:
+        raise HTTPException(status_code=400, detail="upstream_auth_ref is required when upstream_auth_kind is not none")
+
+    return replace(
+        route,
+        display_name=display_name,
+        backend_model=backend_model,
+        backend_type=backend_type,
+        enabled=enabled,
+        lifecycle_mode=lifecycle_mode,
+        upstream_protocol=upstream_protocol,
+        upstream_base_url=upstream_base_url,
+        upstream_model=upstream_model,
+        upstream_auth_kind=upstream_auth_kind,
+        upstream_auth_ref=upstream_auth_ref,
+        capabilities=ModelCapabilities(**capabilities_json),
+    )
+
+
 def _validate_create_api_key_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if "name" not in payload:
         raise HTTPException(status_code=400, detail="name is required")
@@ -464,6 +694,8 @@ def create_app() -> FastAPI:
     ctx = GatewayContext(
         backend_client=backend_client,
         models={item["name"]: model_route_from_row(item) for item in list_model_routes(db)},
+        post_json_to=post_json_to,
+        stream_bytes_from=stream_bytes_from,
     )
     request_gate = RequestGate(
         execution_limit=settings.gateway.execution_limit,
@@ -944,18 +1176,9 @@ def create_app() -> FastAPI:
         route = request.app.state.ctx.models.get(name)
         if route is None:
             raise HTTPException(status_code=404, detail=f"unknown model: {name}")
-        backend_type = payload.get("backend_type", route.backend_type)
-        if backend_type not in _VALID_BACKEND_TYPES:
-            raise HTTPException(status_code=400, detail=f"unsupported backend_type: {backend_type}")
-        updated = replace(
-            route,
-            display_name=payload.get("display_name", route.display_name),
-            backend_model=payload.get("backend_model", route.backend_model),
-            backend_type=backend_type,
-            enabled=bool(payload.get("enabled", route.enabled)),
-        )
+        updated = _validate_update_model_route_payload(payload, route)
         request.app.state.ctx.models[name] = updated
-        upsert_model_route(request.app.state.db, asdict(updated))
+        upsert_model_route(request.app.state.db, _build_model_route_storage_payload(updated))
         request_id = _request_id(request)
         response = JSONResponse({"model": model_routes_for_admin({name: updated})[0]})
         response.headers["x-request-id"] = request_id
@@ -1009,6 +1232,15 @@ def create_app() -> FastAPI:
         await ensure_agent_ready()
         raw = await _read_json_body(request)
         payload = OpenAIChatCompletionsRequest.model_validate(raw)
+        route = resolve_route(payload.model, request.app.state.ctx.models)
+        ensure_route_supports_request(
+            route,
+            type("Req", (), {
+                "client_protocol": "chat",
+                "stream": bool(payload.stream),
+                "tools": payload.tools,
+            })(),
+        )
         request_id = _request_id(request)
         started_at = datetime.now(timezone.utc)
         log_context = _request_log_context(request, auth)
@@ -1228,6 +1460,7 @@ def create_app() -> FastAPI:
         ensure_route_supports_request(
             route,
             type("Req", (), {
+                "client_protocol": "responses",
                 "stream": payload.stream,
                 "tools": payload.tools,
             })(),
@@ -1249,6 +1482,7 @@ def create_app() -> FastAPI:
                 previous_messages = list(previous_state["messages"])
 
         chat_payload = build_responses_chat_payload(route, payload, previous_messages)
+        messages_payload = build_responses_messages_payload(route, payload, previous_messages)
         messages_for_state = payload.to_chat_messages(previous_messages)
 
         try:
@@ -1298,7 +1532,7 @@ def create_app() -> FastAPI:
                             route.upstream_base_url or "",
                             "/v1/responses",
                             upstream_payload,
-                            headers=_build_upstream_headers(route),
+                            headers=build_upstream_headers(route),
                         ):
                             text = chunk.decode("utf-8", errors="ignore")
                             if "event: response.completed" in text:
@@ -1355,6 +1589,182 @@ def create_app() -> FastAPI:
                     **log_context,
                 )
                 response = StreamingResponse(native_body(), media_type="text/event-stream")
+                response.headers["x-request-id"] = request_id
+                return response
+
+            if route.upstream_protocol == "messages":
+                gate = request.app.state.request_gate.slot()
+                try:
+                    await gate.__aenter__()
+                    if route.lifecycle_mode == "external":
+                        stream = request.app.state.stream_bytes_from(
+                            route.upstream_base_url or "",
+                            "/v1/messages",
+                            messages_payload,
+                            headers=build_upstream_headers(route),
+                        )
+                    else:
+                        stream = request.app.state.ctx.backend_client.stream_bytes("/v1/messages", messages_payload)
+                except QueueFullError as exc:
+                    await key_lease.reject()
+                    finished_at = datetime.now(timezone.utc)
+                    log_context["rejection_reason"] = "queue_full"
+                    _record_request_metric(
+                        request.app,
+                        request_id=request_id,
+                        model_name=payload.model,
+                        protocol="responses",
+                        status="rejected",
+                        started_at=started_at,
+                        finished_at=finished_at,
+                    )
+                    write_request_log(
+                        request.app.state.db,
+                        request_id,
+                        payload.model,
+                        "rejected",
+                        "responses",
+                        str(exc),
+                        **log_context,
+                    )
+                    raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+                except QueueTimeoutError as exc:
+                    await key_lease.reject()
+                    finished_at = datetime.now(timezone.utc)
+                    log_context["rejection_reason"] = "queue_timeout"
+                    _record_request_metric(
+                        request.app,
+                        request_id=request_id,
+                        model_name=payload.model,
+                        protocol="responses",
+                        status="timeout",
+                        started_at=started_at,
+                        finished_at=finished_at,
+                    )
+                    write_request_log(
+                        request.app.state.db,
+                        request_id,
+                        payload.model,
+                        "timeout",
+                        "responses",
+                        str(exc),
+                        **log_context,
+                    )
+                    raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
+                except Exception:
+                    await key_lease.reject()
+                    await gate.__aexit__(None, None, None)
+                    raise
+
+                async def anthropic_body():
+                    last_usage_payload: dict[str, Any] | None = None
+                    output_text_parts: list[str] = []
+                    yield _format_sse_event(
+                        "response.created",
+                        {
+                            "id": response_id,
+                            "object": "response",
+                            "status": "in_progress",
+                            "model": payload.model,
+                        },
+                    )
+                    try:
+                        async for chunk in stream:
+                            usage_payload = _extract_anthropic_stream_usage(chunk)
+                            if usage_payload is not None:
+                                last_usage_payload = usage_payload
+                            event_type, event_payload = _parse_anthropic_stream_event(chunk)
+                            if event_type != "content_block_delta" or not isinstance(event_payload, dict):
+                                continue
+                            delta = event_payload.get("delta")
+                            if not isinstance(delta, dict):
+                                continue
+                            if delta.get("type") != "text_delta":
+                                continue
+                            text = delta.get("text")
+                            if isinstance(text, str) and text:
+                                output_text_parts.append(text)
+                                yield _format_sse_event(
+                                    "response.output_text.delta",
+                                    {
+                                        "response_id": response_id,
+                                        "delta": text,
+                                    },
+                                )
+                    finally:
+                        await key_lease.finish()
+                        await gate.__aexit__(None, None, None)
+                        finished_at = datetime.now(timezone.utc)
+                        if last_usage_payload is not None:
+                            _record_request_metric(
+                                request.app,
+                                request_id=request_id,
+                                model_name=payload.model,
+                                protocol="responses",
+                                status="ok",
+                                started_at=started_at,
+                                finished_at=finished_at,
+                                response_payload=last_usage_payload,
+                                backend_type=route.backend_type or "external",
+                                api_key_id=auth.api_key_id,
+                            )
+                        final_output: list[dict[str, Any]] = []
+                        final_messages: list[dict[str, Any]] = list(messages_for_state)
+                        if output_text_parts:
+                            text = "".join(output_text_parts)
+                            final_output.append(
+                                {
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": [{"type": "output_text", "text": text}],
+                                }
+                            )
+                            final_messages.append({"role": "assistant", "content": text})
+                        upsert_response_state(
+                            request.app.state.db,
+                            response_id=response_id,
+                            request_id=request_id,
+                            model_name=payload.model,
+                            input_items=input_items,
+                            output_items=final_output,
+                            messages=final_messages,
+                            parent_response_id=payload.previous_response_id,
+                            route_name=route.name,
+                            client_protocol="responses",
+                            upstream_protocol=route.upstream_protocol,
+                            request_payload=messages_payload,
+                            output_payload={
+                                "id": response_id,
+                                "object": "response",
+                                "status": "completed",
+                                "output": final_output,
+                            },
+                        )
+                        yield _format_sse_event(
+                            "response.completed",
+                            {
+                                "id": response_id,
+                                "object": "response",
+                                "status": "completed",
+                                "model": payload.model,
+                                "output": final_output,
+                                "usage": {
+                                    "input_tokens": (last_usage_payload or {}).get("usage", {}).get("prompt_tokens"),
+                                    "output_tokens": (last_usage_payload or {}).get("usage", {}).get("completion_tokens"),
+                                    "total_tokens": (last_usage_payload or {}).get("usage", {}).get("total_tokens"),
+                                },
+                            },
+                        )
+
+                write_request_log(
+                    request.app.state.db,
+                    request_id,
+                    payload.model,
+                    "streaming",
+                    "responses",
+                    **log_context,
+                )
+                response = StreamingResponse(anthropic_body(), media_type="text/event-stream")
                 response.headers["x-request-id"] = request_id
                 return response
 
@@ -1523,7 +1933,7 @@ def create_app() -> FastAPI:
                 route.upstream_base_url or "",
                 "/v1/responses",
                 upstream_payload,
-                headers=_build_upstream_headers(route),
+                headers=build_upstream_headers(route),
             )
             await key_lease.finish()
             finished_at = datetime.now(timezone.utc)
@@ -1570,6 +1980,125 @@ def create_app() -> FastAPI:
                 **log_context,
             )
             response = JSONResponse(result)
+            response.headers["x-request-id"] = request_id
+            return response
+
+        if route.upstream_protocol == "messages":
+            try:
+                async with request.app.state.request_gate.slot():
+                    if route.lifecycle_mode == "external":
+                        result = await request.app.state.post_json_to(
+                            route.upstream_base_url or "",
+                            "/v1/messages",
+                            messages_payload,
+                            headers=build_upstream_headers(route),
+                        )
+                    else:
+                        result = await request.app.state.ctx.backend_client.post_json("/v1/messages", messages_payload)
+            except QueueFullError as exc:
+                await key_lease.reject()
+                finished_at = datetime.now(timezone.utc)
+                log_context["rejection_reason"] = "queue_full"
+                _record_request_metric(
+                    request.app,
+                    request_id=request_id,
+                    model_name=payload.model,
+                    protocol="responses",
+                    status="rejected",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
+                write_request_log(
+                    request.app.state.db,
+                    request_id,
+                    payload.model,
+                    "rejected",
+                    "responses",
+                    str(exc),
+                    **log_context,
+                )
+                raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+            except QueueTimeoutError as exc:
+                await key_lease.reject()
+                finished_at = datetime.now(timezone.utc)
+                log_context["rejection_reason"] = "queue_timeout"
+                _record_request_metric(
+                    request.app,
+                    request_id=request_id,
+                    model_name=payload.model,
+                    protocol="responses",
+                    status="timeout",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
+                write_request_log(
+                    request.app.state.db,
+                    request_id,
+                    payload.model,
+                    "timeout",
+                    "responses",
+                    str(exc),
+                    **log_context,
+                )
+                raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
+            except Exception:
+                await key_lease.finish()
+                raise
+
+            await key_lease.finish()
+            finished_at = datetime.now(timezone.utc)
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="responses",
+                status="ok",
+                started_at=started_at,
+                finished_at=finished_at,
+                response_payload={
+                    "usage": {
+                        "prompt_tokens": result.get("usage", {}).get("input_tokens"),
+                        "completion_tokens": result.get("usage", {}).get("output_tokens"),
+                        "total_tokens": (
+                            (result.get("usage", {}).get("input_tokens") or 0)
+                            + (result.get("usage", {}).get("output_tokens") or 0)
+                            if isinstance(result.get("usage"), dict)
+                            else None
+                        ),
+                    }
+                },
+                backend_type=route.backend_type or "external",
+                api_key_id=auth.api_key_id,
+            )
+            response_payload, assistant_messages = _responses_payload_from_anthropic(
+                message_payload=result,
+                request_payload=payload,
+                response_id=response_id,
+            )
+            upsert_response_state(
+                request.app.state.db,
+                response_id=response_id,
+                request_id=request_id,
+                model_name=payload.model,
+                input_items=input_items,
+                output_items=response_payload["output"],
+                messages=[*messages_for_state, *assistant_messages],
+                parent_response_id=payload.previous_response_id,
+                route_name=route.name,
+                client_protocol="responses",
+                upstream_protocol=route.upstream_protocol,
+                request_payload=messages_payload,
+                output_payload=result,
+            )
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "ok",
+                "responses",
+                **log_context,
+            )
+            response = JSONResponse(response_payload)
             response.headers["x-request-id"] = request_id
             return response
 
@@ -1672,6 +2201,15 @@ def create_app() -> FastAPI:
         await ensure_agent_ready()
         raw = await _read_json_body(request)
         payload = AnthropicMessagesRequest.model_validate(raw)
+        route = resolve_route(payload.model, request.app.state.ctx.models)
+        ensure_route_supports_request(
+            route,
+            type("Req", (), {
+                "client_protocol": "messages",
+                "stream": bool(payload.stream),
+                "tools": payload.tools,
+            })(),
+        )
         request_id = _request_id(request)
         started_at = datetime.now(timezone.utc)
         log_context = _request_log_context(request, auth)

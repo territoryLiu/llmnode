@@ -5,6 +5,7 @@ import httpx
 
 from llmnode.api.app import create_app
 from llmnode.config import load_settings
+from llmnode.models import ModelCapabilities, ModelRoute
 from llmnode.proxy.backend import VLLMBackendClient
 from llmnode.proxy.vllm_client import VLLMClient
 from llmnode.security import hash_api_key
@@ -125,6 +126,227 @@ def test_chat_completions_passes_through_real_model_name():
     asyncio.run(run())
 
 
+def test_chat_completions_external_chat_route_posts_to_upstream_chat():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        calls: list[tuple[str, str, dict, dict | None]] = []
+
+        async def fake_post_json_to(base_url, path, payload, headers=None):
+            calls.append((base_url, path, payload, headers))
+            return {
+                "id": "chatcmpl-ext-1",
+                "object": "chat.completion",
+                "model": payload["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+            }
+
+        app.state.post_json_to = fake_post_json_to
+        app.state.ctx.post_json_to = fake_post_json_to
+        app.state.ctx.models[EXPECTED_MODEL_NAME] = ModelRoute(
+            name=EXPECTED_MODEL_NAME,
+            display_name="External Chat",
+            backend_model=None,
+            backend_type=None,
+            enabled=True,
+            lifecycle_mode="external",
+            upstream_protocol="chat",
+            upstream_base_url="https://chat.example.com/v1",
+            upstream_model="gpt-4o-mini",
+            upstream_auth_kind="bearer",
+            upstream_auth_ref="OPENAI_CHAT_TOKEN",
+            capabilities=ModelCapabilities(
+                supports_responses=False,
+                supports_chat=True,
+                supports_messages=False,
+                supports_stream=True,
+                supports_function_tools=True,
+                supports_builtin_tools=True,
+            ),
+        )
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        with patch.dict("os.environ", {"OPENAI_CHAT_TOKEN": "sk-upstream-openai-chat"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {admin_secret}"},
+                    json={
+                        "model": EXPECTED_MODEL_NAME,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "max_tokens": 16,
+                    },
+                )
+                assert resp.status_code == 200
+                assert resp.json()["model"] == "gpt-4o-mini"
+                assert calls[0][0] == "https://chat.example.com/v1"
+                assert calls[0][1] == "/v1/chat/completions"
+                assert calls[0][2]["model"] == "gpt-4o-mini"
+                assert calls[0][3] == {"authorization": "Bearer sk-upstream-openai-chat"}
+
+    asyncio.run(run())
+
+
+def test_chat_completions_external_chat_route_streams_from_upstream_chat():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        calls: list[tuple[str, str, dict, dict | None]] = []
+
+        async def fake_stream_bytes_from(base_url, path, payload, headers=None):
+            calls.append((base_url, path, payload, headers))
+            chunks = [
+                b'data: {"id":"chatcmpl-ext-2","choices":[{"delta":{"content":"Hi"}}]}\n\n',
+                b'data: {"id":"chatcmpl-ext-2","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\n',
+                b"data: [DONE]\n\n",
+            ]
+            for chunk in chunks:
+                yield chunk
+
+        app.state.stream_bytes_from = fake_stream_bytes_from
+        app.state.ctx.stream_bytes_from = fake_stream_bytes_from
+        app.state.ctx.models[EXPECTED_MODEL_NAME] = ModelRoute(
+            name=EXPECTED_MODEL_NAME,
+            display_name="External Chat",
+            backend_model=None,
+            backend_type=None,
+            enabled=True,
+            lifecycle_mode="external",
+            upstream_protocol="chat",
+            upstream_base_url="https://chat.example.com/v1",
+            upstream_model="gpt-4o-mini",
+            upstream_auth_kind="bearer",
+            upstream_auth_ref="OPENAI_CHAT_STREAM_TOKEN",
+            capabilities=ModelCapabilities(
+                supports_responses=False,
+                supports_chat=True,
+                supports_messages=False,
+                supports_stream=True,
+                supports_function_tools=True,
+                supports_builtin_tools=True,
+            ),
+        )
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        with patch.dict("os.environ", {"OPENAI_CHAT_STREAM_TOKEN": "sk-upstream-openai-stream"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                async with client.stream(
+                    "POST",
+                    "/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {admin_secret}"},
+                    json={
+                        "model": EXPECTED_MODEL_NAME,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "max_tokens": 16,
+                        "stream": True,
+                    },
+                ) as resp:
+                    assert resp.status_code == 200
+                    body = await resp.aread()
+                    text = body.decode()
+                    assert 'data: {"id":"chatcmpl-ext-2"' in text
+                assert calls[0][0] == "https://chat.example.com/v1"
+                assert calls[0][1] == "/v1/chat/completions"
+                assert calls[0][2]["model"] == "gpt-4o-mini"
+                assert calls[0][3] == {"authorization": "Bearer sk-upstream-openai-stream"}
+
+    asyncio.run(run())
+
+
+def test_chat_completions_external_chat_route_rejects_missing_upstream_secret():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        app.state.ctx.models[EXPECTED_MODEL_NAME] = ModelRoute(
+            name=EXPECTED_MODEL_NAME,
+            display_name="External Chat",
+            backend_model=None,
+            backend_type=None,
+            enabled=True,
+            lifecycle_mode="external",
+            upstream_protocol="chat",
+            upstream_base_url="https://chat.example.com/v1",
+            upstream_model="gpt-4o-mini",
+            upstream_auth_kind="bearer",
+            upstream_auth_ref="MISSING_OPENAI_CHAT_TOKEN",
+            capabilities=ModelCapabilities(
+                supports_responses=False,
+                supports_chat=True,
+                supports_messages=False,
+                supports_stream=True,
+                supports_function_tools=True,
+                supports_builtin_tools=True,
+            ),
+        )
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        with patch.dict("os.environ", {}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {admin_secret}"},
+                    json={
+                        "model": EXPECTED_MODEL_NAME,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "max_tokens": 16,
+                    },
+                )
+                assert resp.status_code == 500
+                assert resp.json()["detail"] == "missing_upstream_auth_secret"
+
+    asyncio.run(run())
+
+
+def test_chat_completions_rejects_external_non_chat_route():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        app.state.ctx.models[EXPECTED_MODEL_NAME] = ModelRoute(
+            name=EXPECTED_MODEL_NAME,
+            display_name="External Responses Only",
+            backend_model=None,
+            backend_type=None,
+            enabled=True,
+            lifecycle_mode="external",
+            upstream_protocol="responses",
+            upstream_base_url="https://api.openai.com/v1",
+            upstream_model="gpt-4o",
+            upstream_auth_kind="bearer",
+            upstream_auth_ref="openai-prod",
+            capabilities=ModelCapabilities(
+                supports_responses=True,
+                supports_chat=True,
+                supports_messages=False,
+                supports_stream=True,
+                supports_function_tools=True,
+                supports_builtin_tools=True,
+            ),
+        )
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "model": EXPECTED_MODEL_NAME,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "max_tokens": 16,
+                },
+            )
+            assert resp.status_code == 400
+            assert resp.json()["detail"] == "unsupported_route_protocol_combination"
+
+    asyncio.run(run())
+
+
 def test_chat_completions_rejects_when_agent_not_ready():
     async def run():
         app = create_app()
@@ -238,6 +460,88 @@ def test_admin_models_can_be_updated():
             updated = next(item for item in models if item["name"] == original["name"])
             assert updated["display_name"] == "Updated Name"
             assert updated["enabled"] is False
+
+    asyncio.run(run())
+
+
+def test_admin_models_can_update_external_route_fields():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            patch = await client.patch(
+                f"/admin/models/{EXPECTED_MODEL_NAME}",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "display_name": "Qwen3 Coder External",
+                    "enabled": True,
+                    "lifecycle_mode": "external",
+                    "backend_type": None,
+                    "backend_model": None,
+                    "upstream_protocol": "responses",
+                    "upstream_base_url": "https://api.openai.com/v1",
+                    "upstream_model": "gpt-4o",
+                    "upstream_auth_kind": "bearer",
+                    "upstream_auth_ref": "openai-prod",
+                    "capabilities_json": {
+                        "supports_responses": True,
+                        "supports_chat": True,
+                        "supports_messages": False,
+                        "supports_stream": True,
+                        "supports_function_tools": True,
+                        "supports_builtin_tools": True,
+                        "supports_previous_response_id_native": True,
+                        "supports_json_schema": True,
+                    },
+                },
+            )
+            assert patch.status_code == 200
+            model = patch.json()["model"]
+            assert model["display_name"] == "Qwen3 Coder External"
+            assert model["lifecycle_mode"] == "external"
+            assert model["backend_type"] is None
+            assert model["backend_model"] is None
+            assert model["upstream_protocol"] == "responses"
+            assert model["upstream_base_url"] == "https://api.openai.com/v1"
+            assert model["upstream_model"] == "gpt-4o"
+            assert model["upstream_auth_kind"] == "bearer"
+            assert model["upstream_auth_ref"] == "openai-prod"
+            assert model["capabilities_json"]["supports_previous_response_id_native"] is True
+
+    asyncio.run(run())
+
+
+def test_admin_models_reject_invalid_external_route_payload():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            patch = await client.patch(
+                f"/admin/models/{EXPECTED_MODEL_NAME}",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "lifecycle_mode": "external",
+                    "upstream_protocol": "responses",
+                    "upstream_base_url": "",
+                },
+            )
+            assert patch.status_code == 400
+            assert patch.json()["detail"] == "upstream_base_url is required for external routes"
+
+            patch2 = await client.patch(
+                f"/admin/models/{EXPECTED_MODEL_NAME}",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "lifecycle_mode": "managed_local",
+                    "upstream_protocol": "bogus",
+                },
+            )
+            assert patch2.status_code == 400
+            assert patch2.json()["detail"] == "unsupported upstream_protocol: bogus"
 
     asyncio.run(run())
 

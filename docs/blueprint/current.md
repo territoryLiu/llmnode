@@ -29,7 +29,7 @@
 
 一句话判断：
 
-- `llmnode` 已经不是”能不能起服务”的原型，而是”三后端正式路径均已完成线上联调验证、控制面已收口，当前重点转向平台化控制面与管理台补厚的单机推理网关”。
+- `llmnode` 已经不是”能不能起服务”的原型，而是”三后端正式路径均已完成线上联调验证、控制面已收口，当前重点转向配置真相收口、route 边界澄清与管理面补厚的单机推理网关”。
 
 这意味着当前阶段的真实特点是：
 
@@ -121,7 +121,7 @@
   - API 协议兼容
   - 模型路由
   - 请求审计
-  - `/v1/responses` native/chat 双路径兼容
+  - `/v1/responses` native/chat/messages 三路径兼容
 - `node-agent`
   - 后端启停
   - 容器健康检查
@@ -149,24 +149,23 @@
 
 ## 6. 当前运行形态现状
 
-当前默认正式运行路径仍然是：
+当前运行形态应按下面理解：
 
-- 推理后端：`vLLM`
-- 默认模型 profile：`config/backends/vllm_qwen36-27b-FP8.yaml`
-- 默认模型目录：`models/Qwen/Qwen3.6-27B-FP8`
-- 默认后端端口：`15673`
+- 实际使用哪个后端、模型目录和端口，由当前激活的 `active_backend_profile` 与对应 profile 配置决定
+- `config/defaults.yaml` 只负责声明当前激活的 profile
+- `config/backends/*.yaml` 才是具体“后端 + 模型”运行参数来源
 
 当前现实包括：
 
-- `vLLM` 是正式主路径（默认 `backend_type: vllm`）
+- 当前代码实现支持 `vllm / llama.cpp / sglang` 三种本地受控后端
 - 当前已落地的 profile 分层清晰：
-  - 正式默认：`config/backends/vllm_qwen36-27b-FP8.yaml`
-  - 可选正式路径：`config/backends/vllm_qwen36-35b-a3b-fp8.yaml`
-  - 可选正式路径：`config/backends/vllm_qwen36-35b-a3b.yaml`
-  - 可选 GGUF 路径：`config/backends/llama.cpp_qwen36-35b-a3b-q4km.yaml`
-  - 备选 GGUF 路径：`config/backends/llama.cpp_qwen36-35b-a3b-f16.yaml`
-  - 试验中路径：`config/backends/sglang_qwen36-35b-a3b-fp8.yaml`
-  - 历史保留路径：`config/backends/vllm_qwen36-27b.yaml`
+  - `config/backends/vllm_qwen36-27b-FP8.yaml`
+  - `config/backends/vllm_qwen36-35b-a3b-fp8.yaml`
+  - `config/backends/vllm_qwen36-35b-a3b.yaml`
+  - `config/backends/llama.cpp_qwen36-35b-a3b-q4km.yaml`
+  - `config/backends/llama.cpp_qwen36-35b-a3b-f16.yaml`
+  - `config/backends/sglang_qwen36-35b-a3b-fp8.yaml`
+  - `config/backends/vllm_qwen36-27b.yaml`
 - 三后端均已完成线上联调验证（2026-05-12）：
   - `vLLM`：正常推理，`reasoning_content` / `content` 干净分离
   - `llama.cpp`：须使用 `full-cuda` 镜像，约 68 token/s，显存占用约 26GB，`reasoning_content` 正常
@@ -208,24 +207,32 @@
   - 历史列表展示的 `masked_key` 已改为 `sk-****` 风格，不再使用 `ln_saved_n`
   - 控制面新增 `python -m llmnode.control create-api-key --name <name> --scope admin` 用于首把管理员密钥初始化
   - 管理台顶部提供轻量 API key 输入入口，不再依赖默认内置密钥
+- 多协议路由管理面已打通（2026-05-15）：
+  - `/admin/models` 与管理台模型页已支持编辑 `lifecycle_mode / upstream_protocol / upstream_base_url / upstream_model / upstream_auth_kind / upstream_auth_ref / capabilities_json`
+  - 本地受控 route 与外部上游 route 已有明确校验边界：
+    - `managed_local` 必须保留 `backend_type / backend_model`
+    - `external` 必须提供 `upstream_base_url / upstream_model`
+  - 管理台模型页已从“单字段映射表”升级为 route 配置卡片，可直接配置 external responses/chat/messages 上游
+  - route 能力开关已支持在管理台声明 `responses / chat / messages / stream / tools / previous_response_id / json_schema`
+  - 当前 route 管理仍以“从当前激活 profile 派生出的 catalog + 运行态编辑”为主，还不是完整的长期持久化模型注册中心
+- 三协议入口的 route-aware 上游分发已补到 phase1 最小闭环（2026-05-15）：
+  - `/v1/responses` 已可按 route 选择：
+    - native responses upstream
+    - responses-to-chat 适配
+    - responses-to-messages 适配
+  - `/v1/chat/completions` 已可按 route 直连 external chat upstream
+  - `/v1/messages` 已可按 route 直连 external messages upstream
+  - external upstream 鉴权已不再发送占位 token；`upstream_auth_ref` 当前按环境变量名解析真实 secret
+  - 现有本地 Qwen 主路径仍保持兼容：
+    - `managed_local + chat` 继续服务 `/v1/chat/completions`
+    - `managed_local + chat` 仍可兼容 `/v1/messages` 入口
 
-当前模型选择建议也已经收敛：
+当前模型与 profile 边界应这样理解：
 
-- `Qwen3.6-27B-FP8`
-  - 当前正式默认模型
-  - 正式优先后端仍是 `vLLM`
-- `Qwen3.6-35B-A3B-FP8`
-  - 可选正式 profile，性能和上下文能力更强
-  - 正式优先后端仍是 `vLLM`
-- `Qwen3.6-35B-A3B-GGUF`
-  - 当前优先作为 `llama.cpp` 路线使用
-  - 适合低显存或 GGUF 兼容性优先场景
-- `Qwen3.6-27B`
-  - 当前保留历史 profile
-  - 不建议继续作为正式默认模型
-- `DeepSeek-V4-Flash`、`gemma-4-31B-it`
-  - 当前未纳入正式 profile 路径
-  - 需要补完格式、模板和性能验证后再决定是否收口
+- 没有独立于配置之外的“默认模型”概念
+- 当前激活哪个 backend profile，就以该 profile 所声明的模型目录、模型名和后端参数作为运行真相
+- 现有若干 Qwen / GGUF / SGLang profile 属于可选运行路径，不应再在正式文档里写成固定默认模型
+- `DeepSeek-V4-Flash`、`gemma-4-31B-it` 当前仍未进入正式 profile 路径
 
 与模型能力相关的长期参考仍分开放置：
 
@@ -236,7 +243,7 @@
 
 当前明确成立的真相源边界是：
 
-- 运行默认值与激活 profile 选择：`config/defaults.yaml`
+- 当前激活 profile 选择：`config/defaults.yaml`
 - 后端与模型 profile 目录：`config/backends/*.yaml`
 - Python 控制入口：`llmnode/control.py`
 - 网关配置加载：`llmnode/config.py`
@@ -259,7 +266,7 @@
 
 当前代码实现支持：
 
-- `vLLM`（默认，`backend_type: vllm`）
+- `vLLM`（`backend_type: vllm`）
 - `llama.cpp`（`backend_type: llama.cpp`）
 - `SGLang`（`backend_type: sglang`）
 
@@ -269,6 +276,8 @@
 - 切换后端通过 `config/defaults.yaml` 的 `active_backend_profile` 或对应环境变量控制
 - 三后端均已完成线上联调验证（2026-05-12），详见 [docs/knowledge/backend_integration_qa.md](../knowledge/backend_integration_qa.md)
 - 管理面 `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值
+- 当前运行态 route 仍由当前激活 profile 派生初值，启动时会写入 SQLite 的 `model_routes`
+- 当前管理面可编辑已有 route，但尚未形成完整的 route 新增 / 删除 / 长期持久化管理闭环
 
 ## 9. 当前文档系统状态
 
@@ -317,9 +326,10 @@
   - `backend_type`：本地受控推理后端类型
   - `upstream_protocol`：对上游发请求时使用的协议
   - `lifecycle_mode`：本地受控 route 与外部上游 route 的生命周期归属
-- `/v1/responses` 当前已具备最小双路径能力（2026-05-15）：
+- `/v1/responses` 当前已具备最小三路径能力（2026-05-15）：
   - external route 可按 `upstream_protocol=responses` 走原生 upstream `/v1/responses`
   - 本地 Qwen 等 chat-native route 继续走 `responses -> chat` 适配
+  - messages-native route 现已可走 `responses -> messages` 适配
   - `previous_response_id` 已支持 native upstream continuation 与 local replay continuation 两种基础模式
 - **三后端线上联调验证已完成（2026-05-12）**：vLLM / llama.cpp / SGLang 各自跑通推理链路，`reasoning_content` / `content` 干净分离已确认
 - **控制面诊断能力增强已完成（2026-05-12）**：
@@ -331,5 +341,7 @@
 
 当前最值得继续补厚的方向包括：
 
-- 诊断建议的持续优化（新增错误模式识别）
-- 节点平台化预留（保持单机前提下的对象边界收口）
+- 配置真相源收口：去掉“默认模型”叙事，统一到“当前激活 profile / 当前配置”
+- route 产品边界澄清：明确当前是“配置派生 + 运行态编辑”，还是升级为完整 route 注册中心
+- route 管理闭环：补齐新增 / 删除 / 持久化策略之前，不把当前模型页描述成完整模型注册中心
+- 节点平台化预留：保持单机前提下继续收口对象边界

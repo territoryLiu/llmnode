@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Dict
 
@@ -27,6 +29,8 @@ class AuthContext:
 class GatewayContext:
     backend_client: BackendClient
     models: Dict[str, ModelRoute]
+    post_json_to: Callable[[str, str, Dict[str, Any], dict[str, str] | None], Awaitable[Dict[str, Any]]] | None = None
+    stream_bytes_from: Callable[[str, str, Dict[str, Any], dict[str, str] | None], Any] | None = None
 
 
 def extract_api_token(auth_header: str | None, x_api_key: str | None) -> str:
@@ -76,6 +80,16 @@ def resolve_route(model_name: str, models: Dict[str, ModelRoute]) -> ModelRoute:
 
 
 def ensure_route_supports_request(route: ModelRoute, req: NormalizedRequest) -> None:
+    if req.client_protocol == "chat" and not route.capabilities.supports_chat:
+        raise HTTPException(status_code=400, detail="chat_not_supported_for_model")
+    if (
+        req.client_protocol == "messages"
+        and not route.capabilities.supports_messages
+        and not (route.lifecycle_mode == "managed_local" and route.upstream_protocol == "chat")
+    ):
+        raise HTTPException(status_code=400, detail="messages_not_supported_for_model")
+    if req.client_protocol == "responses" and route.upstream_protocol == "responses" and not route.capabilities.supports_responses:
+        raise HTTPException(status_code=400, detail="responses_not_supported_for_model")
     if req.stream and not route.capabilities.supports_stream:
         raise HTTPException(status_code=400, detail="stream_not_supported_for_model")
     for tool in req.tools or []:
@@ -91,24 +105,94 @@ def select_upstream_adapter(route: ModelRoute, req: NormalizedRequest) -> str:
         return "native_responses"
     if route.upstream_protocol == "chat" and req.client_protocol == "responses":
         return "responses_to_chat"
+    if route.upstream_protocol == "messages" and req.client_protocol == "responses":
+        return "responses_to_messages"
     raise HTTPException(status_code=400, detail="unsupported_route_protocol_combination")
 
 
+def build_upstream_headers(route: ModelRoute) -> dict[str, str] | None:
+    if route.upstream_auth_kind == "none":
+        return None
+    if not route.upstream_auth_ref:
+        raise HTTPException(status_code=500, detail="missing_upstream_auth_ref")
+    secret = os.getenv(route.upstream_auth_ref)
+    if not secret:
+        raise HTTPException(status_code=500, detail="missing_upstream_auth_secret")
+    headers: dict[str, str] = {}
+    if route.upstream_auth_kind == "bearer":
+        headers["authorization"] = f"Bearer {secret}"
+    elif route.upstream_auth_kind == "x_api_key":
+        headers["x-api-key"] = secret
+    return headers or None
+
+
 async def proxy_openai_chat(payload: Dict[str, Any], ctx: GatewayContext) -> Dict[str, Any]:
-    resolve_route(payload["model"], ctx.models)
+    route = resolve_route(payload["model"], ctx.models)
+    if route.upstream_protocol != "chat":
+        raise HTTPException(status_code=400, detail="unsupported_route_protocol_combination")
+    if route.lifecycle_mode == "external":
+        if ctx.post_json_to is None:
+            raise HTTPException(status_code=500, detail="external_post_json_unavailable")
+        upstream_payload = dict(payload)
+        upstream_payload["model"] = route.resolved_upstream_model() or payload["model"]
+        return await ctx.post_json_to(
+            route.upstream_base_url or "",
+            "/v1/chat/completions",
+            upstream_payload,
+            build_upstream_headers(route),
+        )
     return await ctx.backend_client.post_json("/v1/chat/completions", payload)
 
 
 async def proxy_anthropic_messages(payload: Dict[str, Any], ctx: GatewayContext) -> Dict[str, Any]:
-    resolve_route(payload["model"], ctx.models)
+    route = resolve_route(payload["model"], ctx.models)
+    if route.lifecycle_mode == "external":
+        if route.upstream_protocol != "messages":
+            raise HTTPException(status_code=400, detail="unsupported_route_protocol_combination")
+        if ctx.post_json_to is None:
+            raise HTTPException(status_code=500, detail="external_post_json_unavailable")
+        upstream_payload = dict(payload)
+        upstream_payload["model"] = route.resolved_upstream_model() or payload["model"]
+        return await ctx.post_json_to(
+            route.upstream_base_url or "",
+            "/v1/messages",
+            upstream_payload,
+            build_upstream_headers(route),
+        )
     return await ctx.backend_client.post_json("/v1/messages", payload)
 
 
 async def stream_openai_chat(payload: Dict[str, Any], ctx: GatewayContext):
-    resolve_route(payload["model"], ctx.models)
+    route = resolve_route(payload["model"], ctx.models)
+    if route.upstream_protocol != "chat":
+        raise HTTPException(status_code=400, detail="unsupported_route_protocol_combination")
+    if route.lifecycle_mode == "external":
+        if ctx.stream_bytes_from is None:
+            raise HTTPException(status_code=500, detail="external_stream_unavailable")
+        upstream_payload = dict(payload)
+        upstream_payload["model"] = route.resolved_upstream_model() or payload["model"]
+        return ctx.stream_bytes_from(
+            route.upstream_base_url or "",
+            "/v1/chat/completions",
+            upstream_payload,
+            build_upstream_headers(route),
+        )
     return ctx.backend_client.stream_bytes("/v1/chat/completions", payload)
 
 
 async def stream_anthropic_messages(payload: Dict[str, Any], ctx: GatewayContext):
-    resolve_route(payload["model"], ctx.models)
+    route = resolve_route(payload["model"], ctx.models)
+    if route.lifecycle_mode == "external":
+        if route.upstream_protocol != "messages":
+            raise HTTPException(status_code=400, detail="unsupported_route_protocol_combination")
+        if ctx.stream_bytes_from is None:
+            raise HTTPException(status_code=500, detail="external_stream_unavailable")
+        upstream_payload = dict(payload)
+        upstream_payload["model"] = route.resolved_upstream_model() or payload["model"]
+        return ctx.stream_bytes_from(
+            route.upstream_base_url or "",
+            "/v1/messages",
+            upstream_payload,
+            build_upstream_headers(route),
+        )
     return ctx.backend_client.stream_bytes("/v1/messages", payload)
