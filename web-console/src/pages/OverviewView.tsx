@@ -33,6 +33,18 @@ export function OverviewView() {
     () => modelRoutes.filter((route) => route.enabled),
     [modelRoutes],
   );
+  const staleRoutes = useMemo(
+    () => modelRoutes.filter((route) => route.stale),
+    [modelRoutes],
+  );
+  const manualRoutes = useMemo(
+    () => modelRoutes.filter((route) => route.source_kind === 'manual'),
+    [modelRoutes],
+  );
+  const profileSeedRoutes = useMemo(
+    () => modelRoutes.filter((route) => route.source_kind === 'profile_seed'),
+    [modelRoutes],
+  );
 
   async function copyText(value: string) {
     if (!value) {
@@ -260,6 +272,22 @@ export function OverviewView() {
               <Settings className="w-6 h-6 text-purple-600 mb-2" />
               <span className="text-sm font-medium text-slate-800">{t('overview.editSchedule')}</span>
             </button>
+          </div>
+
+          <div className="mt-8">
+            <h4 className="font-bold mb-2 text-slate-800">{t('overview.routeGovernance')}</h4>
+            <p className="text-sm text-slate-500 mb-4">{t('overview.routeGovernanceHint')}</p>
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-amber-100 bg-amber-50/60 px-4 py-3 text-sm text-amber-800">
+                {t('overview.staleRoutesPending', {count: staleRoutes.length})}
+              </div>
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 px-4 py-3 text-sm text-emerald-800">
+                {t('overview.manualRoutesManaged', {count: manualRoutes.length})}
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white/40 px-4 py-3 text-sm text-slate-700">
+                {t('overview.profileSeedRoutes', {count: profileSeedRoutes.length})}
+              </div>
+            </div>
           </div>
 
           <div className="mt-8">

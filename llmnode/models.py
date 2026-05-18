@@ -30,6 +30,9 @@ class ModelRoute:
     upstream_auth_kind: str = "none"
     upstream_auth_ref: str | None = None
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
+    source_kind: str = "profile_seed"
+    source_ref: str | None = None
+    stale: bool = False
 
     def resolved_upstream_model(self) -> str | None:
         return self.upstream_model or self.backend_model
@@ -48,6 +51,9 @@ def load_model_catalog(path=None) -> Dict[str, ModelRoute]:
         upstream_base_url=settings.gateway.backend_url,
         upstream_model=settings.vllm.model_name,
         upstream_auth_kind="none",
+        source_kind="profile_seed",
+        source_ref=settings.active_backend_profile,
+        stale=False,
     )
     return {route.name: route}
 
@@ -71,6 +77,9 @@ def model_route_from_row(row: dict[str, Any]) -> ModelRoute:
         upstream_auth_kind=row.get("upstream_auth_kind", "none"),
         upstream_auth_ref=row.get("upstream_auth_ref"),
         capabilities=capabilities,
+        source_kind=row.get("source_kind", "profile_seed"),
+        source_ref=row.get("source_ref"),
+        stale=bool(row.get("stale", False)),
     )
 
 
@@ -101,6 +110,9 @@ def model_routes_for_admin(catalog: Dict[str, ModelRoute]) -> list[dict]:
             "upstream_model": route.resolved_upstream_model(),
             "upstream_auth_kind": route.upstream_auth_kind,
             "upstream_auth_ref": route.upstream_auth_ref,
+            "source_kind": route.source_kind,
+            "source_ref": route.source_ref,
+            "stale": route.stale,
             "capabilities_json": {
                 "supports_responses": route.capabilities.supports_responses,
                 "supports_chat": route.capabilities.supports_chat,

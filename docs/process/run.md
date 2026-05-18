@@ -53,6 +53,19 @@ python -m llmnode.control stop
 - `gateway-api`
 - `web-console`
 
+补充运行时 route 语义：
+
+- 启动时 route seed 已改为增量同步，而不是清空重建 `model_routes`
+- 当前激活 profile 只决定本地受控默认供给，不再覆盖 manual route
+- profile 切换后，旧 `profile_seed` route 可能被标记为 `stale` 且自动 `disabled`
+- stale route 不会自动消失，需在管理台确认是否保留或继续禁用
+- 管理台模型页当前会对 `stale + profile_seed` route 直接显示治理提示和来源 profile
+- `stale + profile_seed` route 当前不能直接重新启用；如需恢复，应切回来源 profile，或新建 manual route
+- 管理台总览页当前会汇总 `stale / manual / profile_seed` 数量，方便先做排障前判断
+- 启动 seed 的 reconcile 结果当前也会进入 `/admin/events`
+  - `route_marked_stale` 表示旧 `profile_seed` route 已被标记为 stale 并自动禁用
+  - `route_manual_preserved` 表示已有 manual route 在本次启动 seed 中被保留
+
 ## 5. ready 判定
 
 不要把”某个进程活着”直接等同于”系统 ready”。  

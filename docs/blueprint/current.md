@@ -214,7 +214,24 @@
     - `external` 必须提供 `upstream_base_url / upstream_model`
   - 管理台模型页已从“单字段映射表”升级为 route 配置卡片，可直接配置 external responses/chat/messages 上游
   - route 能力开关已支持在管理台声明 `responses / chat / messages / stream / tools / previous_response_id / json_schema`
-  - 当前 route 管理仍以“从当前激活 profile 派生出的 catalog + 运行态编辑”为主，还不是完整的长期持久化模型注册中心
+- route 注册表平台化 phase 1 已落地（2026-05-18）：
+  - `model_routes` 已升级为单机节点上的长期 route 注册表
+  - route 新增记录 `source_kind / source_ref / stale`，区分 `profile_seed` 与 `manual`
+  - 启动 seed 已改为增量同步，不再清空 manual route
+  - 不再属于当前激活 profile 的 `profile_seed` route 会标记 `stale=1` 且自动 `enabled=false`
+  - `/admin/models` 已支持 external route 新增与 manual route 删除
+  - `profile_seed` route 当前允许编辑和禁用，但不允许物理删除或直接转换成 manual external route
+- route 管理闭环 phase 2 已开始补厚（2026-05-18）：
+  - 管理台模型页现已对 `stale + profile_seed` route 显示明确治理提示
+  - 管理台模型页现已明确写出这类 route 当前允许和不允许的治理动作
+  - 管理台模型页会展示 `source_ref` 对应的来源 profile
+  - `profile_seed` route 的 `lifecycle_mode` 已在前端锁定，不再允许直接改成 `external`
+  - `stale + profile_seed` route 当前也不允许直接重新启用；如需恢复，应切回来源 profile，或新建 manual route
+  - 管理台总览页已新增 route 治理摘要，可直接看到 `stale / manual / profile_seed` 数量
+  - 启动 seed 的 route reconcile 结果现已接入 `/admin/events`，至少可观察到 `route_marked_stale` 与 `route_manual_preserved`
+- 配置真相源与测试基线继续收口（2026-05-18）：
+  - `tests/test_smoke.py` 已改为围绕 repo 当前激活 profile 与 profile 文件解析断言配置行为，不再断言固定默认模型名
+  - `load_settings()` 在自定义 defaults/backends 场景下，若本地 active profile 缺字段，现会优先回退到 repo 中同名 profile，而不是串回 repo 默认 profile
 - 三协议入口的 route-aware 上游分发已补到 phase1 最小闭环（2026-05-15）：
   - `/v1/responses` 已可按 route 选择：
     - native responses upstream
@@ -276,8 +293,10 @@
 - 切换后端通过 `config/defaults.yaml` 的 `active_backend_profile` 或对应环境变量控制
 - 三后端均已完成线上联调验证（2026-05-12），详见 [docs/knowledge/backend_integration_qa.md](../knowledge/backend_integration_qa.md)
 - 管理面 `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值
-- 当前运行态 route 仍由当前激活 profile 派生初值，启动时会写入 SQLite 的 `model_routes`
-- 当前管理面可编辑已有 route，但尚未形成完整的 route 新增 / 删除 / 长期持久化管理闭环
+- 当前激活 profile 仍决定本地受控 route 的默认供给
+- 启动时会把该默认供给增量同步到 SQLite 的 `model_routes`
+- `model_routes` 现已作为长期 route 注册表保存 manual route、stale 状态与治理字段
+- 当前 phase 1 已形成 external route 新增、manual route 删除、profile seed 增量同步的最小管理闭环
 
 ## 9. 当前文档系统状态
 
@@ -341,7 +360,5 @@
 
 当前最值得继续补厚的方向包括：
 
-- 配置真相源收口：去掉“默认模型”叙事，统一到“当前激活 profile / 当前配置”
-- route 产品边界澄清：明确当前是“配置派生 + 运行态编辑”，还是升级为完整 route 注册中心
-- route 管理闭环：补齐新增 / 删除 / 持久化策略之前，不把当前模型页描述成完整模型注册中心
+- route 管理闭环补厚：继续补管理动作与治理语义，而不是重新讨论 stale/source 边界
 - 节点平台化预留：保持单机前提下继续收口对象边界

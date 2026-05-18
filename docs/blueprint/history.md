@@ -115,6 +115,10 @@
   **Readiness 热身语义与结构化事件已正式化**：`node-agent` 已拆分 `http_ready / inference_ready` 双阶段就绪语义；网关在热身窗口返回 `503 + Retry-After`，并使用固定 `detail` 枚举；`agent_events` 已扩展 `event_type / readiness_state / http_ready / inference_ready / metadata_json`，其中热身失败和恢复路径会记录 `stream_not_ready`、`backend_recovered` 等结构化事件，管理台与排障接口可直接消费。
 - 补充里程碑（2026-05-15）：
   **多协议统一内核一期最小闭环已落地**：模型 route 已正式拆分 `backend_type / upstream_protocol / lifecycle_mode` 三层语义；`/admin/models` 与管理台模型页可直接配置 external responses/chat/messages 上游；`/v1/responses` 已支持 native responses、`responses -> chat` 与 `responses -> messages` 三路径，`previous_response_id` 已支持 native/local 两类续接；`/v1/chat/completions` 与 `/v1/messages` 也已具备最小 route-aware external upstream 分发；external upstream 鉴权不再发送占位 token，`upstream_auth_ref` 当前按环境变量名解析真实 secret。
+- 补充里程碑（2026-05-18）：
+  **route 注册表平台化 phase 1 已落地**：`model_routes` 已从启动时可整表重建的运行态缓存升级为单机节点上的长期 route 注册表；新增 `source_kind / source_ref / stale` 用于表达 route 来源与同步状态；启动 seed 已改为 `profile_seed` 增量同步，不再清空 manual route；旧 profile route 会标记 `stale=1` 且自动禁用；`/admin/models` 与管理台模型页现已形成 `external route create + manual route delete` 的最小管理闭环，而 `profile_seed` route 当前只允许编辑和禁用，不允许物理删除或直接转换为 manual external route。
+- 补充里程碑（2026-05-18）：
+  **route phase 2 可观测性与配置回退语义已补齐一轮收口**：管理台总览与模型页之外，启动 seed 的 reconcile 结果现已进入 `/admin/events`，至少可观察 `route_marked_stale / route_manual_preserved`；同时配置加载与 smoke 测试已进一步统一到“当前激活 profile / 当前配置决定运行真相”，`load_settings()` 在自定义 defaults/backends 场景下若本地 active profile 缺字段，会优先回退到 repo 中同名 profile，而不再串回 repo 默认 profile。
 - 对应历史蓝图：
   未来方向已回流到 [roadmap.md](roadmap.md)，相关正式边界已进入 [current.md](current.md) 与相关 `contracts / process` 文档。
 

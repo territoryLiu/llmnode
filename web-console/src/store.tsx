@@ -96,6 +96,9 @@ export interface ModelRouteRow {
   upstream_model: string | null;
   upstream_auth_kind: 'none' | 'bearer' | 'x_api_key';
   upstream_auth_ref: string | null;
+  source_kind: 'profile_seed' | 'manual';
+  source_ref: string | null;
+  stale: boolean;
   capabilities_json: {
     supports_responses: boolean;
     supports_chat: boolean;
@@ -343,6 +346,19 @@ interface UpdateModelRoutePayload {
   capabilities_json?: ModelRouteRow['capabilities_json'];
 }
 
+interface CreateModelRoutePayload {
+  name: string;
+  display_name: string;
+  lifecycle_mode: 'external';
+  upstream_protocol: 'responses' | 'chat' | 'messages';
+  upstream_base_url: string;
+  upstream_model: string;
+  upstream_auth_kind?: 'none' | 'bearer' | 'x_api_key';
+  upstream_auth_ref?: string | null;
+  enabled?: boolean;
+  capabilities_json?: ModelRouteRow['capabilities_json'];
+}
+
 interface LoadingState {
   snapshot: boolean;
   requestLogs: boolean;
@@ -413,6 +429,8 @@ interface AppState {
   createApiKey: (payload: CreateApiKeyPayload) => Promise<{secret: string; key: ApiKeyRow}>;
   updateApiKey: (id: number, payload: UpdateApiKeyPayload) => Promise<ApiKeyRow>;
   deleteApiKey: (id: number) => Promise<void>;
+  createModelRoute: (payload: CreateModelRoutePayload) => Promise<ModelRouteRow>;
+  deleteModelRoute: (name: string) => Promise<void>;
   updateModelRoute: (name: string, payload: UpdateModelRoutePayload) => Promise<ModelRouteRow>;
   updateSchedule: (payload: Partial<ScheduleConfig>) => Promise<ScheduleConfig>;
   restartBackend: () => Promise<void>;
@@ -779,6 +797,29 @@ export function AppProvider({children}: {children: ReactNode}) {
     return response.model;
   }
 
+  async function createModelRoute(payload: CreateModelRoutePayload) {
+    const response = await requestJson<{model: ModelRouteRow}>('/admin/models', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    setModelRoutes((previous) => [...previous, response.model]);
+    setLastUpdated(new Date());
+    setGlobalError(null);
+    void refreshSnapshot();
+    return response.model;
+  }
+
+  async function deleteModelRoute(name: string) {
+    await requestJson<{deleted: boolean; name: string}>(`/admin/models/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    });
+    setModelRoutes((previous) => previous.filter((item) => item.name !== name));
+    setLastUpdated(new Date());
+    setGlobalError(null);
+    void refreshSnapshot();
+  }
+
   async function updateSchedule(payload: Partial<ScheduleConfig>) {
     const response = await requestJson<{schedule: ScheduleConfig}>('/admin/schedule', {
       method: 'PATCH',
@@ -996,6 +1037,8 @@ export function AppProvider({children}: {children: ReactNode}) {
         createApiKey,
         updateApiKey,
         deleteApiKey,
+        createModelRoute,
+        deleteModelRoute,
         updateModelRoute,
         updateSchedule,
         restartBackend,

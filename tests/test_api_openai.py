@@ -464,15 +464,42 @@ def test_admin_models_can_be_updated():
     asyncio.run(run())
 
 
-def test_admin_models_can_update_external_route_fields():
+def test_admin_models_can_update_external_route_fields_for_manual_route():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = FakeClient()
         admin_secret = seed_admin_key(app)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            created = await client.post(
+                "/admin/models",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "name": "openai-gpt-4.1",
+                    "display_name": "OpenAI GPT-4.1",
+                    "lifecycle_mode": "external",
+                    "upstream_protocol": "responses",
+                    "upstream_base_url": "https://api.openai.com/v1",
+                    "upstream_model": "gpt-4.1",
+                    "upstream_auth_kind": "bearer",
+                    "upstream_auth_ref": "openai-prod",
+                    "enabled": True,
+                    "capabilities_json": {
+                        "supports_responses": True,
+                        "supports_chat": True,
+                        "supports_messages": False,
+                        "supports_stream": True,
+                        "supports_function_tools": True,
+                        "supports_builtin_tools": True,
+                        "supports_previous_response_id_native": True,
+                        "supports_json_schema": True,
+                    },
+                },
+            )
+            assert created.status_code == 200
+
             patch = await client.patch(
-                f"/admin/models/{EXPECTED_MODEL_NAME}",
+                "/admin/models/openai-gpt-4.1",
                 headers={"Authorization": f"Bearer {admin_secret}"},
                 json={
                     "display_name": "Qwen3 Coder External",
@@ -513,15 +540,31 @@ def test_admin_models_can_update_external_route_fields():
     asyncio.run(run())
 
 
-def test_admin_models_reject_invalid_external_route_payload():
+def test_admin_models_reject_invalid_external_route_payload_for_manual_route():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = FakeClient()
         admin_secret = seed_admin_key(app)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            created = await client.post(
+                "/admin/models",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "name": "openai-gpt-4.1",
+                    "display_name": "OpenAI GPT-4.1",
+                    "lifecycle_mode": "external",
+                    "upstream_protocol": "responses",
+                    "upstream_base_url": "https://api.openai.com/v1",
+                    "upstream_model": "gpt-4.1",
+                    "upstream_auth_kind": "bearer",
+                    "upstream_auth_ref": "openai-prod",
+                },
+            )
+            assert created.status_code == 200
+
             patch = await client.patch(
-                f"/admin/models/{EXPECTED_MODEL_NAME}",
+                "/admin/models/openai-gpt-4.1",
                 headers={"Authorization": f"Bearer {admin_secret}"},
                 json={
                     "lifecycle_mode": "external",
@@ -542,6 +585,31 @@ def test_admin_models_reject_invalid_external_route_payload():
             )
             assert patch2.status_code == 400
             assert patch2.json()["detail"] == "unsupported upstream_protocol: bogus"
+
+    asyncio.run(run())
+
+
+def test_admin_models_reject_profile_seed_conversion_to_external():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            patch = await client.patch(
+                f"/admin/models/{EXPECTED_MODEL_NAME}",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "lifecycle_mode": "external",
+                    "upstream_protocol": "responses",
+                    "upstream_base_url": "https://api.openai.com/v1",
+                    "upstream_model": "gpt-4o",
+                    "upstream_auth_kind": "bearer",
+                    "upstream_auth_ref": "openai-prod",
+                },
+            )
+            assert patch.status_code == 409
+            assert patch.json()["detail"] == "profile_seed routes cannot be converted to manual external routes"
 
     asyncio.run(run())
 

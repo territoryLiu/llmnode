@@ -15,6 +15,7 @@ export const translations = {
   common: {
     refresh: {zh: '刷新', en: 'Refresh'},
     save: {zh: '保存', en: 'Save'},
+    delete: {zh: '删除', en: 'Delete'},
     yes: {zh: '是', en: 'Yes'},
     no: {zh: '否', en: 'No'},
     unknown: {zh: '未知', en: 'Unknown'},
@@ -79,6 +80,14 @@ export const translations = {
     loadingRequests: {zh: '正在拉取请求记录...', en: 'Loading requests...'},
     noRequests: {zh: '还没有请求记录', en: 'No requests yet'},
     quickActions: {zh: '快捷操作', en: 'Quick Actions'},
+    routeGovernance: {zh: '路由治理', en: 'Route Governance'},
+    routeGovernanceHint: {
+      zh: '这里直接汇总当前 route 注册表里需要人工关注的对象。',
+      en: 'This summarizes route registry items that currently need operator attention.',
+    },
+    staleRoutesPending: {zh: '{count} 条 stale route 待处理', en: '{count} stale routes pending'},
+    manualRoutesManaged: {zh: '{count} 条 manual route 已接管', en: '{count} manual routes managed'},
+    profileSeedRoutes: {zh: '{count} 条 profile seed route', en: '{count} profile seed routes'},
     restartBackend: {zh: '重启后端', en: 'Restart Backend'},
     restarting: {zh: '重启中...', en: 'Restarting...'},
     editSchedule: {zh: '编辑调度', en: 'Edit Schedule'},
@@ -213,6 +222,12 @@ export const translations = {
       zh: '每条路由都可以定义生命周期、上游协议、鉴权方式与能力开关，用于兼容 chat/messages/responses 三类客户端。',
       en: 'Each route can define lifecycle, upstream protocol, auth mode, and capability flags to serve chat/messages/responses clients.',
     },
+    createRoute: {zh: '创建路由', en: 'Create Route'},
+    createExternalRoute: {zh: '新增外部路由', en: 'Create External Route'},
+    createExternalRouteDesc: {
+      zh: 'phase 1 仅开放 external route 创建；本地受控 route 仍由当前 profile 与控制面供给。',
+      en: 'Phase 1 only allows external route creation; managed local routes still come from the active profile and control plane.',
+    },
     logicalModelName: {zh: '逻辑模型名', en: 'Logical Model Name'},
     displayName: {zh: '显示名称', en: 'Display Name'},
     backendModel: {zh: '后端模型', en: 'Backend Model'},
@@ -241,6 +256,27 @@ export const translations = {
     loadingRoutes: {zh: '正在加载路由...', en: 'Loading routes...'},
     noRoutes: {zh: '暂无模型路由', en: 'No model routes yet'},
     saving: {zh: '保存中...', en: 'Saving...'},
+    sourceProfileSeed: {zh: 'Profile Seed', en: 'Profile Seed'},
+    sourceManual: {zh: 'Manual', en: 'Manual'},
+    stale: {zh: 'Stale', en: 'Stale'},
+    deleteRoute: {zh: '删除路由', en: 'Delete Route'},
+    staleRouteHint: {
+      zh: '当前 profile 不再提供这条 route；系统已自动禁用，需由你决定是否保留。',
+      en: 'This route is no longer provided by the current profile. It has been auto-disabled and now needs manual review.',
+    },
+    staleProfileSeedEnableLocked: {
+      zh: 'Stale 的 Profile Seed route 当前不能直接重新启用；如需恢复，请切回来源 profile 或新建 manual route。',
+      en: 'Stale profile-seed routes cannot be re-enabled directly. Switch back to the source profile or create a manual route instead.',
+    },
+    staleProfileSeedAllowedActions: {
+      zh: '当前允许：保留禁用态观察、查看来源 profile、调整展示字段；当前不允许：直接重新启用、删除、改成 external。',
+      en: 'Allowed now: keep it disabled for review, inspect the source profile, and adjust descriptive fields. Not allowed now: re-enable directly, delete it, or convert it to external.',
+    },
+    sourceProfileRef: {zh: '来源 profile: {profile}', en: 'Source profile: {profile}'},
+    profileSeedLifecycleLocked: {
+      zh: 'Profile Seed route 当前不能直接改成 external；如需外部上游，请新建 manual route。',
+      en: 'Profile Seed routes cannot be converted directly to external. Create a new manual route instead.',
+    },
     currentConstraint: {zh: '当前约束', en: 'Current Constraint'},
     currentConstraintDesc: {
       zh: 'backend_type 只描述受控本地后端类型；真正请求走哪种协议，由 upstream_protocol 和 lifecycle_mode 决定。',

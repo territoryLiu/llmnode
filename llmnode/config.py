@@ -98,6 +98,29 @@ def _load_yaml_dict(path: Path) -> dict:
     return data
 
 
+def _repo_default_active_profile() -> str:
+    repo_defaults = _load_yaml_dict(DEFAULTS_FILE)
+    return str(repo_defaults.get("active_backend_profile", DEFAULT_BACKEND_PROFILE))
+
+
+def _load_backend_profile(profile_name: str, backends_dir: Path) -> dict:
+    profile_data = _load_yaml_dict(backends_dir / f"{profile_name}.yaml")
+    backend = profile_data.get("backend", profile_data)
+    if isinstance(backend, dict):
+        return backend
+    return {}
+
+
+def _load_backend_profile_with_repo_fallback(profile_name: str, backends_dir: Path) -> dict:
+    profile = _load_backend_profile(profile_name, backends_dir)
+    if backends_dir == BACKENDS_DIR:
+        return profile
+    repo_profile = _load_backend_profile(profile_name, BACKENDS_DIR)
+    if not repo_profile:
+        return profile
+    return {**repo_profile, **profile}
+
+
 def _resolve_path(value: str | Path | None, default: Path) -> str:
     raw = Path(str(value or default))
     if raw.is_absolute():
@@ -111,28 +134,45 @@ def load_settings(path: Path | None = None) -> AppSettings:
     gateway = data.get("gateway", {})
     agent = data.get("agent", {})
     schedule = data.get("schedule", {})
+    default_active_profile = _repo_default_active_profile() if path is not None else DEFAULT_BACKEND_PROFILE
     active_profile = os.getenv(
         "VLLM_CLAUDE_ACTIVE_BACKEND_PROFILE",
-        data.get("active_backend_profile", DEFAULT_BACKEND_PROFILE),
+        data.get("active_backend_profile", default_active_profile),
     )
     backends_dir = file_path.parent / "backends" if path is not None else BACKENDS_DIR
-    profile_path = backends_dir / f"{active_profile}.yaml"
-    profile_data = _load_yaml_dict(profile_path)
-    vllm = profile_data.get("backend", profile_data)
+    default_backend = _load_backend_profile(default_active_profile, BACKENDS_DIR)
+    vllm = _load_backend_profile_with_repo_fallback(active_profile, backends_dir)
 
-    resolved_backend_type = os.getenv("VLLM_CLAUDE_VLLM_BACKEND_TYPE", vllm.get("backend_type", "vllm"))
-    resolved_container_name = os.getenv("VLLM_CLAUDE_VLLM_CONTAINER", vllm.get("container_name", "qwen36-vllm"))
-    resolved_image_name = os.getenv("VLLM_CLAUDE_VLLM_IMAGE", vllm.get("image_name", "vllm/vllm-openai:nightly"))
+    resolved_backend_type = os.getenv(
+        "VLLM_CLAUDE_VLLM_BACKEND_TYPE",
+        vllm.get("backend_type", default_backend.get("backend_type", "vllm")),
+    )
+    resolved_container_name = os.getenv(
+        "VLLM_CLAUDE_VLLM_CONTAINER",
+        vllm.get("container_name", default_backend.get("container_name", "qwen36-vllm")),
+    )
+    resolved_image_name = os.getenv(
+        "VLLM_CLAUDE_VLLM_IMAGE",
+        vllm.get("image_name", default_backend.get("image_name", "vllm/vllm-openai:nightly")),
+    )
     resolved_model_dir = _resolve_path(
         os.getenv(
             "VLLM_CLAUDE_VLLM_MODEL_DIR",
-            vllm.get("model_dir", str(Path("models") / "Qwen" / "Qwen3.6-35B-A3B-FP8")),
+            vllm.get("model_dir", default_backend.get("model_dir", str(Path("models") / "Qwen" / "Qwen3.6-35B-A3B-FP8"))),
         ),
         DEFAULT_MODEL_DIR,
     )
-    resolved_model_file = os.getenv("LLMNODE_LLAMACPP_MODEL_FILE", vllm.get("model_file", ""))
-    resolved_model_name = os.getenv("VLLM_CLAUDE_VLLM_MODEL_NAME", vllm.get("model_name", "qwen36-35b-a3b-fp8"))
-    resolved_host_port = int(os.getenv("VLLM_CLAUDE_VLLM_PORT", vllm.get("host_port", DEFAULT_BACKEND_PORT)))
+    resolved_model_file = os.getenv(
+        "LLMNODE_LLAMACPP_MODEL_FILE",
+        vllm.get("model_file", default_backend.get("model_file", "")),
+    )
+    resolved_model_name = os.getenv(
+        "VLLM_CLAUDE_VLLM_MODEL_NAME",
+        vllm.get("model_name", default_backend.get("model_name", "qwen36-35b-a3b-fp8")),
+    )
+    resolved_host_port = int(
+        os.getenv("VLLM_CLAUDE_VLLM_PORT", vllm.get("host_port", default_backend.get("host_port", DEFAULT_BACKEND_PORT)))
+    )
 
     return AppSettings(
         active_backend_profile=active_profile,

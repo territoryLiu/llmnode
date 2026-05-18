@@ -77,6 +77,9 @@
 - `upstream_auth_ref`
 - `capabilities_json`
 - `enabled`
+- `source_kind`
+- `source_ref`
+- `stale`
 
 后续如果扩展容器与 profile，应继续保证这些字段仍然存在且语义稳定。
 
@@ -107,6 +110,12 @@
   - 表示该 route 可声明的协议与能力边界
 - `enabled`
   - 控制逻辑模型是否对正式 API 暴露
+- `source_kind`
+  - 表示该 route 来自 profile seed 还是人工管理
+- `source_ref`
+  - 表示该 route 的来源引用；对 `profile_seed` 当前为 profile 名
+- `stale`
+  - 表示该 route 是否已脱离当前激活 profile 的默认供给
 
 ## 6. `backend_type`
 
@@ -139,8 +148,10 @@
 - 如果 profile 里未显式写 `backend_type`，加载后会默认落成 `vllm`
 - 对现有本地受控 route，`lifecycle_mode` 默认应为 `managed_local`
 - 对现有本地受控 route，`upstream_protocol` 默认应为 `chat`
-- 启动后，模型路由会进入 SQLite 的 `model_routes` 表作为运行态存储
-- 当前启动流程会以当前 catalog 重新 seed `model_routes`；因此现阶段更接近“配置派生的运行态 route”，而不是完整的长期持久化模型注册中心
+- 启动后，模型路由会进入 SQLite 的 `model_routes` 表作为长期 route 注册表
+- 当前启动流程只会把当前 catalog 增量同步到 `model_routes`
+- `profile_seed` route 不再属于当前 catalog 时，会标记 `stale=1` 且自动 `enabled=false`
+- `manual` route 不因重启被清空
 - 管理面应逐步扩展为可更新 `display_name / backend_model / backend_type / lifecycle_mode / upstream_protocol / enabled`
 - 管理台与 `/admin/models/{name}` 现已可更新：
   - `display_name`
@@ -154,6 +165,21 @@
   - `upstream_auth_kind`
   - `upstream_auth_ref`
   - `capabilities_json`
+- `/admin/models` 现已支持：
+  - `POST /admin/models`
+    - phase 1 仅允许创建 `external` route
+  - `DELETE /admin/models/{name}`
+    - phase 1 仅允许删除 `source_kind=manual` 的 route
+- 管理台 phase 2 当前已额外提供：
+  - 对 `stale + profile_seed` route 的显式治理提示
+  - 对 `stale + profile_seed` route 的允许动作 / 不允许动作显式说明
+  - `source_ref` 的来源 profile 展示
+  - 对 `profile_seed` route 的前端 `lifecycle_mode` 锁定，避免直接改成 `external`
+  - 对 `stale + profile_seed` route 的前端启用开关锁定，避免直接重新启用
+  - 总览页 route 治理摘要，直接汇总 `stale / manual / profile_seed` 数量
+  - 启动 seed 的 reconcile 结果会写入 `agent_events`，当前至少包括：
+    - `route_marked_stale`
+    - `route_manual_preserved`
 - `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值（`_VALID_BACKEND_TYPES`）
 - 协议入口当前的 route-aware 分发状态：
   - `/v1/responses`
@@ -176,7 +202,7 @@
   - `llmnode/models.py` 会为缺省路由补 `lifecycle_mode="managed_local"`
   - `llmnode/models.py` 会为缺省路由补 `upstream_protocol="chat"`
 - 存储约束
-  - `llmnode/storage/db.py` 中 `model_routes` 应持久化 `upstream_protocol / lifecycle_mode / capabilities_json`
+  - `llmnode/storage/db.py` 中 `model_routes` 应持久化 `upstream_protocol / lifecycle_mode / capabilities_json / source_kind / source_ref / stale`
 - 管理面约束
   - `llmnode/api/app.py` 的 `/admin/models/{name}` 接受 `vllm / llama.cpp / sglang`
   - `lifecycle_mode` 仅允许 `managed_local / external`
@@ -186,6 +212,15 @@
   - `external` route 必须显式提供 `upstream_base_url` 和 `upstream_model`
   - 当 `upstream_auth_kind != none` 时，必须提供 `upstream_auth_ref`
   - 当 `upstream_auth_kind != none` 时，运行时必须能从 `os.environ[upstream_auth_ref]` 读到真实 secret，否则请求失败
+  - `POST /admin/models` phase 1 仅允许 `external` route create
+  - `DELETE /admin/models/{name}` phase 1 仅允许删除 `manual` route
+  - `profile_seed` route 不允许直接转换为 manual external route
+  - 管理台前端当前会把 `profile_seed` route 的 `lifecycle_mode` 选择器锁定，防止用户走到后端 409 才知道不允许转换
+  - 管理台前端当前会对 `stale + profile_seed` route 展示“已脱离当前 profile 默认供给、需人工确认”的治理提示
+  - `stale + profile_seed` route 当前不允许直接重新启用；如需恢复，应切回来源 profile，或新建 `manual` route 承接
+  - 启动 seed 的 route reconcile 结果当前会作为结构化事件写入 `/admin/events`
+  - `route_marked_stale` 事件当前至少包含 `route_name / source_kind / source_ref / action=marked_stale`
+  - `route_manual_preserved` 事件当前至少包含 `route_name / source_kind / source_ref / action=preserved`
 - API 暴露约束
   - `enabled=false` 的逻辑模型不应出现在正式模型列表里
 

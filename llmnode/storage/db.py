@@ -124,6 +124,9 @@ def init_db(path: Path) -> sqlite3.Connection:
             "upstream_auth_kind": "TEXT NOT NULL DEFAULT 'none'",
             "upstream_auth_ref": "TEXT",
             "capabilities_json": "TEXT NOT NULL DEFAULT '{}'",
+            "source_kind": "TEXT NOT NULL DEFAULT 'profile_seed'",
+            "source_ref": "TEXT",
+            "stale": "INTEGER NOT NULL DEFAULT 0",
         },
     )
     conn.execute(
@@ -878,7 +881,8 @@ def list_model_routes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         """
         SELECT name, display_name, backend_model, backend_type, enabled,
                lifecycle_mode, upstream_protocol, upstream_base_url, upstream_model,
-               upstream_auth_kind, upstream_auth_ref, capabilities_json
+               upstream_auth_kind, upstream_auth_ref, capabilities_json,
+               source_kind, source_ref, stale
         FROM model_routes
         ORDER BY name
         """
@@ -898,59 +902,63 @@ def list_model_routes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "upstream_auth_kind": row[9],
             "upstream_auth_ref": row[10],
             "capabilities_json": json.loads(row[11]) if row[11] else {},
+            "source_kind": row[12] or "profile_seed",
+            "source_ref": row[13],
+            "stale": bool(row[14]),
         }
         for row in rows
     ]
 
 
-def seed_model_routes(conn: sqlite3.Connection, routes: list[dict[str, Any]]) -> None:
+def seed_model_routes(conn: sqlite3.Connection, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     desired_names = {route["name"] for route in routes}
-    if desired_names:
-        placeholders = ",".join("?" for _ in desired_names)
-        conn.execute(
-            f"DELETE FROM model_routes WHERE name NOT IN ({placeholders})",
-            tuple(desired_names),
-        )
-    else:
-        conn.execute("DELETE FROM model_routes")
-    for route in routes:
-        conn.execute(
-            """
-            INSERT INTO model_routes(
-                name, display_name, backend_model, backend_type, enabled,
-                lifecycle_mode, upstream_protocol, upstream_base_url, upstream_model,
-                upstream_auth_kind, upstream_auth_ref, capabilities_json
+    existing = {item["name"]: item for item in list_model_routes(conn)}
+    events: list[dict[str, Any]] = []
+
+    for name, current in existing.items():
+        if current.get("source_kind") == "manual":
+            events.append(
+                {
+                    "event_type": "route_manual_preserved",
+                    "reason": "manual route preserved during startup seed",
+                    "metadata": {
+                        "route_name": name,
+                        "source_kind": current.get("source_kind", "manual"),
+                        "source_ref": current.get("source_ref"),
+                        "action": "preserved",
+                    },
+                }
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                display_name=excluded.display_name,
-                backend_model=excluded.backend_model,
-                backend_type=excluded.backend_type,
-                enabled=excluded.enabled,
-                lifecycle_mode=excluded.lifecycle_mode,
-                upstream_protocol=excluded.upstream_protocol,
-                upstream_base_url=excluded.upstream_base_url,
-                upstream_model=excluded.upstream_model,
-                upstream_auth_kind=excluded.upstream_auth_kind,
-                upstream_auth_ref=excluded.upstream_auth_ref,
-                capabilities_json=excluded.capabilities_json
-            """,
-            (
-                route["name"],
-                route["display_name"],
-                route["backend_model"],
-                route["backend_type"],
-                int(bool(route.get("enabled", True))),
-                route.get("lifecycle_mode", "managed_local"),
-                route.get("upstream_protocol", "chat"),
-                route.get("upstream_base_url"),
-                route.get("upstream_model", route.get("backend_model")),
-                route.get("upstream_auth_kind", "none"),
-                route.get("upstream_auth_ref"),
-                json.dumps(route.get("capabilities_json", {}), ensure_ascii=False),
-            ),
-        )
+        if current.get("source_kind", "profile_seed") == "profile_seed" and name not in desired_names:
+            conn.execute(
+                "UPDATE model_routes SET stale = 1, enabled = 0 WHERE name = ?",
+                (name,),
+            )
+            events.append(
+                {
+                    "event_type": "route_marked_stale",
+                    "reason": "profile_seed route missing from current catalog; marked stale during startup seed",
+                    "metadata": {
+                        "route_name": name,
+                        "source_kind": current.get("source_kind", "profile_seed"),
+                        "source_ref": current.get("source_ref"),
+                        "action": "marked_stale",
+                    },
+                }
+            )
+    for route in routes:
+        current = existing.get(route["name"])
+        if current and current.get("source_kind") == "manual":
+            continue
+        payload = {
+            **route,
+            "source_kind": "profile_seed",
+            "source_ref": route.get("source_ref"),
+            "stale": 0,
+        }
+        upsert_model_route(conn, payload)
     conn.commit()
+    return events
 
 
 def upsert_model_route(conn: sqlite3.Connection, route: dict[str, Any]) -> None:
@@ -959,9 +967,10 @@ def upsert_model_route(conn: sqlite3.Connection, route: dict[str, Any]) -> None:
         INSERT INTO model_routes(
             name, display_name, backend_model, backend_type, enabled,
             lifecycle_mode, upstream_protocol, upstream_base_url, upstream_model,
-            upstream_auth_kind, upstream_auth_ref, capabilities_json
+            upstream_auth_kind, upstream_auth_ref, capabilities_json,
+            source_kind, source_ref, stale
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
             display_name=excluded.display_name,
             backend_model=excluded.backend_model,
@@ -973,7 +982,10 @@ def upsert_model_route(conn: sqlite3.Connection, route: dict[str, Any]) -> None:
             upstream_model=excluded.upstream_model,
             upstream_auth_kind=excluded.upstream_auth_kind,
             upstream_auth_ref=excluded.upstream_auth_ref,
-            capabilities_json=excluded.capabilities_json
+            capabilities_json=excluded.capabilities_json,
+            source_kind=excluded.source_kind,
+            source_ref=excluded.source_ref,
+            stale=excluded.stale
         """,
         (
             route["name"],
@@ -988,9 +1000,18 @@ def upsert_model_route(conn: sqlite3.Connection, route: dict[str, Any]) -> None:
             route.get("upstream_auth_kind", "none"),
             route.get("upstream_auth_ref"),
             json.dumps(route.get("capabilities_json", {}), ensure_ascii=False),
+            route.get("source_kind", "profile_seed"),
+            route.get("source_ref"),
+            int(bool(route.get("stale", False))),
         ),
     )
     conn.commit()
+
+
+def delete_model_route(conn: sqlite3.Connection, name: str) -> bool:
+    cursor = conn.execute("DELETE FROM model_routes WHERE name = ?", (name,))
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 def load_schedule_config(conn: sqlite3.Connection) -> dict[str, Any] | None:

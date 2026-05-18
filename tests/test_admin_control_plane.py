@@ -6,9 +6,12 @@ from fastapi import HTTPException
 
 from llmnode.api.app import create_app
 from llmnode.config import load_settings
+from llmnode.models import ModelCapabilities, ModelRoute
 from llmnode.proxy.vllm_client import VLLMClient
 from llmnode.security import hash_api_key
 from llmnode.storage.db import create_api_key
+from llmnode.storage.db import init_db
+from llmnode.storage.db import upsert_model_route
 from llmnode.storage.db import write_agent_event
 
 
@@ -75,6 +78,94 @@ def test_admin_events_endpoint_returns_rows():
             assert resp.status_code == 200
             payload = resp.json()
             assert payload["events"][0]["status"] == "ready"
+
+    asyncio.run(run())
+
+
+def test_admin_events_include_route_seed_reconciliation_events(tmp_path):
+    async def run():
+        seeded_db = init_db(tmp_path / "gateway.db")
+        upsert_model_route(
+            seeded_db,
+            {
+                "name": "manual-openai",
+                "display_name": "Manual OpenAI",
+                "backend_model": None,
+                "backend_type": None,
+                "enabled": True,
+                "lifecycle_mode": "external",
+                "upstream_protocol": "responses",
+                "upstream_base_url": "https://api.openai.com/v1",
+                "upstream_model": "gpt-4.1",
+                "upstream_auth_kind": "bearer",
+                "upstream_auth_ref": "OPENAI_KEY",
+                "capabilities_json": {"supports_responses": True},
+                "source_kind": "manual",
+                "source_ref": None,
+                "stale": 0,
+            },
+        )
+        upsert_model_route(
+            seeded_db,
+            {
+                "name": "old-seeded",
+                "display_name": "Old Seeded",
+                "backend_model": "old-model",
+                "backend_type": "vllm",
+                "enabled": True,
+                "lifecycle_mode": "managed_local",
+                "upstream_protocol": "chat",
+                "upstream_base_url": "http://127.0.0.1:8000/v1",
+                "upstream_model": "old-model",
+                "upstream_auth_kind": "none",
+                "upstream_auth_ref": None,
+                "capabilities_json": {},
+                "source_kind": "profile_seed",
+                "source_ref": "old_profile",
+                "stale": 0,
+            },
+        )
+        catalog = {
+            "new-seeded": ModelRoute(
+                name="new-seeded",
+                display_name="New Seeded",
+                backend_model="new-model",
+                backend_type="vllm",
+                enabled=True,
+                lifecycle_mode="managed_local",
+                upstream_protocol="chat",
+                upstream_base_url="http://127.0.0.1:9000/v1",
+                upstream_model="new-model",
+                upstream_auth_kind="none",
+                source_ref="new_profile",
+                capabilities=ModelCapabilities(),
+            )
+        }
+        with patch("llmnode.api.app.init_db", return_value=seeded_db), patch(
+            "llmnode.api.app.load_model_catalog",
+            return_value=catalog,
+        ):
+            app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/admin/events", headers={"Authorization": f"Bearer {admin_secret}"})
+            assert resp.status_code == 200
+            events = resp.json()["events"]
+            route_events = {event["event_type"]: event for event in events if event["event_type"].startswith("route_")}
+            assert route_events["route_marked_stale"]["metadata"] == {
+                "route_name": "old-seeded",
+                "source_kind": "profile_seed",
+                "source_ref": "old_profile",
+                "action": "marked_stale",
+            }
+            assert route_events["route_manual_preserved"]["metadata"] == {
+                "route_name": "manual-openai",
+                "source_kind": "manual",
+                "source_ref": None,
+                "action": "preserved",
+            }
 
     asyncio.run(run())
 

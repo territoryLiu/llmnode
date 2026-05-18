@@ -4,6 +4,18 @@ import {useAppContext, type ModelRouteRow} from '../store';
 
 type DraftRoute = Record<string, ModelRouteRow>;
 
+type CreateRouteDraft = {
+  name: string;
+  display_name: string;
+  upstream_protocol: ModelRouteRow['upstream_protocol'];
+  upstream_base_url: string;
+  upstream_model: string;
+  upstream_auth_kind: ModelRouteRow['upstream_auth_kind'];
+  upstream_auth_ref: string;
+  enabled: boolean;
+  capabilities_json: ModelRouteRow['capabilities_json'];
+};
+
 const capabilityFields: Array<{
   key: keyof ModelRouteRow['capabilities_json'];
   labelKey: string;
@@ -30,6 +42,9 @@ function normalizeRoute(route: ModelRouteRow): ModelRouteRow {
     upstream_model: route.upstream_model ?? route.backend_model ?? '',
     upstream_auth_kind: route.upstream_auth_kind ?? 'none',
     upstream_auth_ref: route.upstream_auth_ref ?? '',
+    source_kind: route.source_kind ?? 'profile_seed',
+    source_ref: route.source_ref ?? null,
+    stale: route.stale ?? false,
     capabilities_json: {
       supports_responses: route.capabilities_json?.supports_responses ?? false,
       supports_chat: route.capabilities_json?.supports_chat ?? true,
@@ -47,10 +62,36 @@ function buildDraft(routes: ModelRouteRow[]): DraftRoute {
   return Object.fromEntries(routes.map((route) => [route.name, normalizeRoute(route)]));
 }
 
+function buildCreateRouteDraft(): CreateRouteDraft {
+  return {
+    name: '',
+    display_name: '',
+    upstream_protocol: 'responses',
+    upstream_base_url: '',
+    upstream_model: '',
+    upstream_auth_kind: 'none',
+    upstream_auth_ref: '',
+    enabled: true,
+    capabilities_json: {
+      supports_responses: false,
+      supports_chat: false,
+      supports_messages: false,
+      supports_stream: true,
+      supports_function_tools: true,
+      supports_builtin_tools: false,
+      supports_previous_response_id_native: false,
+      supports_json_schema: false,
+    },
+  };
+}
+
 export function ModelRoutesView() {
-  const {snapshot, modelRoutes, updateModelRoute, loading, t} = useAppContext();
+  const {snapshot, modelRoutes, updateModelRoute, createModelRoute, deleteModelRoute, loading, t} = useAppContext();
   const [drafts, setDrafts] = useState<DraftRoute>({});
+  const [createDraft, setCreateDraft] = useState<CreateRouteDraft>(buildCreateRouteDraft);
   const [savingName, setSavingName] = useState<string | null>(null);
+  const [deletingName, setDeletingName] = useState<string | null>(null);
+  const [creatingRoute, setCreatingRoute] = useState(false);
 
   useEffect(() => {
     setDrafts(buildDraft(modelRoutes));
@@ -75,6 +116,9 @@ export function ModelRoutesView() {
             upstream_model: name,
             upstream_auth_kind: 'none',
             upstream_auth_ref: '',
+            source_kind: 'profile_seed',
+            source_ref: null,
+            stale: false,
             capabilities_json: {
               supports_responses: false,
               supports_chat: true,
@@ -144,6 +188,55 @@ export function ModelRoutesView() {
     }
   }
 
+  async function handleDelete(name: string) {
+    setDeletingName(name);
+    try {
+      await deleteModelRoute(name);
+      setDrafts((previous) => {
+        const next = {...previous};
+        delete next[name];
+        return next;
+      });
+    } finally {
+      setDeletingName(null);
+    }
+  }
+
+  function updateCreateDraft(patch: Partial<CreateRouteDraft>) {
+    setCreateDraft((previous) => ({
+      ...previous,
+      ...patch,
+      capabilities_json: {
+        ...previous.capabilities_json,
+        ...(patch.capabilities_json || {}),
+      },
+    }));
+  }
+
+  async function handleCreateRoute() {
+    setCreatingRoute(true);
+    try {
+      await createModelRoute({
+        name: createDraft.name.trim(),
+        display_name: createDraft.display_name.trim(),
+        lifecycle_mode: 'external',
+        upstream_protocol: createDraft.upstream_protocol,
+        upstream_base_url: createDraft.upstream_base_url.trim(),
+        upstream_model: createDraft.upstream_model.trim(),
+        upstream_auth_kind: createDraft.upstream_auth_kind,
+        upstream_auth_ref:
+          createDraft.upstream_auth_kind === 'none'
+            ? null
+            : createDraft.upstream_auth_ref.trim() || null,
+        enabled: createDraft.enabled,
+        capabilities_json: createDraft.capabilities_json,
+      });
+      setCreateDraft(buildCreateRouteDraft());
+    } finally {
+      setCreatingRoute(false);
+    }
+  }
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-6xl">
       <div className="glass-panel p-6 flex flex-col md:flex-row gap-6 md:items-center justify-between">
@@ -186,6 +279,169 @@ export function ModelRoutesView() {
         </div>
 
         <div className="p-5 space-y-5">
+          <section className="rounded-2xl border border-emerald-200/70 bg-emerald-50/60 p-5 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-semibold text-slate-800">{t('models.createExternalRoute')}</h4>
+                <p className="text-xs text-slate-500 mt-1">{t('models.createExternalRouteDesc')}</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    aria-label="create-route-enabled"
+                    type="checkbox"
+                    checked={createDraft.enabled}
+                    onChange={(event) => updateCreateDraft({enabled: event.target.checked})}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600" />
+                </label>
+                <span className="text-xs text-slate-500">{t('models.enabled')}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-slate-500">{t('models.logicalModelName')}</span>
+                <input
+                  aria-label="create-route-name"
+                  type="text"
+                  value={createDraft.name}
+                  onChange={(event) => updateCreateDraft({name: event.target.value})}
+                  className="w-full bg-white/80 border border-slate-200 rounded px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500/30"
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-slate-500">{t('models.displayName')}</span>
+                <input
+                  aria-label="create-route-display-name"
+                  type="text"
+                  value={createDraft.display_name}
+                  onChange={(event) => updateCreateDraft({display_name: event.target.value})}
+                  className="w-full bg-white/80 border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30"
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-slate-500">{t('models.lifecycleMode')}</span>
+                <input
+                  type="text"
+                  value={t('models.external')}
+                  disabled
+                  className="w-full bg-slate-100 border border-slate-200 rounded px-3 py-2 text-sm text-slate-400 outline-none"
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-slate-500">{t('models.upstreamProtocol')}</span>
+                <select
+                  aria-label="create-route-protocol"
+                  value={createDraft.upstream_protocol}
+                  onChange={(event) =>
+                    updateCreateDraft({
+                      upstream_protocol: event.target.value as ModelRouteRow['upstream_protocol'],
+                    })
+                  }
+                  className="w-full bg-white/80 border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30"
+                >
+                  <option value="chat">chat</option>
+                  <option value="messages">messages</option>
+                  <option value="responses">responses</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+              <label className="space-y-1.5 md:col-span-2">
+                <span className="text-xs font-medium text-slate-500">{t('models.upstreamBaseUrl')}</span>
+                <input
+                  aria-label="create-route-base-url"
+                  type="text"
+                  value={createDraft.upstream_base_url}
+                  onChange={(event) => updateCreateDraft({upstream_base_url: event.target.value})}
+                  className="w-full bg-white/80 border border-slate-200 rounded px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500/30"
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-slate-500">{t('models.upstreamModel')}</span>
+                <input
+                  aria-label="create-route-upstream-model"
+                  type="text"
+                  value={createDraft.upstream_model}
+                  onChange={(event) => updateCreateDraft({upstream_model: event.target.value})}
+                  className="w-full bg-white/80 border border-slate-200 rounded px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500/30"
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-xs font-medium text-slate-500">{t('models.upstreamAuthKind')}</span>
+                <select
+                  aria-label="create-route-auth-kind"
+                  value={createDraft.upstream_auth_kind}
+                  onChange={(event) =>
+                    updateCreateDraft({
+                      upstream_auth_kind: event.target.value as ModelRouteRow['upstream_auth_kind'],
+                    })
+                  }
+                  className="w-full bg-white/80 border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30"
+                >
+                  <option value="none">{t('models.authNone')}</option>
+                  <option value="bearer">{t('models.authBearer')}</option>
+                  <option value="x_api_key">{t('models.authXApiKey')}</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-end">
+              <label className="space-y-1.5 md:col-span-2">
+                <span className="text-xs font-medium text-slate-500">{t('models.upstreamAuthRef')}</span>
+                <input
+                  aria-label="create-route-auth-ref"
+                  type="text"
+                  value={createDraft.upstream_auth_ref}
+                  disabled={createDraft.upstream_auth_kind === 'none'}
+                  onChange={(event) => updateCreateDraft({upstream_auth_ref: event.target.value})}
+                  className="w-full bg-white/80 border border-slate-200 rounded px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:bg-slate-100 disabled:text-slate-400"
+                />
+              </label>
+              <div className="xl:col-span-2 flex justify-start xl:justify-end">
+                <button
+                  onClick={() => void handleCreateRoute()}
+                  disabled={creatingRoute}
+                  className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-60"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  {creatingRoute ? t('models.saving') : t('models.createRoute')}
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="text-xs font-medium text-slate-500">{t('models.capabilities')}</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {capabilityFields.map((item) => (
+                  <label
+                    key={`create-${item.key}`}
+                    className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-white/80 px-3 py-2 text-sm text-slate-700"
+                  >
+                    <input
+                      aria-label={`create-route-${String(item.key).replaceAll('_', '-')}`}
+                      type="checkbox"
+                      checked={createDraft.capabilities_json[item.key]}
+                      onChange={(event) =>
+                        updateCreateDraft({
+                          capabilities_json: {
+                            ...createDraft.capabilities_json,
+                            [item.key]: event.target.checked,
+                          },
+                        })
+                      }
+                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>{t(item.labelKey)}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </section>
+
           {modelRoutes.length === 0 ? (
             <div className="px-5 py-12 text-center text-slate-500">
               {loading.modelRoutes ? t('models.loadingRoutes') : t('models.noRoutes')}
@@ -193,6 +449,8 @@ export function ModelRoutesView() {
           ) : (
             modelRoutes.map((route) => {
               const draft = drafts[route.name] || normalizeRoute(route);
+              const lifecycleLocked = route.source_kind === 'profile_seed';
+              const enabledLocked = route.source_kind === 'profile_seed' && route.stale;
               return (
                 <section key={route.name} className="rounded-2xl border border-slate-200/70 bg-white/60 p-5 space-y-5">
                   <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
@@ -200,12 +458,38 @@ export function ModelRoutesView() {
                       <div className="font-mono text-xs font-semibold text-slate-700 bg-slate-100 px-2 py-1 rounded inline-flex">
                         {route.name}
                       </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-700">
+                          {route.source_kind === 'manual' ? t('models.sourceManual') : t('models.sourceProfileSeed')}
+                        </span>
+                        {route.stale ? (
+                          <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-700">
+                            {t('models.stale')}
+                          </span>
+                        ) : null}
+                      </div>
+                      {route.stale ? (
+                        <p className="text-xs text-amber-700">{t('models.staleRouteHint')}</p>
+                      ) : null}
+                      {enabledLocked ? (
+                        <p className="text-xs text-amber-700">{t('models.staleProfileSeedEnableLocked')}</p>
+                      ) : null}
+                      {enabledLocked ? (
+                        <p className="text-xs text-slate-500">{t('models.staleProfileSeedAllowedActions')}</p>
+                      ) : null}
+                      {route.source_kind === 'profile_seed' && route.source_ref ? (
+                        <p className="text-xs text-slate-500">{t('models.sourceProfileRef', {profile: route.source_ref})}</p>
+                      ) : null}
+                      {lifecycleLocked ? (
+                        <p className="text-xs text-slate-500">{t('models.profileSeedLifecycleLocked')}</p>
+                      ) : null}
                       <div className="flex items-center gap-3">
                         <label className="relative inline-flex items-center cursor-pointer">
                           <input
                             aria-label={`${route.name}-enabled`}
                             type="checkbox"
                             checked={draft.enabled}
+                            disabled={enabledLocked}
                             onChange={(event) => updateDraft(route.name, {enabled: event.target.checked})}
                             className="sr-only peer"
                           />
@@ -215,14 +499,26 @@ export function ModelRoutesView() {
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => void handleSave(route.name)}
-                      disabled={savingName === route.name}
-                      className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs font-medium rounded-md border border-blue-200 transition-colors disabled:opacity-60"
-                    >
-                      <Save className="w-3.5 h-3.5" />
-                      {savingName === route.name ? t('models.saving') : t('common.save')}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {route.source_kind === 'manual' ? (
+                        <button
+                          aria-label={`Delete ${route.name}`}
+                          onClick={() => void handleDelete(route.name)}
+                          disabled={deletingName === route.name}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-medium rounded-md border border-rose-200 transition-colors disabled:opacity-60"
+                        >
+                          {deletingName === route.name ? t('models.deleteRoute') : t('common.delete')}
+                        </button>
+                      ) : null}
+                      <button
+                        onClick={() => void handleSave(route.name)}
+                        disabled={savingName === route.name}
+                        className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-600 text-xs font-medium rounded-md border border-blue-200 transition-colors disabled:opacity-60"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        {savingName === route.name ? t('models.saving') : t('common.save')}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -239,12 +535,13 @@ export function ModelRoutesView() {
                       <span className="text-xs font-medium text-slate-500">{t('models.lifecycleMode')}</span>
                       <select
                         value={draft.lifecycle_mode}
+                        disabled={lifecycleLocked}
                         onChange={(event) =>
                           updateDraft(route.name, {
                             lifecycle_mode: event.target.value as ModelRouteRow['lifecycle_mode'],
                           })
                         }
-                        className="w-full bg-white/70 border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/30"
+                        className="w-full bg-white/70 border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/30 disabled:bg-slate-100 disabled:text-slate-400"
                       >
                         <option value="managed_local">{t('models.managedLocal')}</option>
                         <option value="external">{t('models.external')}</option>

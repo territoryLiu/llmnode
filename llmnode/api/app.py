@@ -48,6 +48,7 @@ from ..storage.db import (
     aggregate_usage_trend,
     create_api_key,
     delete_api_key,
+    delete_model_route,
     get_api_key_by_id,
     get_request_log_detail,
     get_response_state,
@@ -64,6 +65,7 @@ from ..storage.db import (
     upsert_response_state,
     upsert_model_route,
     upsert_schedule_config,
+    write_agent_event,
     write_request_metric,
     write_request_log,
 )
@@ -547,8 +549,62 @@ def _build_model_route_storage_payload(route: ModelRoute) -> dict[str, Any]:
         "upstream_model": route.upstream_model,
         "upstream_auth_kind": route.upstream_auth_kind,
         "upstream_auth_ref": route.upstream_auth_ref,
+        "source_kind": route.source_kind,
+        "source_ref": route.source_ref,
+        "stale": route.stale,
         "capabilities_json": _normalize_capabilities_payload(_MISSING, route),
     }
+
+
+def _validate_create_model_route_payload(payload: dict[str, Any]) -> ModelRoute:
+    if "name" not in payload:
+        raise HTTPException(status_code=400, detail="name is required")
+    if "lifecycle_mode" not in payload:
+        raise HTTPException(status_code=400, detail="lifecycle_mode is required")
+    if "upstream_protocol" not in payload:
+        raise HTTPException(status_code=400, detail="upstream_protocol is required")
+
+    name = _normalize_name(payload["name"])
+    display_name = _normalize_name(payload.get("display_name", name), "display_name")
+    lifecycle_mode = str(payload["lifecycle_mode"]).strip()
+    if lifecycle_mode != "external":
+        raise HTTPException(status_code=400, detail="phase1 only supports external route creation")
+    upstream_protocol = str(payload["upstream_protocol"]).strip()
+    if upstream_protocol not in _VALID_UPSTREAM_PROTOCOLS:
+        raise HTTPException(status_code=400, detail=f"unsupported upstream_protocol: {upstream_protocol}")
+    upstream_base_url = _normalize_optional_string(payload.get("upstream_base_url"), "upstream_base_url")
+    upstream_model = _normalize_optional_string(payload.get("upstream_model"), "upstream_model")
+    if not upstream_base_url:
+        raise HTTPException(status_code=400, detail="upstream_base_url is required for external routes")
+    if not upstream_model:
+        raise HTTPException(status_code=400, detail="upstream_model is required for external routes")
+    upstream_auth_kind = str(payload.get("upstream_auth_kind", "none")).strip()
+    if upstream_auth_kind not in _VALID_UPSTREAM_AUTH_KINDS:
+        raise HTTPException(status_code=400, detail=f"unsupported upstream_auth_kind: {upstream_auth_kind}")
+    upstream_auth_ref = _normalize_optional_string(payload.get("upstream_auth_ref"), "upstream_auth_ref")
+    if upstream_auth_kind != "none" and not upstream_auth_ref:
+        raise HTTPException(status_code=400, detail="upstream_auth_ref is required when upstream_auth_kind is not none")
+
+    base_route = ModelRoute(name=name, display_name=display_name)
+    capabilities_json = _normalize_capabilities_payload(payload.get("capabilities_json", _MISSING), base_route)
+
+    return ModelRoute(
+        name=name,
+        display_name=display_name,
+        backend_model=None,
+        backend_type=None,
+        enabled=_normalize_bool(payload.get("enabled", True), "enabled"),
+        lifecycle_mode="external",
+        upstream_protocol=upstream_protocol,
+        upstream_base_url=upstream_base_url,
+        upstream_model=upstream_model,
+        upstream_auth_kind=upstream_auth_kind,
+        upstream_auth_ref=None if upstream_auth_kind == "none" else upstream_auth_ref,
+        capabilities=ModelCapabilities(**capabilities_json),
+        source_kind="manual",
+        source_ref=None,
+        stale=False,
+    )
 
 
 def _validate_update_model_route_payload(payload: dict[str, Any], route: ModelRoute) -> ModelRoute:
@@ -559,6 +615,11 @@ def _validate_update_model_route_payload(payload: dict[str, Any], route: ModelRo
     enabled = route.enabled
     if "enabled" in payload:
         enabled = _normalize_bool(payload["enabled"], "enabled")
+    if route.source_kind == "profile_seed" and route.stale and not route.enabled and enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="stale profile_seed routes cannot be re-enabled; create a manual route or switch back to the source profile",
+        )
 
     lifecycle_mode = route.lifecycle_mode
     if "lifecycle_mode" in payload:
@@ -567,6 +628,11 @@ def _validate_update_model_route_payload(payload: dict[str, Any], route: ModelRo
         lifecycle_mode = payload["lifecycle_mode"].strip()
     if lifecycle_mode not in _VALID_LIFECYCLE_MODES:
         raise HTTPException(status_code=400, detail=f"unsupported lifecycle_mode: {lifecycle_mode}")
+    if route.source_kind == "profile_seed" and lifecycle_mode == "external":
+        raise HTTPException(
+            status_code=409,
+            detail="profile_seed routes cannot be converted to manual external routes",
+        )
 
     upstream_protocol = route.upstream_protocol
     if "upstream_protocol" in payload:
@@ -639,6 +705,9 @@ def _validate_update_model_route_payload(payload: dict[str, Any], route: ModelRo
         upstream_auth_kind=upstream_auth_kind,
         upstream_auth_ref=upstream_auth_ref,
         capabilities=ModelCapabilities(**capabilities_json),
+        source_kind=route.source_kind,
+        source_ref=route.source_ref,
+        stale=route.stale,
     )
 
 
@@ -681,7 +750,16 @@ def create_app() -> FastAPI:
         db_path = PROJECT_ROOT / "runtime" / "data" / f"gateway-test-{uuid.uuid4().hex}.db"
     catalog = load_model_catalog()
     db = init_db(db_path)
-    seed_model_routes(db, model_routes_for_admin(catalog))
+    route_seed_events = seed_model_routes(db, model_routes_for_admin(catalog))
+    for event in route_seed_events:
+        write_agent_event(
+            db,
+            "info",
+            event["reason"],
+            event_type=event["event_type"],
+            readiness_state="route_seed",
+            metadata=event["metadata"],
+        )
     schedule_state = load_schedule_config(db)
     if schedule_state is None:
         schedule_state = asdict(settings.schedule)
@@ -1169,6 +1247,19 @@ def create_app() -> FastAPI:
         response.headers["x-request-id"] = request_id
         return response
 
+    @app.post("/admin/models")
+    async def admin_create_model(request: Request):
+        _resolve_auth(request, "admin")
+        route = _validate_create_model_route_payload(await _read_json_body(request))
+        if route.name in request.app.state.ctx.models:
+            raise HTTPException(status_code=409, detail=f"model already exists: {route.name}")
+        request.app.state.ctx.models[route.name] = route
+        upsert_model_route(request.app.state.db, _build_model_route_storage_payload(route))
+        request_id = _request_id(request)
+        response = JSONResponse({"model": model_routes_for_admin({route.name: route})[0]})
+        response.headers["x-request-id"] = request_id
+        return response
+
     @app.patch("/admin/models/{name}")
     async def admin_update_model(request: Request, name: str):
         _resolve_auth(request, "admin")
@@ -1181,6 +1272,24 @@ def create_app() -> FastAPI:
         upsert_model_route(request.app.state.db, _build_model_route_storage_payload(updated))
         request_id = _request_id(request)
         response = JSONResponse({"model": model_routes_for_admin({name: updated})[0]})
+        response.headers["x-request-id"] = request_id
+        return response
+
+    @app.delete("/admin/models/{name}")
+    async def admin_delete_model(request: Request, name: str):
+        _resolve_auth(request, "admin")
+        route = request.app.state.ctx.models.get(name)
+        if route is None:
+            raise HTTPException(status_code=404, detail=f"unknown model: {name}")
+        if route.source_kind != "manual":
+            raise HTTPException(
+                status_code=409,
+                detail="profile_seed routes cannot be deleted; disable them instead",
+            )
+        delete_model_route(request.app.state.db, name)
+        request.app.state.ctx.models.pop(name, None)
+        request_id = _request_id(request)
+        response = JSONResponse({"deleted": True, "name": name})
         response.headers["x-request-id"] = request_id
         return response
 

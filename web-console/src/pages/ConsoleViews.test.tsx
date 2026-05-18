@@ -99,6 +99,9 @@ const emptySnapshot = {
         upstream_model: 'Qwen/Qwen3.6-27B-FP8',
         upstream_auth_kind: 'none',
         upstream_auth_ref: null,
+        source_kind: 'profile_seed',
+        source_ref: 'vllm_qwen36-27b-FP8',
+        stale: false,
         capabilities_json: {
           supports_responses: false,
           supports_chat: true,
@@ -122,10 +125,65 @@ const emptySnapshot = {
         upstream_model: 'Qwen/Qwen3.6-35B-A3B-FP8',
         upstream_auth_kind: 'none',
         upstream_auth_ref: null,
+        source_kind: 'profile_seed',
+        source_ref: 'vllm_qwen36-27b-FP8',
+        stale: false,
         capabilities_json: {
           supports_responses: false,
           supports_chat: true,
           supports_messages: true,
+          supports_stream: true,
+          supports_function_tools: true,
+          supports_builtin_tools: false,
+          supports_previous_response_id_native: false,
+          supports_json_schema: false,
+        },
+      },
+      {
+        name: 'anthropic-claude',
+        display_name: 'Anthropic Claude',
+        backend_model: null,
+        backend_type: null,
+        enabled: true,
+        lifecycle_mode: 'external',
+        upstream_protocol: 'messages',
+        upstream_base_url: 'https://api.anthropic.com',
+        upstream_model: 'claude-sonnet',
+        upstream_auth_kind: 'x_api_key',
+        upstream_auth_ref: 'ANTHROPIC_KEY',
+        source_kind: 'manual',
+        source_ref: null,
+        stale: false,
+        capabilities_json: {
+          supports_responses: false,
+          supports_chat: false,
+          supports_messages: true,
+          supports_stream: true,
+          supports_function_tools: true,
+          supports_builtin_tools: false,
+          supports_previous_response_id_native: false,
+          supports_json_schema: false,
+        },
+      },
+      {
+        name: 'legacy-qwen-route',
+        display_name: 'Legacy Qwen Route',
+        backend_model: 'Qwen/Qwen3.6-14B',
+        backend_type: 'vllm',
+        enabled: false,
+        lifecycle_mode: 'managed_local',
+        upstream_protocol: 'chat',
+        upstream_base_url: 'http://127.0.0.1:18000/v1',
+        upstream_model: 'Qwen/Qwen3.6-14B',
+        upstream_auth_kind: 'none',
+        upstream_auth_ref: null,
+        source_kind: 'profile_seed',
+        source_ref: 'vllm_qwen36-14b-legacy',
+        stale: true,
+        capabilities_json: {
+          supports_responses: false,
+          supports_chat: true,
+          supports_messages: false,
           supports_stream: true,
           supports_function_tools: true,
           supports_builtin_tools: false,
@@ -322,6 +380,10 @@ function textResponse(body: string, contentType = 'text/csv') {
   );
 }
 
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 beforeEach(() => {
   window.localStorage.setItem('vllm-console-api-key', 'sk-test-console');
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
@@ -424,7 +486,11 @@ describe('Console views', () => {
 
     expect(screen.getByText('qwen36-27b-fp8')).toBeInTheDocument();
     expect(screen.getByText('qwen36-35b-a3b-fp8')).toBeInTheDocument();
-    expect(screen.getAllByTitle('复制模型名').length).toBe(2);
+    expect(screen.getAllByTitle('复制模型名').length).toBe(3);
+    expect(screen.getByText('路由治理')).toBeInTheDocument();
+    expect(screen.getByText('1 条 stale route 待处理')).toBeInTheDocument();
+    expect(screen.getByText('1 条 manual route 已接管')).toBeInTheDocument();
+    expect(screen.getByText('3 条 profile seed route')).toBeInTheDocument();
     expect(screen.queryByText('每日 Token 用量')).not.toBeInTheDocument();
     expect(screen.queryByText('后端用量分布')).not.toBeInTheDocument();
   });
@@ -526,7 +592,7 @@ describe('Console views', () => {
     expect(within(drawer).getByText('30')).toBeInTheDocument();
   });
 
-  it('submits extended external route payload from models view', async () => {
+  it('submits extended external route payload for manual route from models view', async () => {
     const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -542,11 +608,14 @@ describe('Console views', () => {
       if (url.includes('/admin/keys')) {
         return jsonResponse(keyListResponse);
       }
-      if (url.includes('/admin/models') && init?.method === 'PATCH') {
+      if (url.includes('/admin/models/anthropic-claude') && init?.method === 'DELETE') {
+        return jsonResponse({deleted: true, name: 'anthropic-claude'});
+      }
+      if (url.includes('/admin/models/anthropic-claude') && init?.method === 'PATCH') {
         const payload = JSON.parse(String(init.body));
         return jsonResponse({
           model: {
-            name: 'qwen36-27b-fp8',
+            name: 'anthropic-claude',
             display_name: payload.display_name,
             backend_model: payload.backend_model,
             backend_type: payload.backend_type,
@@ -557,6 +626,9 @@ describe('Console views', () => {
             upstream_model: payload.upstream_model,
             upstream_auth_kind: payload.upstream_auth_kind,
             upstream_auth_ref: payload.upstream_auth_ref,
+            source_kind: 'manual',
+            source_ref: null,
+            stale: false,
             capabilities_json: payload.capabilities_json,
           },
         });
@@ -601,41 +673,51 @@ describe('Console views', () => {
 
     await userEvent.click(screen.getAllByText('模型路由')[0]);
 
-    const row = await screen.findByText('qwen36-27b-fp8');
+    const row = await screen.findByText('anthropic-claude');
     expect(row).toBeInTheDocument();
+    const routeCard = row.closest('section');
+    expect(routeCard).toBeTruthy();
+    const routeScope = within(routeCard as HTMLElement);
 
-    const displayInputs = screen.getAllByDisplayValue('Qwen 27B FP8');
-    await userEvent.clear(displayInputs[0]);
-    await userEvent.type(displayInputs[0], 'External GPT Route');
+    const displayInput = routeScope.getByText('显示名称').parentElement?.querySelector('input');
+    expect(displayInput).toBeTruthy();
+    await userEvent.clear(displayInput as HTMLInputElement);
+    await userEvent.type(displayInput as HTMLInputElement, 'External GPT Route');
 
-    const upstreamBaseInput = screen.getAllByDisplayValue('http://127.0.0.1:8000/v1')[0];
-    await userEvent.clear(upstreamBaseInput);
-    await userEvent.type(upstreamBaseInput, 'https://api.openai.com/v1');
+    const upstreamBaseInput = routeScope.getByText('上游地址').parentElement?.querySelector('input');
+    expect(upstreamBaseInput).toBeTruthy();
+    await userEvent.clear(upstreamBaseInput as HTMLInputElement);
+    await userEvent.type(upstreamBaseInput as HTMLInputElement, 'https://api.openai.com/v1');
 
-    const upstreamModelInput = screen.getAllByDisplayValue('Qwen/Qwen3.6-27B-FP8')[1];
-    await userEvent.clear(upstreamModelInput);
-    await userEvent.type(upstreamModelInput, 'gpt-4o');
+    const upstreamModelInput = routeScope.getByText('上游模型名').parentElement?.querySelector('input');
+    expect(upstreamModelInput).toBeTruthy();
+    await userEvent.clear(upstreamModelInput as HTMLInputElement);
+    await userEvent.type(upstreamModelInput as HTMLInputElement, 'gpt-4o');
 
-    await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'external');
-    await userEvent.selectOptions(screen.getAllByRole('combobox')[1], 'responses');
-    await userEvent.selectOptions(screen.getAllByRole('combobox')[3], 'bearer');
+    const protocolSelect = routeScope.getByText('上游协议').parentElement?.querySelector('select');
+    expect(protocolSelect).toBeTruthy();
+    await userEvent.selectOptions(protocolSelect as HTMLSelectElement, 'responses');
 
-    const supportResponses = screen.getAllByRole('checkbox', {name: 'Responses'})[0];
+    const authSelect = routeScope.getByText('鉴权方式').parentElement?.querySelector('select');
+    expect(authSelect).toBeTruthy();
+    await userEvent.selectOptions(authSelect as HTMLSelectElement, 'bearer');
+
+    const supportResponses = routeScope.getByRole('checkbox', {name: 'Responses'});
     if (!supportResponses.hasAttribute('checked')) {
       await userEvent.click(supportResponses);
     }
-    const supportBuiltinTools = screen.getAllByRole('checkbox', {name: 'Builtin Tools'})[0];
+    const supportBuiltinTools = routeScope.getByRole('checkbox', {name: 'Builtin Tools'});
     await userEvent.click(supportBuiltinTools);
-    const supportPrevResp = screen.getAllByRole('checkbox', {name: 'Previous Response'})[0];
+    const supportPrevResp = routeScope.getByRole('checkbox', {name: 'Previous Response'});
     await userEvent.click(supportPrevResp);
-    const supportSchema = screen.getAllByRole('checkbox', {name: 'JSON Schema'})[0];
+    const supportSchema = routeScope.getByRole('checkbox', {name: 'JSON Schema'});
     await userEvent.click(supportSchema);
 
-    await userEvent.click(screen.getAllByRole('button', {name: '保存'})[0]);
+    await userEvent.click(routeScope.getByRole('button', {name: '保存'}));
 
     await waitFor(() => {
       const patchCall = fetchMock.mock.calls.find(
-        (call) => String(call[0]).includes('/admin/models/qwen36-27b-fp8') && call[1]?.method === 'PATCH',
+        (call) => String(call[0]).includes('/admin/models/anthropic-claude') && call[1]?.method === 'PATCH',
       );
       expect(patchCall).toBeTruthy();
       const payload = JSON.parse(String(patchCall?.[1]?.body));
@@ -654,5 +736,170 @@ describe('Console views', () => {
         supports_json_schema: true,
       });
     });
+  });
+
+  it('shows route source badges and delete action for manual routes', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('模型路由')[0]);
+
+    expect((await screen.findAllByText('Profile Seed')).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText('Manual')).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', {name: 'Delete anthropic-claude'})).toBeInTheDocument();
+  });
+
+  it('shows stale profile route guidance and blocks profile seed lifecycle conversion in ui', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('模型路由')[0]);
+
+    expect(await screen.findByText('legacy-qwen-route')).toBeInTheDocument();
+    expect(screen.getByText('当前 profile 不再提供这条 route；系统已自动禁用，需由你决定是否保留。')).toBeInTheDocument();
+    expect(screen.getByText('来源 profile: vllm_qwen36-14b-legacy')).toBeInTheDocument();
+
+    const staleRoute = await screen.findByText('legacy-qwen-route');
+    const staleCard = staleRoute.closest('section');
+    expect(staleCard).toBeTruthy();
+    const staleEnabledToggle = within(staleCard as HTMLElement).getByLabelText('legacy-qwen-route-enabled');
+    expect(staleEnabledToggle).toBeDisabled();
+    expect(within(staleCard as HTMLElement).getByText('Stale 的 Profile Seed route 当前不能直接重新启用；如需恢复，请切回来源 profile 或新建 manual route。')).toBeInTheDocument();
+    expect(
+      within(staleCard as HTMLElement).getByText(
+        '当前允许：保留禁用态观察、查看来源 profile、调整展示字段；当前不允许：直接重新启用、删除、改成 external。',
+      ),
+    ).toBeInTheDocument();
+
+    const seededRoute = await screen.findByText('qwen36-27b-fp8');
+    const seededCard = seededRoute.closest('section');
+    expect(seededCard).toBeTruthy();
+    const lifecycleSelect = within(seededCard as HTMLElement).getByText('生命周期').parentElement?.querySelector('select');
+    expect(lifecycleSelect).toBeDisabled();
+    expect(within(seededCard as HTMLElement).getByText('Profile Seed route 当前不能直接改成 external；如需外部上游，请新建 manual route。')).toBeInTheDocument();
+  });
+
+  it('creates external routes from models view', async () => {
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    const runtimeModelRoutes = cloneJson(emptySnapshot.runtime.model_routes);
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/admin/status')) {
+        const snapshot = cloneJson(emptySnapshot);
+        snapshot.runtime.model_routes = runtimeModelRoutes;
+        return jsonResponse(snapshot);
+      }
+      if (url.includes('/admin/request-logs')) {
+        return jsonResponse(requestLogsResponse);
+      }
+      if (url.includes('/admin/overview/usage')) {
+        return jsonResponse(usageOverview);
+      }
+      if (url.includes('/admin/keys')) {
+        return jsonResponse(keyListResponse);
+      }
+      if (url.includes('/admin/models') && init?.method === 'POST') {
+        const payload = JSON.parse(String(init.body));
+        const createdRoute = {
+          name: payload.name,
+          display_name: payload.display_name,
+          backend_model: null,
+          backend_type: null,
+          enabled: payload.enabled,
+          lifecycle_mode: 'external',
+          upstream_protocol: payload.upstream_protocol,
+          upstream_base_url: payload.upstream_base_url,
+          upstream_model: payload.upstream_model,
+          upstream_auth_kind: payload.upstream_auth_kind,
+          upstream_auth_ref: payload.upstream_auth_ref,
+          source_kind: 'manual',
+          source_ref: null,
+          stale: false,
+          capabilities_json: payload.capabilities_json,
+        };
+        runtimeModelRoutes.push(createdRoute);
+        return jsonResponse({model: createdRoute});
+      }
+      if (url.includes('/admin/models')) {
+        return jsonResponse({models: runtimeModelRoutes});
+      }
+      if (url.includes('/admin/schedule')) {
+        return jsonResponse({schedule: emptySnapshot.runtime.schedule});
+      }
+      if (url.includes('/admin/overview/readiness')) {
+        return jsonResponse({
+          readiness: {status: 'ready'},
+          base_urls: {
+            local: 'http://127.0.0.1:4000',
+            lan: 'http://10.18.90.100:4000',
+          },
+        });
+      }
+      if (url.includes('/admin/stream')) {
+        const stream = new ReadableStream({
+          start(controller) {
+            const snapshot = cloneJson(emptySnapshot);
+            snapshot.runtime.model_routes = runtimeModelRoutes;
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(snapshot)}\n\n`));
+            controller.close();
+          },
+        });
+        return Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: {'Content-Type': 'text/event-stream'},
+          }),
+        );
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('模型路由')[0]);
+
+    await userEvent.type(await screen.findByLabelText('create-route-name'), 'openai-gpt-4o');
+    await userEvent.type(screen.getByLabelText('create-route-display-name'), 'OpenAI GPT-4o');
+    await userEvent.selectOptions(screen.getByLabelText('create-route-protocol'), 'responses');
+    await userEvent.type(screen.getByLabelText('create-route-base-url'), 'https://api.openai.com/v1');
+    await userEvent.type(screen.getByLabelText('create-route-upstream-model'), 'gpt-4o');
+    await userEvent.selectOptions(screen.getByLabelText('create-route-auth-kind'), 'bearer');
+    await userEvent.type(screen.getByLabelText('create-route-auth-ref'), 'OPENAI_API_KEY');
+    await userEvent.click(screen.getByRole('checkbox', {name: 'create-route-supports-responses'}));
+
+    await userEvent.click(screen.getByRole('button', {name: '创建路由'}));
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls.find(
+        (call) => String(call[0]).includes('/admin/models') && call[1]?.method === 'POST',
+      );
+      expect(postCall).toBeTruthy();
+      const payload = JSON.parse(String(postCall?.[1]?.body));
+      expect(payload).toMatchObject({
+        name: 'openai-gpt-4o',
+        display_name: 'OpenAI GPT-4o',
+        lifecycle_mode: 'external',
+        upstream_protocol: 'responses',
+        upstream_base_url: 'https://api.openai.com/v1',
+        upstream_model: 'gpt-4o',
+        upstream_auth_kind: 'bearer',
+        upstream_auth_ref: 'OPENAI_API_KEY',
+        enabled: true,
+      });
+      expect(payload.capabilities_json.supports_responses).toBe(true);
+    });
+
+    expect(await screen.findByText('openai-gpt-4o')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('OpenAI GPT-4o')).toBeInTheDocument();
   });
 });
