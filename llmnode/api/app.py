@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, PlainTextResponse
 
 from ..config import PROJECT_ROOT, load_settings
@@ -26,14 +27,20 @@ from ..proxy.router import (
     AuthContext,
     GatewayContext,
     build_upstream_headers,
+    is_anthropic_function_tool,
     proxy_anthropic_messages,
     proxy_openai_chat,
+    proxy_openai_chat_via_route,
+    plan_route_execution,
     ensure_route_supports_request,
     resolve_route,
     require_scope,
     resolve_auth_context,
+    select_upstream_adapter,
+    strip_claude_code_builtin_tools_for_managed_messages,
     stream_anthropic_messages,
     stream_openai_chat,
+    stream_openai_chat_via_route,
 )
 
 _VALID_BACKEND_TYPES = {"vllm", "llama.cpp", "sglang"}
@@ -86,6 +93,19 @@ _CAPABILITY_FIELDS = {
     "supports_previous_response_id_native",
     "supports_json_schema",
 }
+_VALID_NATIVE_PROTOCOLS = {"responses", "chat", "messages"}
+_VALID_ADAPTER_POLICIES = {"responses->chat", "responses->messages"}
+_TOOL_POLICY_FIELDS = {
+    "openai_function_tools",
+    "anthropic_function_tools",
+    "builtin_tools",
+}
+_PROTOCOL_FEATURE_FIELDS = {
+    "stream",
+    "count_tokens",
+    "json_schema",
+    "previous_response_id",
+}
 
 
 def _request_id(request: Request) -> str:
@@ -120,6 +140,7 @@ def _request_log_context(request: Request, auth: AuthContext) -> dict[str, Any]:
         "client_ip": request.client.host if request.client else None,
         "user_agent": request.headers.get("user-agent"),
         "rejection_reason": None,
+        "metadata": {},
     }
 
 
@@ -254,6 +275,55 @@ def _response_usage_from_chat(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _responses_metric_payload_from_responses(payload: dict[str, Any]) -> dict[str, Any]:
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict):
+        usage = {}
+    return {
+        "usage": {
+            "prompt_tokens": usage.get("input_tokens"),
+            "completion_tokens": usage.get("output_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+        }
+    }
+
+
+def _responses_metric_payload_from_messages(payload: dict[str, Any]) -> dict[str, Any]:
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict):
+        usage = {}
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    total_tokens = None
+    if input_tokens is not None or output_tokens is not None:
+        total_tokens = (input_tokens or 0) + (output_tokens or 0)
+    return {
+        "usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        }
+    }
+
+
+def _responses_output_and_messages_from_text_parts(
+    text_parts: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not text_parts:
+        return [], []
+    text = "".join(text_parts)
+    return (
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            }
+        ],
+        [{"role": "assistant", "content": text}],
+    )
+
+
 def _assistant_message_text(message: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, str):
@@ -335,6 +405,113 @@ def _responses_payload_from_chat(
     return payload, assistant_messages
 
 
+def _response_output_to_messages(output_items: Any) -> list[dict[str, Any]]:
+    if not isinstance(output_items, list):
+        return []
+    messages: list[dict[str, Any]] = []
+    for item in output_items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "message" or item.get("role") != "assistant":
+            continue
+        content = item.get("content")
+        text_parts: list[str] = []
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "output_text" and isinstance(block.get("text"), str):
+                    text_parts.append(block["text"])
+        if text_parts:
+            messages.append({"role": "assistant", "content": "".join(text_parts)})
+    return messages
+
+
+def _resolved_metric_backend_type(app: FastAPI, route: ModelRoute) -> str:
+    if route.lifecycle_mode == "external":
+        return "external"
+    return route.backend_type or app.state.ctx.backend_client.backend_type
+
+
+async def _begin_api_key_lease_or_raise(
+    app: FastAPI,
+    *,
+    auth: AuthContext,
+    request_id: str,
+    model_name: str,
+    protocol: str,
+    log_context: dict[str, Any],
+) -> Any:
+    try:
+        return await app.state.api_key_gate.begin(
+            auth.api_key_id,
+            rpm_limit=auth.rpm_limit,
+            concurrency_limit=auth.concurrency_limit,
+        )
+    except ApiKeyRateLimitError as exc:
+        log_context["rejection_reason"] = "rpm_limit_exceeded"
+        write_request_log(
+            app.state.db,
+            request_id,
+            model_name,
+            "rejected",
+            protocol,
+            str(exc),
+            **log_context,
+        )
+        raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+    except ApiKeyConcurrencyError as exc:
+        log_context["rejection_reason"] = "concurrency_limit_exceeded"
+        write_request_log(
+            app.state.db,
+            request_id,
+            model_name,
+            "rejected",
+            protocol,
+            str(exc),
+            **log_context,
+        )
+        raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+
+
+async def _reject_request_with_metric(
+    app: FastAPI,
+    *,
+    key_lease: Any,
+    exc: Exception,
+    request_id: str,
+    model_name: str,
+    protocol: str,
+    status: str,
+    rejection_reason: str,
+    http_status: int,
+    started_at: datetime,
+    log_context: dict[str, Any],
+) -> None:
+    await key_lease.reject()
+    finished_at = datetime.now(timezone.utc)
+    log_context["rejection_reason"] = rejection_reason
+    _record_request_metric(
+        app,
+        request_id=request_id,
+        model_name=model_name,
+        protocol=protocol,
+        status=status,
+        started_at=started_at,
+        finished_at=finished_at,
+    )
+    write_request_log(
+        app.state.db,
+        request_id,
+        model_name,
+        status,
+        protocol,
+        str(exc),
+        **log_context,
+    )
+    raise HTTPException(status_code=http_status, detail=str(exc), headers={"x-request-id": request_id}) from exc
+
+
 def _assistant_message_text_from_anthropic(message_payload: dict[str, Any]) -> str:
     content = message_payload.get("content")
     if not isinstance(content, list):
@@ -346,6 +523,57 @@ def _assistant_message_text_from_anthropic(message_payload: dict[str, Any]) -> s
         if block.get("type") == "text" and isinstance(block.get("text"), str):
             parts.append(block["text"])
     return "".join(parts)
+
+
+def _count_anthropic_message_content_tokens(content: Any) -> int:
+    if isinstance(content, str):
+        return max(1, len(content) // 4) if content else 0
+    if isinstance(content, list):
+        total = 0
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "text" and isinstance(block.get("text"), str):
+                total += max(1, len(block["text"]) // 4) if block["text"] else 0
+            elif block_type == "tool_result":
+                tool_content = block.get("content")
+                if isinstance(tool_content, str):
+                    total += max(1, len(tool_content) // 4) if tool_content else 0
+                elif isinstance(tool_content, list):
+                    total += _count_anthropic_message_content_tokens(tool_content)
+                total += 8
+            elif block_type == "tool_use":
+                total += max(1, len(json.dumps(block.get("input", {}), ensure_ascii=False)) // 4)
+                total += 8
+        return total
+    return 0
+
+
+def _estimate_anthropic_input_tokens(raw: dict[str, Any]) -> int:
+    total = 0
+    system = raw.get("system")
+    if isinstance(system, str):
+        total += max(1, len(system) // 4) if system else 0
+    elif isinstance(system, list):
+        total += _count_anthropic_message_content_tokens(system)
+    messages = raw.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            total += 4
+            total += _count_anthropic_message_content_tokens(message.get("content"))
+    tools = raw.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            if is_anthropic_function_tool(tool):
+                total += max(1, len(json.dumps(tool, ensure_ascii=False)) // 4)
+            else:
+                total += 8
+    return total
 
 
 def _responses_payload_from_anthropic(
@@ -427,6 +655,7 @@ def _sanitize_api_key_row(row: dict[str, Any], *, masked_key: str | None = None)
         "id": row["id"],
         "name": row["name"],
         "masked_key": masked_key or stable_masked_key(row["id"]),
+        "plain_secret": row.get("plain_secret"),
         "status": row["status"],
         "scopes": row["scopes"],
         "rpm_limit": row["rpm_limit"],
@@ -536,7 +765,78 @@ def _normalize_capabilities_payload(payload: Any, current: ModelRoute) -> dict[s
     return capabilities
 
 
+def _normalize_native_protocols_payload(payload: Any, current: ModelRoute) -> list[str]:
+    current_runtime = current.runtime_capabilities()
+    protocols = list(current_runtime["native_protocols"])
+    if payload is _MISSING:
+        return protocols
+    if not isinstance(payload, list) or not payload:
+        raise HTTPException(status_code=400, detail="native_protocols_json must be a non-empty list")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail="native_protocols_json values must be strings")
+        protocol = item.strip()
+        if protocol not in _VALID_NATIVE_PROTOCOLS:
+            raise HTTPException(status_code=400, detail=f"unsupported native protocol: {protocol}")
+        if protocol not in seen:
+            normalized.append(protocol)
+            seen.add(protocol)
+    return normalized
+
+
+def _normalize_adapter_policies_payload(payload: Any, current: ModelRoute) -> list[str]:
+    current_runtime = current.runtime_capabilities()
+    policies = list(current_runtime["adapter_policies"])
+    if payload is _MISSING:
+        return policies
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=400, detail="adapter_policies_json must be a list")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail="adapter_policies_json values must be strings")
+        policy = item.strip()
+        if policy not in _VALID_ADAPTER_POLICIES:
+            raise HTTPException(status_code=400, detail=f"unsupported adapter policy: {policy}")
+        if policy not in seen:
+            normalized.append(policy)
+            seen.add(policy)
+    return normalized
+
+
+def _normalize_tool_policies_payload(payload: Any, current: ModelRoute) -> dict[str, bool]:
+    current_runtime = current.runtime_capabilities()
+    policies = dict(current_runtime["tool_policies"])
+    if payload is _MISSING:
+        return policies
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="tool_policies_json must be an object")
+    for key, value in payload.items():
+        if key not in _TOOL_POLICY_FIELDS:
+            raise HTTPException(status_code=400, detail=f"unsupported tool policy: {key}")
+        policies[key] = _normalize_bool(value, f"tool_policies_json.{key}")
+    return policies
+
+
+def _normalize_protocol_features_payload(payload: Any, current: ModelRoute) -> dict[str, bool]:
+    current_runtime = current.runtime_capabilities()
+    features = dict(current_runtime["protocol_features"])
+    if payload is _MISSING:
+        return features
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="protocol_features_json must be an object")
+    for key, value in payload.items():
+        if key not in _PROTOCOL_FEATURE_FIELDS:
+            raise HTTPException(status_code=400, detail=f"unsupported protocol feature: {key}")
+        features[key] = _normalize_bool(value, f"protocol_features_json.{key}")
+    return features
+
+
 def _build_model_route_storage_payload(route: ModelRoute) -> dict[str, Any]:
+    runtime_caps = route.runtime_capabilities()
     return {
         "name": route.name,
         "display_name": route.display_name,
@@ -553,6 +853,10 @@ def _build_model_route_storage_payload(route: ModelRoute) -> dict[str, Any]:
         "source_ref": route.source_ref,
         "stale": route.stale,
         "capabilities_json": _normalize_capabilities_payload(_MISSING, route),
+        "native_protocols_json": runtime_caps["native_protocols"],
+        "adapter_policies_json": runtime_caps["adapter_policies"],
+        "tool_policies_json": runtime_caps["tool_policies"],
+        "protocol_features_json": runtime_caps["protocol_features"],
     }
 
 
@@ -587,8 +891,7 @@ def _validate_create_model_route_payload(payload: dict[str, Any]) -> ModelRoute:
 
     base_route = ModelRoute(name=name, display_name=display_name)
     capabilities_json = _normalize_capabilities_payload(payload.get("capabilities_json", _MISSING), base_route)
-
-    return ModelRoute(
+    seed_route = ModelRoute(
         name=name,
         display_name=display_name,
         backend_model=None,
@@ -601,6 +904,32 @@ def _validate_create_model_route_payload(payload: dict[str, Any]) -> ModelRoute:
         upstream_auth_kind=upstream_auth_kind,
         upstream_auth_ref=None if upstream_auth_kind == "none" else upstream_auth_ref,
         capabilities=ModelCapabilities(**capabilities_json),
+        source_kind="manual",
+        source_ref=None,
+        stale=False,
+    )
+    native_protocols_json = _normalize_native_protocols_payload(payload.get("native_protocols_json", _MISSING), seed_route)
+    adapter_policies_json = _normalize_adapter_policies_payload(payload.get("adapter_policies_json", _MISSING), seed_route)
+    tool_policies_json = _normalize_tool_policies_payload(payload.get("tool_policies_json", _MISSING), seed_route)
+    protocol_features_json = _normalize_protocol_features_payload(payload.get("protocol_features_json", _MISSING), seed_route)
+
+    return ModelRoute(
+        name=name,
+        display_name=display_name,
+        backend_model=None,
+        backend_type=None,
+        enabled=seed_route.enabled,
+        lifecycle_mode="external",
+        upstream_protocol=upstream_protocol,
+        upstream_base_url=upstream_base_url,
+        upstream_model=upstream_model,
+        upstream_auth_kind=upstream_auth_kind,
+        upstream_auth_ref=None if upstream_auth_kind == "none" else upstream_auth_ref,
+        capabilities=ModelCapabilities(**capabilities_json),
+        native_protocols_json=native_protocols_json,
+        adapter_policies_json=adapter_policies_json,
+        tool_policies_json=tool_policies_json,
+        protocol_features_json=protocol_features_json,
         source_kind="manual",
         source_ref=None,
         stale=False,
@@ -671,6 +1000,24 @@ def _validate_update_model_route_payload(payload: dict[str, Any], route: ModelRo
         upstream_auth_ref = _normalize_optional_string(payload["upstream_auth_ref"], "upstream_auth_ref")
 
     capabilities_json = _normalize_capabilities_payload(payload.get("capabilities_json", _MISSING), route)
+    route_for_runtime = replace(
+        route,
+        display_name=display_name,
+        backend_model=backend_model,
+        backend_type=backend_type,
+        enabled=enabled,
+        lifecycle_mode=lifecycle_mode,
+        upstream_protocol=upstream_protocol,
+        upstream_base_url=upstream_base_url,
+        upstream_model=upstream_model,
+        upstream_auth_kind=upstream_auth_kind,
+        upstream_auth_ref=upstream_auth_ref,
+        capabilities=ModelCapabilities(**capabilities_json),
+    )
+    native_protocols_json = _normalize_native_protocols_payload(payload.get("native_protocols_json", _MISSING), route_for_runtime)
+    adapter_policies_json = _normalize_adapter_policies_payload(payload.get("adapter_policies_json", _MISSING), route_for_runtime)
+    tool_policies_json = _normalize_tool_policies_payload(payload.get("tool_policies_json", _MISSING), route_for_runtime)
+    protocol_features_json = _normalize_protocol_features_payload(payload.get("protocol_features_json", _MISSING), route_for_runtime)
 
     if lifecycle_mode == "managed_local":
         if backend_type not in _VALID_BACKEND_TYPES:
@@ -693,7 +1040,7 @@ def _validate_update_model_route_payload(payload: dict[str, Any], route: ModelRo
         raise HTTPException(status_code=400, detail="upstream_auth_ref is required when upstream_auth_kind is not none")
 
     return replace(
-        route,
+        route_for_runtime,
         display_name=display_name,
         backend_model=backend_model,
         backend_type=backend_type,
@@ -705,6 +1052,10 @@ def _validate_update_model_route_payload(payload: dict[str, Any], route: ModelRo
         upstream_auth_kind=upstream_auth_kind,
         upstream_auth_ref=upstream_auth_ref,
         capabilities=ModelCapabilities(**capabilities_json),
+        native_protocols_json=native_protocols_json,
+        adapter_policies_json=adapter_policies_json,
+        tool_policies_json=tool_policies_json,
+        protocol_features_json=protocol_features_json,
         source_kind=route.source_kind,
         source_ref=route.source_ref,
         stale=route.stale,
@@ -782,6 +1133,16 @@ def create_app() -> FastAPI:
     api_key_gate = ApiKeyGate()
 
     app = FastAPI(title="llmnode", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+        ],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["authorization", "content-type", "x-api-key"],
+    )
     app.state.ctx = ctx
     app.state.request_gate = request_gate
     app.state.api_key_gate = api_key_gate
@@ -1098,7 +1459,8 @@ def create_app() -> FastAPI:
             ],
         )
         writer.writeheader()
-        writer.writerows(rows)
+        csv_fields = set(writer.fieldnames)
+        writer.writerows({key: row.get(key) for key in csv_fields} for row in rows)
         response = PlainTextResponse(output.getvalue(), media_type="text/csv; charset=utf-8")
         response.headers["x-request-id"] = request_id
         response.headers["content-disposition"] = 'attachment; filename="request-logs.csv"'
@@ -1149,6 +1511,7 @@ def create_app() -> FastAPI:
                 request.app.state.db,
                 name=payload["name"],
                 key_hash=hash_api_key(secret),
+                plain_secret=secret,
                 scopes=payload["scopes"],
                 rpm_limit=payload["rpm_limit"],
                 concurrency_limit=payload["concurrency_limit"],
@@ -1342,7 +1705,7 @@ def create_app() -> FastAPI:
         raw = await _read_json_body(request)
         payload = OpenAIChatCompletionsRequest.model_validate(raw)
         route = resolve_route(payload.model, request.app.state.ctx.models)
-        ensure_route_supports_request(
+        plan = plan_route_execution(
             route,
             type("Req", (), {
                 "client_protocol": "chat",
@@ -1353,87 +1716,47 @@ def create_app() -> FastAPI:
         request_id = _request_id(request)
         started_at = datetime.now(timezone.utc)
         log_context = _request_log_context(request, auth)
-        try:
-            key_lease = await request.app.state.api_key_gate.begin(
-                auth.api_key_id,
-                rpm_limit=auth.rpm_limit,
-                concurrency_limit=auth.concurrency_limit,
+        log_context["metadata"] = {
+            "client_protocol": "chat",
+            "execution_mode": plan.execution_mode,
+            "adapter_selected": plan.selected_adapter,
+            "tool_classes_detected": ["openai_function_tools"] if payload.tools else [],
+            "request_mutation": plan.execution_mode == "adapter",
+            "mutation_reason": None if plan.execution_mode == "native" else (plan.selected_adapter or "adapter_path"),
+        }
+        key_lease = await _begin_api_key_lease_or_raise(
+            request.app,
+            auth=auth,
+            request_id=request_id,
+            model_name=payload.model,
+            protocol="openai",
+            log_context=log_context,
+        )
+
+        async def reject_openai_request(exc: Exception, *, status: str, rejection_reason: str, http_status: int) -> None:
+            await _reject_request_with_metric(
+                request.app,
+                key_lease=key_lease,
+                exc=exc,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="openai",
+                status=status,
+                rejection_reason=rejection_reason,
+                http_status=http_status,
+                started_at=started_at,
+                log_context=log_context,
             )
-        except ApiKeyRateLimitError as exc:
-            log_context["rejection_reason"] = "rpm_limit_exceeded"
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "rejected",
-                "openai",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
-        except ApiKeyConcurrencyError as exc:
-            log_context["rejection_reason"] = "concurrency_limit_exceeded"
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "rejected",
-                "openai",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+
         if payload.stream:
             gate = request.app.state.request_gate.slot()
             try:
                 await gate.__aenter__()
                 stream = await stream_openai_chat(payload.to_backend_payload(payload.model), request.app.state.ctx)
             except QueueFullError as exc:
-                await key_lease.reject()
-                finished_at = datetime.now(timezone.utc)
-                log_context["rejection_reason"] = "queue_full"
-                _record_request_metric(
-                    request.app,
-                    request_id=request_id,
-                    model_name=payload.model,
-                    protocol="openai",
-                    status="rejected",
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "rejected",
-                    "openai",
-                    str(exc),
-                    **log_context,
-                )
-                raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+                await reject_openai_request(exc, status="rejected", rejection_reason="queue_full", http_status=429)
             except QueueTimeoutError as exc:
-                await key_lease.reject()
-                finished_at = datetime.now(timezone.utc)
-                log_context["rejection_reason"] = "queue_timeout"
-                _record_request_metric(
-                    request.app,
-                    request_id=request_id,
-                    model_name=payload.model,
-                    protocol="openai",
-                    status="timeout",
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "timeout",
-                    "openai",
-                    str(exc),
-                    **log_context,
-                )
-                raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
+                await reject_openai_request(exc, status="timeout", rejection_reason="queue_timeout", http_status=504)
             except Exception:
                 await key_lease.reject()
                 await gate.__aexit__(None, None, None)
@@ -1461,7 +1784,7 @@ def create_app() -> FastAPI:
                             started_at=started_at,
                             finished_at=finished_at,
                             response_payload=last_usage_payload,
-                            backend_type=request.app.state.ctx.backend_client.backend_type,
+                            backend_type=_resolved_metric_backend_type(request.app, route),
                             api_key_id=auth.api_key_id,
                         )
 
@@ -1481,51 +1804,9 @@ def create_app() -> FastAPI:
             async with request.app.state.request_gate.slot():
                 result = await proxy_openai_chat(payload.to_backend_payload(payload.model), request.app.state.ctx)
         except QueueFullError as exc:
-            await key_lease.reject()
-            finished_at = datetime.now(timezone.utc)
-            log_context["rejection_reason"] = "queue_full"
-            _record_request_metric(
-                request.app,
-                request_id=request_id,
-                model_name=payload.model,
-                protocol="openai",
-                status="rejected",
-                started_at=started_at,
-                finished_at=finished_at,
-            )
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "rejected",
-                "openai",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+            await reject_openai_request(exc, status="rejected", rejection_reason="queue_full", http_status=429)
         except QueueTimeoutError as exc:
-            await key_lease.reject()
-            finished_at = datetime.now(timezone.utc)
-            log_context["rejection_reason"] = "queue_timeout"
-            _record_request_metric(
-                request.app,
-                request_id=request_id,
-                model_name=payload.model,
-                protocol="openai",
-                status="timeout",
-                started_at=started_at,
-                finished_at=finished_at,
-            )
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "timeout",
-                "openai",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
+            await reject_openai_request(exc, status="timeout", rejection_reason="queue_timeout", http_status=504)
         except Exception:
             await key_lease.finish()
             raise
@@ -1540,7 +1821,7 @@ def create_app() -> FastAPI:
             started_at=started_at,
             finished_at=finished_at,
             response_payload=result,
-            backend_type=request.app.state.ctx.backend_client.backend_type,
+            backend_type=_resolved_metric_backend_type(request.app, route),
             api_key_id=auth.api_key_id,
         )
         write_request_log(
@@ -1566,7 +1847,7 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         route = resolve_route(payload.model, request.app.state.ctx.models)
-        ensure_route_supports_request(
+        plan = plan_route_execution(
             route,
             type("Req", (), {
                 "client_protocol": "responses",
@@ -1574,6 +1855,9 @@ def create_app() -> FastAPI:
                 "tools": payload.tools,
             })(),
         )
+        runtime_caps = plan.runtime_caps
+        execution_mode = plan.execution_mode
+        selected_adapter = plan.selected_adapter
         request_id = _request_id(request)
         response_id = f"resp_{uuid.uuid4().hex}"
         started_at = datetime.now(timezone.utc)
@@ -1585,7 +1869,7 @@ def create_app() -> FastAPI:
             previous_state = get_response_state(request.app.state.db, payload.previous_response_id)
             if previous_state is None:
                 raise HTTPException(status_code=404, detail=f"unknown response: {payload.previous_response_id}")
-            if route.capabilities.supports_previous_response_id_native:
+            if execution_mode == "native" and runtime_caps["protocol_features"].get("previous_response_id", False):
                 previous_messages = []
             else:
                 previous_messages = list(previous_state["messages"])
@@ -1593,340 +1877,255 @@ def create_app() -> FastAPI:
         chat_payload = build_responses_chat_payload(route, payload, previous_messages)
         messages_payload = build_responses_messages_payload(route, payload, previous_messages)
         messages_for_state = payload.to_chat_messages(previous_messages)
+        tool_classes_detected: list[str] = []
+        for tool in payload.tools or []:
+            if isinstance(tool, dict) and tool.get("type") == "function":
+                tool_classes_detected.append("openai_function_tools")
+            elif isinstance(tool, dict) and is_anthropic_function_tool(tool):
+                tool_classes_detected.append("anthropic_function_tools")
+            elif isinstance(tool, dict):
+                tool_classes_detected.append("builtin_tools")
+        log_context["metadata"] = {
+            "client_protocol": "responses",
+            "execution_mode": execution_mode,
+            "adapter_selected": selected_adapter,
+            "tool_classes_detected": tool_classes_detected,
+            "request_mutation": execution_mode == "adapter",
+            "mutation_reason": None if execution_mode == "native" else (selected_adapter or "adapter_path"),
+        }
 
-        try:
-            key_lease = await request.app.state.api_key_gate.begin(
-                auth.api_key_id,
-                rpm_limit=auth.rpm_limit,
-                concurrency_limit=auth.concurrency_limit,
+        key_lease = await _begin_api_key_lease_or_raise(
+            request.app,
+            auth=auth,
+            request_id=request_id,
+            model_name=payload.model,
+            protocol="responses",
+            log_context=log_context,
+        )
+
+        def build_native_upstream_payload() -> dict[str, Any]:
+            upstream_payload = dict(raw)
+            upstream_payload["model"] = route.resolved_upstream_model() or payload.model
+            if previous_state is not None and runtime_caps["protocol_features"].get("previous_response_id", False):
+                upstream_previous_id = previous_state.get("upstream_response_id")
+                if upstream_previous_id:
+                    upstream_payload["previous_response_id"] = upstream_previous_id
+            elif previous_state is not None:
+                upstream_payload["input"] = messages_for_state
+                upstream_payload.pop("previous_response_id", None)
+            return upstream_payload
+
+        async def reject_responses_request(exc: Exception, *, status: str, rejection_reason: str, http_status: int) -> None:
+            await _reject_request_with_metric(
+                request.app,
+                key_lease=key_lease,
+                exc=exc,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="responses",
+                status=status,
+                rejection_reason=rejection_reason,
+                http_status=http_status,
+                started_at=started_at,
+                log_context=log_context,
             )
-        except ApiKeyRateLimitError as exc:
-            log_context["rejection_reason"] = "rpm_limit_exceeded"
-            write_request_log(
+
+        def persist_response_state(
+            *,
+            persisted_response_id: str,
+            output_items: list[dict[str, Any]],
+            messages: list[dict[str, Any]],
+            upstream_protocol: str,
+            request_payload: dict[str, Any],
+            output_payload: dict[str, Any],
+            upstream_response_id: str | None = None,
+        ) -> None:
+            upsert_response_state(
                 request.app.state.db,
-                request_id,
-                payload.model,
-                "rejected",
-                "responses",
-                str(exc),
-                **log_context,
+                response_id=persisted_response_id,
+                request_id=request_id,
+                model_name=payload.model,
+                input_items=input_items,
+                output_items=output_items,
+                messages=messages,
+                parent_response_id=payload.previous_response_id,
+                route_name=route.name,
+                client_protocol="responses",
+                upstream_protocol=upstream_protocol,
+                upstream_response_id=upstream_response_id,
+                request_payload=request_payload,
+                output_payload=output_payload,
             )
-            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
-        except ApiKeyConcurrencyError as exc:
-            log_context["rejection_reason"] = "concurrency_limit_exceeded"
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "rejected",
-                "responses",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
 
-        if payload.stream:
-            if route.upstream_protocol == "responses":
-                upstream_payload = dict(raw)
-                upstream_payload["model"] = route.resolved_upstream_model() or payload.model
-                if previous_state is not None and route.capabilities.supports_previous_response_id_native:
-                    upstream_previous_id = previous_state.get("upstream_response_id")
-                    if upstream_previous_id:
-                        upstream_payload["previous_response_id"] = upstream_previous_id
-
-                async def native_body():
-                    completed_payload: dict[str, Any] | None = None
-                    try:
-                        async for chunk in request.app.state.stream_bytes_from(
-                            route.upstream_base_url or "",
-                            "/v1/responses",
-                            upstream_payload,
-                            headers=build_upstream_headers(route),
-                        ):
-                            text = chunk.decode("utf-8", errors="ignore")
-                            if "event: response.completed" in text:
-                                parts = text.split("data: ", 1)
-                                if len(parts) == 2:
-                                    with suppress(json.JSONDecodeError, ValueError):
-                                        completed_payload = json.loads(parts[1].strip())
-                            yield chunk
-                    finally:
-                        await key_lease.finish()
-                        finished_at = datetime.now(timezone.utc)
-                        if completed_payload is not None:
-                            _record_request_metric(
-                                request.app,
-                                request_id=request_id,
-                                model_name=payload.model,
-                                protocol="responses",
-                                status="ok",
-                                started_at=started_at,
-                                finished_at=finished_at,
-                                response_payload={
-                                    "usage": {
-                                        "prompt_tokens": completed_payload.get("usage", {}).get("input_tokens"),
-                                        "completion_tokens": completed_payload.get("usage", {}).get("output_tokens"),
-                                        "total_tokens": completed_payload.get("usage", {}).get("total_tokens"),
-                                    }
-                                },
-                                backend_type=route.backend_type or "external",
-                                api_key_id=auth.api_key_id,
-                            )
-                            upsert_response_state(
-                                request.app.state.db,
-                                response_id=response_id,
-                                request_id=request_id,
-                                model_name=payload.model,
-                                input_items=input_items,
-                                output_items=completed_payload.get("output", []),
-                                messages=messages_for_state,
-                                parent_response_id=payload.previous_response_id,
-                                route_name=route.name,
-                                client_protocol="responses",
-                                upstream_protocol=route.upstream_protocol,
-                                upstream_response_id=completed_payload.get("id"),
-                                request_payload=upstream_payload,
-                                output_payload=completed_payload,
-                            )
-
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "streaming",
-                    "responses",
-                    **log_context,
+        async def execute_native_sync() -> JSONResponse:
+            upstream_payload = build_native_upstream_payload()
+            if route.lifecycle_mode == "external":
+                result = await request.app.state.post_json_to(
+                    route.upstream_base_url or "",
+                    "/v1/responses",
+                    upstream_payload,
+                    headers=build_upstream_headers(route),
                 )
-                response = StreamingResponse(native_body(), media_type="text/event-stream")
-                response.headers["x-request-id"] = request_id
-                return response
+            else:
+                result = await request.app.state.ctx.backend_client.post_json("/v1/responses", upstream_payload)
+            await key_lease.finish()
+            finished_at = datetime.now(timezone.utc)
+            persisted_response_id = result.get("id") or response_id
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="responses",
+                status="ok",
+                started_at=started_at,
+                finished_at=finished_at,
+                response_payload=_responses_metric_payload_from_responses(result),
+                backend_type=route.backend_type or ("external" if route.lifecycle_mode == "external" else request.app.state.ctx.backend_client.backend_type),
+                api_key_id=auth.api_key_id,
+            )
+            persist_response_state(
+                persisted_response_id=persisted_response_id,
+                output_items=result.get("output", []),
+                messages=[*messages_for_state, *_response_output_to_messages(result.get("output"))],
+                upstream_protocol="responses",
+                upstream_response_id=result.get("id"),
+                request_payload=upstream_payload,
+                output_payload=result,
+            )
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "ok",
+                "responses",
+                **log_context,
+            )
+            response = JSONResponse(result)
+            response.headers["x-request-id"] = request_id
+            return response
 
-            if route.upstream_protocol == "messages":
-                gate = request.app.state.request_gate.slot()
-                try:
-                    await gate.__aenter__()
+        async def execute_messages_sync() -> JSONResponse:
+            try:
+                async with request.app.state.request_gate.slot():
                     if route.lifecycle_mode == "external":
-                        stream = request.app.state.stream_bytes_from(
+                        result = await request.app.state.post_json_to(
                             route.upstream_base_url or "",
                             "/v1/messages",
                             messages_payload,
                             headers=build_upstream_headers(route),
                         )
                     else:
-                        stream = request.app.state.ctx.backend_client.stream_bytes("/v1/messages", messages_payload)
-                except QueueFullError as exc:
-                    await key_lease.reject()
-                    finished_at = datetime.now(timezone.utc)
-                    log_context["rejection_reason"] = "queue_full"
-                    _record_request_metric(
-                        request.app,
-                        request_id=request_id,
-                        model_name=payload.model,
-                        protocol="responses",
-                        status="rejected",
-                        started_at=started_at,
-                        finished_at=finished_at,
-                    )
-                    write_request_log(
-                        request.app.state.db,
-                        request_id,
-                        payload.model,
-                        "rejected",
-                        "responses",
-                        str(exc),
-                        **log_context,
-                    )
-                    raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
-                except QueueTimeoutError as exc:
-                    await key_lease.reject()
-                    finished_at = datetime.now(timezone.utc)
-                    log_context["rejection_reason"] = "queue_timeout"
-                    _record_request_metric(
-                        request.app,
-                        request_id=request_id,
-                        model_name=payload.model,
-                        protocol="responses",
-                        status="timeout",
-                        started_at=started_at,
-                        finished_at=finished_at,
-                    )
-                    write_request_log(
-                        request.app.state.db,
-                        request_id,
-                        payload.model,
-                        "timeout",
-                        "responses",
-                        str(exc),
-                        **log_context,
-                    )
-                    raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
-                except Exception:
-                    await key_lease.reject()
-                    await gate.__aexit__(None, None, None)
-                    raise
+                        result = await request.app.state.ctx.backend_client.post_json("/v1/messages", messages_payload)
+            except QueueFullError as exc:
+                await reject_responses_request(exc, status="rejected", rejection_reason="queue_full", http_status=429)
+            except QueueTimeoutError as exc:
+                await reject_responses_request(exc, status="timeout", rejection_reason="queue_timeout", http_status=504)
+            except Exception:
+                await key_lease.finish()
+                raise
 
-                async def anthropic_body():
-                    last_usage_payload: dict[str, Any] | None = None
-                    output_text_parts: list[str] = []
-                    yield _format_sse_event(
-                        "response.created",
-                        {
-                            "id": response_id,
-                            "object": "response",
-                            "status": "in_progress",
-                            "model": payload.model,
-                        },
-                    )
-                    try:
-                        async for chunk in stream:
-                            usage_payload = _extract_anthropic_stream_usage(chunk)
-                            if usage_payload is not None:
-                                last_usage_payload = usage_payload
-                            event_type, event_payload = _parse_anthropic_stream_event(chunk)
-                            if event_type != "content_block_delta" or not isinstance(event_payload, dict):
-                                continue
-                            delta = event_payload.get("delta")
-                            if not isinstance(delta, dict):
-                                continue
-                            if delta.get("type") != "text_delta":
-                                continue
-                            text = delta.get("text")
-                            if isinstance(text, str) and text:
-                                output_text_parts.append(text)
-                                yield _format_sse_event(
-                                    "response.output_text.delta",
-                                    {
-                                        "response_id": response_id,
-                                        "delta": text,
-                                    },
-                                )
-                    finally:
-                        await key_lease.finish()
-                        await gate.__aexit__(None, None, None)
-                        finished_at = datetime.now(timezone.utc)
-                        if last_usage_payload is not None:
-                            _record_request_metric(
-                                request.app,
-                                request_id=request_id,
-                                model_name=payload.model,
-                                protocol="responses",
-                                status="ok",
-                                started_at=started_at,
-                                finished_at=finished_at,
-                                response_payload=last_usage_payload,
-                                backend_type=route.backend_type or "external",
-                                api_key_id=auth.api_key_id,
-                            )
-                        final_output: list[dict[str, Any]] = []
-                        final_messages: list[dict[str, Any]] = list(messages_for_state)
-                        if output_text_parts:
-                            text = "".join(output_text_parts)
-                            final_output.append(
-                                {
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "content": [{"type": "output_text", "text": text}],
-                                }
-                            )
-                            final_messages.append({"role": "assistant", "content": text})
-                        upsert_response_state(
-                            request.app.state.db,
-                            response_id=response_id,
-                            request_id=request_id,
-                            model_name=payload.model,
-                            input_items=input_items,
-                            output_items=final_output,
-                            messages=final_messages,
-                            parent_response_id=payload.previous_response_id,
-                            route_name=route.name,
-                            client_protocol="responses",
-                            upstream_protocol=route.upstream_protocol,
-                            request_payload=messages_payload,
-                            output_payload={
-                                "id": response_id,
-                                "object": "response",
-                                "status": "completed",
-                                "output": final_output,
-                            },
-                        )
-                        yield _format_sse_event(
-                            "response.completed",
-                            {
-                                "id": response_id,
-                                "object": "response",
-                                "status": "completed",
-                                "model": payload.model,
-                                "output": final_output,
-                                "usage": {
-                                    "input_tokens": (last_usage_payload or {}).get("usage", {}).get("prompt_tokens"),
-                                    "output_tokens": (last_usage_payload or {}).get("usage", {}).get("completion_tokens"),
-                                    "total_tokens": (last_usage_payload or {}).get("usage", {}).get("total_tokens"),
-                                },
-                            },
-                        )
+            await key_lease.finish()
+            finished_at = datetime.now(timezone.utc)
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="responses",
+                status="ok",
+                started_at=started_at,
+                finished_at=finished_at,
+                response_payload=_responses_metric_payload_from_messages(result),
+                backend_type=route.backend_type or "external",
+                api_key_id=auth.api_key_id,
+            )
+            response_payload, assistant_messages = _responses_payload_from_anthropic(
+                message_payload=result,
+                request_payload=payload,
+                response_id=response_id,
+            )
+            persist_response_state(
+                persisted_response_id=response_id,
+                output_items=response_payload["output"],
+                messages=[*messages_for_state, *assistant_messages],
+                upstream_protocol=route.upstream_protocol or "messages",
+                request_payload=messages_payload,
+                output_payload=result,
+            )
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "ok",
+                "responses",
+                **log_context,
+            )
+            response = JSONResponse(response_payload)
+            response.headers["x-request-id"] = request_id
+            return response
 
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "streaming",
-                    "responses",
-                    **log_context,
-                )
-                response = StreamingResponse(anthropic_body(), media_type="text/event-stream")
-                response.headers["x-request-id"] = request_id
-                return response
+        async def execute_chat_sync() -> JSONResponse:
+            try:
+                async with request.app.state.request_gate.slot():
+                    result = await proxy_openai_chat_via_route(route, chat_payload, request.app.state.ctx)
+            except QueueFullError as exc:
+                await reject_responses_request(exc, status="rejected", rejection_reason="queue_full", http_status=429)
+            except QueueTimeoutError as exc:
+                await reject_responses_request(exc, status="timeout", rejection_reason="queue_timeout", http_status=504)
+            except Exception:
+                await key_lease.finish()
+                raise
 
+            await key_lease.finish()
+            finished_at = datetime.now(timezone.utc)
+            _record_request_metric(
+                request.app,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="responses",
+                status="ok",
+                started_at=started_at,
+                finished_at=finished_at,
+                response_payload=result,
+                backend_type=route.backend_type or ("external" if route.lifecycle_mode == "external" else request.app.state.ctx.backend_client.backend_type),
+                api_key_id=auth.api_key_id,
+            )
+            response_payload, assistant_messages = _responses_payload_from_chat(
+                chat_payload=result,
+                request_payload=payload,
+                response_id=response_id,
+            )
+            persist_response_state(
+                persisted_response_id=response_id,
+                output_items=response_payload["output"],
+                messages=[*messages_for_state, *assistant_messages],
+                upstream_protocol=route.upstream_protocol or "chat",
+                request_payload={
+                    **chat_payload,
+                    "model": route.resolved_upstream_model() or chat_payload.get("model"),
+                },
+                output_payload=result,
+            )
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "ok",
+                "responses",
+                **log_context,
+            )
+            response = JSONResponse(response_payload)
+            response.headers["x-request-id"] = request_id
+            return response
+
+        async def execute_chat_stream() -> StreamingResponse:
             gate = request.app.state.request_gate.slot()
             try:
                 await gate.__aenter__()
-                stream = await stream_openai_chat(chat_payload, request.app.state.ctx)
+                stream = await stream_openai_chat_via_route(route, chat_payload, request.app.state.ctx)
             except QueueFullError as exc:
-                await key_lease.reject()
-                finished_at = datetime.now(timezone.utc)
-                log_context["rejection_reason"] = "queue_full"
-                _record_request_metric(
-                    request.app,
-                    request_id=request_id,
-                    model_name=payload.model,
-                    protocol="responses",
-                    status="rejected",
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "rejected",
-                    "responses",
-                    str(exc),
-                    **log_context,
-                )
-                raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+                await reject_responses_request(exc, status="rejected", rejection_reason="queue_full", http_status=429)
             except QueueTimeoutError as exc:
-                await key_lease.reject()
-                finished_at = datetime.now(timezone.utc)
-                log_context["rejection_reason"] = "queue_timeout"
-                _record_request_metric(
-                    request.app,
-                    request_id=request_id,
-                    model_name=payload.model,
-                    protocol="responses",
-                    status="timeout",
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "timeout",
-                    "responses",
-                    str(exc),
-                    **log_context,
-                )
-                raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
+                await reject_responses_request(exc, status="timeout", rejection_reason="queue_timeout", http_status=504)
             except Exception:
                 await key_lease.reject()
                 await gate.__aexit__(None, None, None)
@@ -1983,29 +2182,25 @@ def create_app() -> FastAPI:
                             started_at=started_at,
                             finished_at=finished_at,
                             response_payload=last_usage_payload,
-                            backend_type=request.app.state.ctx.backend_client.backend_type,
+                            backend_type=route.backend_type or ("external" if route.lifecycle_mode == "external" else request.app.state.ctx.backend_client.backend_type),
                             api_key_id=auth.api_key_id,
                         )
-                    final_output: list[dict[str, Any]] = []
-                    final_messages: list[dict[str, Any]] = list(messages_for_state)
-                    if output_text_parts:
-                        text = "".join(output_text_parts)
-                        final_output.append(
-                            {
-                                "type": "message",
-                                "role": "assistant",
-                                "content": [{"type": "output_text", "text": text}],
-                            }
-                        )
-                        final_messages.append({"role": "assistant", "content": text})
-                    upsert_response_state(
-                        request.app.state.db,
-                        response_id=response_id,
-                        request_id=request_id,
-                        model_name=payload.model,
-                        input_items=input_items,
+                    final_output, assistant_messages = _responses_output_and_messages_from_text_parts(output_text_parts)
+                    persist_response_state(
+                        persisted_response_id=response_id,
                         output_items=final_output,
-                        messages=final_messages,
+                        messages=[*messages_for_state, *assistant_messages],
+                        upstream_protocol=route.upstream_protocol or "chat",
+                        request_payload={
+                            **chat_payload,
+                            "model": route.resolved_upstream_model() or chat_payload.get("model"),
+                        },
+                        output_payload={
+                            "id": response_id,
+                            "object": "response",
+                            "status": "completed",
+                            "output": final_output,
+                        },
                     )
                     yield _format_sse_event(
                         "response.completed",
@@ -2031,287 +2226,216 @@ def create_app() -> FastAPI:
             response.headers["x-request-id"] = request_id
             return response
 
-        if route.upstream_protocol == "responses":
-            upstream_payload = dict(raw)
-            upstream_payload["model"] = route.resolved_upstream_model() or payload.model
-            if previous_state is not None and route.capabilities.supports_previous_response_id_native:
-                upstream_previous_id = previous_state.get("upstream_response_id")
-                if upstream_previous_id:
-                    upstream_payload["previous_response_id"] = upstream_previous_id
-            result = await request.app.state.post_json_to(
-                route.upstream_base_url or "",
-                "/v1/responses",
-                upstream_payload,
-                headers=build_upstream_headers(route),
-            )
-            await key_lease.finish()
-            finished_at = datetime.now(timezone.utc)
-            _record_request_metric(
-                request.app,
-                request_id=request_id,
-                model_name=payload.model,
-                protocol="responses",
-                status="ok",
-                started_at=started_at,
-                finished_at=finished_at,
-                response_payload={
-                    "usage": {
-                        "prompt_tokens": result.get("usage", {}).get("input_tokens"),
-                        "completion_tokens": result.get("usage", {}).get("output_tokens"),
-                        "total_tokens": result.get("usage", {}).get("total_tokens"),
-                    }
-                },
-                backend_type=route.backend_type or request.app.state.ctx.backend_client.backend_type,
-                api_key_id=auth.api_key_id,
-            )
-            upsert_response_state(
-                request.app.state.db,
-                response_id=response_id,
-                request_id=request_id,
-                model_name=payload.model,
-                input_items=input_items,
-                output_items=result.get("output", []),
-                messages=messages_for_state,
-                parent_response_id=payload.previous_response_id,
-                route_name=route.name,
-                client_protocol="responses",
-                upstream_protocol=route.upstream_protocol,
-                upstream_response_id=result.get("id"),
-                request_payload=upstream_payload,
-                output_payload=result,
-            )
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "ok",
-                "responses",
-                **log_context,
-            )
-            response = JSONResponse(result)
-            response.headers["x-request-id"] = request_id
-            return response
+        async def execute_native_stream() -> StreamingResponse:
+            upstream_payload = build_native_upstream_payload()
 
-        if route.upstream_protocol == "messages":
-            try:
-                async with request.app.state.request_gate.slot():
+            async def native_body():
+                completed_payload: dict[str, Any] | None = None
+                try:
                     if route.lifecycle_mode == "external":
-                        result = await request.app.state.post_json_to(
+                        stream = request.app.state.stream_bytes_from(
                             route.upstream_base_url or "",
-                            "/v1/messages",
-                            messages_payload,
+                            "/v1/responses",
+                            upstream_payload,
                             headers=build_upstream_headers(route),
                         )
                     else:
-                        result = await request.app.state.ctx.backend_client.post_json("/v1/messages", messages_payload)
-            except QueueFullError as exc:
-                await key_lease.reject()
-                finished_at = datetime.now(timezone.utc)
-                log_context["rejection_reason"] = "queue_full"
-                _record_request_metric(
-                    request.app,
-                    request_id=request_id,
-                    model_name=payload.model,
-                    protocol="responses",
-                    status="rejected",
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "rejected",
-                    "responses",
-                    str(exc),
-                    **log_context,
-                )
-                raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
-            except QueueTimeoutError as exc:
-                await key_lease.reject()
-                finished_at = datetime.now(timezone.utc)
-                log_context["rejection_reason"] = "queue_timeout"
-                _record_request_metric(
-                    request.app,
-                    request_id=request_id,
-                    model_name=payload.model,
-                    protocol="responses",
-                    status="timeout",
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "timeout",
-                    "responses",
-                    str(exc),
-                    **log_context,
-                )
-                raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
-            except Exception:
-                await key_lease.finish()
-                raise
+                        stream = request.app.state.ctx.backend_client.stream_bytes("/v1/responses", upstream_payload)
+                    async for chunk in stream:
+                        text = chunk.decode("utf-8", errors="ignore")
+                        if "event: response.completed" in text:
+                            parts = text.split("data: ", 1)
+                            if len(parts) == 2:
+                                with suppress(json.JSONDecodeError, ValueError):
+                                    completed_payload = json.loads(parts[1].strip())
+                        yield chunk
+                finally:
+                    await key_lease.finish()
+                    finished_at = datetime.now(timezone.utc)
+                    if completed_payload is not None:
+                        persisted_response_id = completed_payload.get("id") or response_id
+                        _record_request_metric(
+                            request.app,
+                            request_id=request_id,
+                            model_name=payload.model,
+                            protocol="responses",
+                            status="ok",
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            response_payload=_responses_metric_payload_from_responses(completed_payload),
+                            backend_type=route.backend_type or "external",
+                            api_key_id=auth.api_key_id,
+                        )
+                        persist_response_state(
+                            persisted_response_id=persisted_response_id,
+                            output_items=completed_payload.get("output", []),
+                            messages=[*messages_for_state, *_response_output_to_messages(completed_payload.get("output"))],
+                            upstream_protocol="responses",
+                            upstream_response_id=completed_payload.get("id"),
+                            request_payload=upstream_payload,
+                            output_payload=completed_payload,
+                        )
 
-            await key_lease.finish()
-            finished_at = datetime.now(timezone.utc)
-            _record_request_metric(
-                request.app,
-                request_id=request_id,
-                model_name=payload.model,
-                protocol="responses",
-                status="ok",
-                started_at=started_at,
-                finished_at=finished_at,
-                response_payload={
-                    "usage": {
-                        "prompt_tokens": result.get("usage", {}).get("input_tokens"),
-                        "completion_tokens": result.get("usage", {}).get("output_tokens"),
-                        "total_tokens": (
-                            (result.get("usage", {}).get("input_tokens") or 0)
-                            + (result.get("usage", {}).get("output_tokens") or 0)
-                            if isinstance(result.get("usage"), dict)
-                            else None
-                        ),
-                    }
-                },
-                backend_type=route.backend_type or "external",
-                api_key_id=auth.api_key_id,
-            )
-            response_payload, assistant_messages = _responses_payload_from_anthropic(
-                message_payload=result,
-                request_payload=payload,
-                response_id=response_id,
-            )
-            upsert_response_state(
-                request.app.state.db,
-                response_id=response_id,
-                request_id=request_id,
-                model_name=payload.model,
-                input_items=input_items,
-                output_items=response_payload["output"],
-                messages=[*messages_for_state, *assistant_messages],
-                parent_response_id=payload.previous_response_id,
-                route_name=route.name,
-                client_protocol="responses",
-                upstream_protocol=route.upstream_protocol,
-                request_payload=messages_payload,
-                output_payload=result,
-            )
             write_request_log(
                 request.app.state.db,
                 request_id,
                 payload.model,
-                "ok",
+                "streaming",
                 "responses",
                 **log_context,
             )
-            response = JSONResponse(response_payload)
+            response = StreamingResponse(native_body(), media_type="text/event-stream")
             response.headers["x-request-id"] = request_id
             return response
 
-        try:
-            async with request.app.state.request_gate.slot():
-                result = await proxy_openai_chat(chat_payload, request.app.state.ctx)
-        except QueueFullError as exc:
-            await key_lease.reject()
-            finished_at = datetime.now(timezone.utc)
-            log_context["rejection_reason"] = "queue_full"
-            _record_request_metric(
-                request.app,
-                request_id=request_id,
-                model_name=payload.model,
-                protocol="responses",
-                status="rejected",
-                started_at=started_at,
-                finished_at=finished_at,
-            )
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "rejected",
-                "responses",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
-        except QueueTimeoutError as exc:
-            await key_lease.reject()
-            finished_at = datetime.now(timezone.utc)
-            log_context["rejection_reason"] = "queue_timeout"
-            _record_request_metric(
-                request.app,
-                request_id=request_id,
-                model_name=payload.model,
-                protocol="responses",
-                status="timeout",
-                started_at=started_at,
-                finished_at=finished_at,
-            )
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "timeout",
-                "responses",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
-        except Exception:
-            await key_lease.finish()
-            raise
+        async def execute_messages_stream() -> StreamingResponse:
+            gate = request.app.state.request_gate.slot()
+            try:
+                await gate.__aenter__()
+                if route.lifecycle_mode == "external":
+                    stream = request.app.state.stream_bytes_from(
+                        route.upstream_base_url or "",
+                        "/v1/messages",
+                        messages_payload,
+                        headers=build_upstream_headers(route),
+                    )
+                else:
+                    stream = request.app.state.ctx.backend_client.stream_bytes("/v1/messages", messages_payload)
+            except QueueFullError as exc:
+                await reject_responses_request(exc, status="rejected", rejection_reason="queue_full", http_status=429)
+            except QueueTimeoutError as exc:
+                await reject_responses_request(exc, status="timeout", rejection_reason="queue_timeout", http_status=504)
+            except Exception:
+                await key_lease.reject()
+                await gate.__aexit__(None, None, None)
+                raise
 
-        await key_lease.finish()
-        finished_at = datetime.now(timezone.utc)
-        _record_request_metric(
-            request.app,
-            request_id=request_id,
-            model_name=payload.model,
-            protocol="responses",
-            status="ok",
-            started_at=started_at,
-            finished_at=finished_at,
-            response_payload=result,
-            backend_type=request.app.state.ctx.backend_client.backend_type,
-            api_key_id=auth.api_key_id,
-        )
-        response_payload, assistant_messages = _responses_payload_from_chat(
-            chat_payload=result,
-            request_payload=payload,
-            response_id=response_id,
-        )
-        upsert_response_state(
-            request.app.state.db,
-            response_id=response_id,
-            request_id=request_id,
-            model_name=payload.model,
-            input_items=input_items,
-            output_items=response_payload["output"],
-            messages=[*messages_for_state, *assistant_messages],
-        )
-        write_request_log(
-            request.app.state.db,
-            request_id,
-            payload.model,
-            "ok",
-            "responses",
-            **log_context,
-        )
-        response = JSONResponse(response_payload)
-        response.headers["x-request-id"] = request_id
-        return response
+            async def anthropic_body():
+                last_usage_payload: dict[str, Any] | None = None
+                output_text_parts: list[str] = []
+                yield _format_sse_event(
+                    "response.created",
+                    {
+                        "id": response_id,
+                        "object": "response",
+                        "status": "in_progress",
+                        "model": payload.model,
+                    },
+                )
+                try:
+                    async for chunk in stream:
+                        usage_payload = _extract_anthropic_stream_usage(chunk)
+                        if usage_payload is not None:
+                            last_usage_payload = usage_payload
+                        event_type, event_payload = _parse_anthropic_stream_event(chunk)
+                        if event_type != "content_block_delta" or not isinstance(event_payload, dict):
+                            continue
+                        delta = event_payload.get("delta")
+                        if not isinstance(delta, dict):
+                            continue
+                        if delta.get("type") != "text_delta":
+                            continue
+                        text = delta.get("text")
+                        if isinstance(text, str) and text:
+                            output_text_parts.append(text)
+                            yield _format_sse_event(
+                                "response.output_text.delta",
+                                {
+                                    "response_id": response_id,
+                                    "delta": text,
+                                },
+                            )
+                finally:
+                    await key_lease.finish()
+                    await gate.__aexit__(None, None, None)
+                    finished_at = datetime.now(timezone.utc)
+                    if last_usage_payload is not None:
+                        _record_request_metric(
+                            request.app,
+                            request_id=request_id,
+                            model_name=payload.model,
+                            protocol="responses",
+                            status="ok",
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            response_payload=last_usage_payload,
+                            backend_type=route.backend_type or "external",
+                            api_key_id=auth.api_key_id,
+                        )
+                    final_output, assistant_messages = _responses_output_and_messages_from_text_parts(output_text_parts)
+                    persist_response_state(
+                        persisted_response_id=response_id,
+                        output_items=final_output,
+                        messages=[*messages_for_state, *assistant_messages],
+                        upstream_protocol=route.upstream_protocol or "messages",
+                        request_payload=messages_payload,
+                        output_payload={
+                            "id": response_id,
+                            "object": "response",
+                            "status": "completed",
+                            "output": final_output,
+                        },
+                    )
+                    yield _format_sse_event(
+                        "response.completed",
+                        {
+                            "id": response_id,
+                            "object": "response",
+                            "status": "completed",
+                            "model": payload.model,
+                            "output": final_output,
+                            "usage": {
+                                "input_tokens": (last_usage_payload or {}).get("usage", {}).get("prompt_tokens"),
+                                "output_tokens": (last_usage_payload or {}).get("usage", {}).get("completion_tokens"),
+                                "total_tokens": (last_usage_payload or {}).get("usage", {}).get("total_tokens"),
+                            },
+                        },
+                    )
+
+            write_request_log(
+                request.app.state.db,
+                request_id,
+                payload.model,
+                "streaming",
+                "responses",
+                **log_context,
+            )
+            response = StreamingResponse(anthropic_body(), media_type="text/event-stream")
+            response.headers["x-request-id"] = request_id
+            return response
+
+        if payload.stream:
+            if execution_mode == "native":
+                return await execute_native_stream()
+
+            if selected_adapter == "responses_to_messages":
+                return await execute_messages_stream()
+
+            if selected_adapter != "responses_to_chat":
+                raise HTTPException(status_code=400, detail="adapter_not_enabled_for_route")
+            return await execute_chat_stream()
+
+        if execution_mode == "native":
+            return await execute_native_sync()
+
+        if selected_adapter == "responses_to_messages":
+            return await execute_messages_sync()
+
+        if selected_adapter != "responses_to_chat":
+            raise HTTPException(status_code=400, detail="adapter_not_enabled_for_route")
+
+        return await execute_chat_sync()
 
     @app.post("/v1/messages")
     async def anthropic_messages(request: Request):
         auth = _resolve_auth(request, "inference")
         await ensure_agent_ready()
         raw = await _read_json_body(request)
-        payload = AnthropicMessagesRequest.model_validate(raw)
-        route = resolve_route(payload.model, request.app.state.ctx.models)
-        ensure_route_supports_request(
+        initial_payload = AnthropicMessagesRequest.model_validate(raw)
+        route = resolve_route(initial_payload.model, request.app.state.ctx.models)
+        sanitized_raw = strip_claude_code_builtin_tools_for_managed_messages(route, raw)
+        payload = AnthropicMessagesRequest.model_validate(sanitized_raw)
+        plan = plan_route_execution(
             route,
             type("Req", (), {
                 "client_protocol": "messages",
@@ -2322,87 +2446,53 @@ def create_app() -> FastAPI:
         request_id = _request_id(request)
         started_at = datetime.now(timezone.utc)
         log_context = _request_log_context(request, auth)
-        try:
-            key_lease = await request.app.state.api_key_gate.begin(
-                auth.api_key_id,
-                rpm_limit=auth.rpm_limit,
-                concurrency_limit=auth.concurrency_limit,
+        tool_classes_detected: list[str] = []
+        for tool in payload.tools or []:
+            if isinstance(tool, dict) and is_anthropic_function_tool(tool):
+                tool_classes_detected.append("anthropic_function_tools")
+            elif isinstance(tool, dict):
+                tool_classes_detected.append("builtin_tools")
+        log_context["metadata"] = {
+            "client_protocol": "messages",
+            "execution_mode": plan.execution_mode,
+            "adapter_selected": plan.selected_adapter,
+            "tool_classes_detected": tool_classes_detected,
+            "request_mutation": bool(sanitized_raw != raw) or plan.execution_mode == "adapter",
+            "mutation_reason": "builtin_tool_metadata_filtered" if sanitized_raw != raw else (None if plan.execution_mode == "native" else (plan.selected_adapter or "adapter_path")),
+        }
+        key_lease = await _begin_api_key_lease_or_raise(
+            request.app,
+            auth=auth,
+            request_id=request_id,
+            model_name=payload.model,
+            protocol="anthropic",
+            log_context=log_context,
+        )
+
+        async def reject_anthropic_request(exc: Exception, *, status: str, rejection_reason: str, http_status: int) -> None:
+            await _reject_request_with_metric(
+                request.app,
+                key_lease=key_lease,
+                exc=exc,
+                request_id=request_id,
+                model_name=payload.model,
+                protocol="anthropic",
+                status=status,
+                rejection_reason=rejection_reason,
+                http_status=http_status,
+                started_at=started_at,
+                log_context=log_context,
             )
-        except ApiKeyRateLimitError as exc:
-            log_context["rejection_reason"] = "rpm_limit_exceeded"
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "rejected",
-                "anthropic",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
-        except ApiKeyConcurrencyError as exc:
-            log_context["rejection_reason"] = "concurrency_limit_exceeded"
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "rejected",
-                "anthropic",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+
         if payload.stream:
             gate = request.app.state.request_gate.slot()
             try:
                 await gate.__aenter__()
                 stream = await stream_anthropic_messages(payload.to_backend_payload(payload.model), request.app.state.ctx)
             except QueueFullError as exc:
-                await key_lease.reject()
-                finished_at = datetime.now(timezone.utc)
-                log_context["rejection_reason"] = "queue_full"
-                _record_request_metric(
-                    request.app,
-                    request_id=request_id,
-                    model_name=payload.model,
-                    protocol="anthropic",
-                    status="rejected",
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "rejected",
-                    "anthropic",
-                    str(exc),
-                    **log_context,
-                )
-                raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+                await reject_anthropic_request(exc, status="rejected", rejection_reason="queue_full", http_status=429)
             except QueueTimeoutError as exc:
-                await key_lease.reject()
-                finished_at = datetime.now(timezone.utc)
-                log_context["rejection_reason"] = "queue_timeout"
-                _record_request_metric(
-                    request.app,
-                    request_id=request_id,
-                    model_name=payload.model,
-                    protocol="anthropic",
-                    status="timeout",
-                    started_at=started_at,
-                    finished_at=finished_at,
-                )
-                write_request_log(
-                    request.app.state.db,
-                    request_id,
-                    payload.model,
-                    "timeout",
-                    "anthropic",
-                    str(exc),
-                    **log_context,
-                )
-                raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
+                await reject_anthropic_request(exc, status="timeout", rejection_reason="queue_timeout", http_status=504)
             except Exception:
                 await key_lease.reject()
                 await gate.__aexit__(None, None, None)
@@ -2430,7 +2520,7 @@ def create_app() -> FastAPI:
                             started_at=started_at,
                             finished_at=finished_at,
                             response_payload=last_usage_payload,
-                            backend_type=request.app.state.ctx.backend_client.backend_type,
+                            backend_type=_resolved_metric_backend_type(request.app, route),
                             api_key_id=auth.api_key_id,
                         )
 
@@ -2450,51 +2540,9 @@ def create_app() -> FastAPI:
             async with request.app.state.request_gate.slot():
                 result = await proxy_anthropic_messages(payload.to_backend_payload(payload.model), request.app.state.ctx)
         except QueueFullError as exc:
-            await key_lease.reject()
-            finished_at = datetime.now(timezone.utc)
-            log_context["rejection_reason"] = "queue_full"
-            _record_request_metric(
-                request.app,
-                request_id=request_id,
-                model_name=payload.model,
-                protocol="anthropic",
-                status="rejected",
-                started_at=started_at,
-                finished_at=finished_at,
-            )
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "rejected",
-                "anthropic",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=429, detail=str(exc), headers={"x-request-id": request_id}) from exc
+            await reject_anthropic_request(exc, status="rejected", rejection_reason="queue_full", http_status=429)
         except QueueTimeoutError as exc:
-            await key_lease.reject()
-            finished_at = datetime.now(timezone.utc)
-            log_context["rejection_reason"] = "queue_timeout"
-            _record_request_metric(
-                request.app,
-                request_id=request_id,
-                model_name=payload.model,
-                protocol="anthropic",
-                status="timeout",
-                started_at=started_at,
-                finished_at=finished_at,
-            )
-            write_request_log(
-                request.app.state.db,
-                request_id,
-                payload.model,
-                "timeout",
-                "anthropic",
-                str(exc),
-                **log_context,
-            )
-            raise HTTPException(status_code=504, detail=str(exc), headers={"x-request-id": request_id}) from exc
+            await reject_anthropic_request(exc, status="timeout", rejection_reason="queue_timeout", http_status=504)
         except Exception:
             await key_lease.finish()
             raise
@@ -2509,7 +2557,7 @@ def create_app() -> FastAPI:
             started_at=started_at,
             finished_at=finished_at,
             response_payload=result,
-            backend_type=request.app.state.ctx.backend_client.backend_type,
+            backend_type=_resolved_metric_backend_type(request.app, route),
             api_key_id=auth.api_key_id,
         )
         write_request_log(
@@ -2523,5 +2571,18 @@ def create_app() -> FastAPI:
         response = JSONResponse(result)
         response.headers["x-request-id"] = request_id
         return response
+
+    @app.post("/v1/messages/count_tokens")
+    async def anthropic_messages_count_tokens(request: Request):
+        _resolve_auth(request, "inference")
+        raw = await _read_json_body(request)
+        model = raw.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise HTTPException(status_code=400, detail="model is required")
+        messages = raw.get("messages")
+        if not isinstance(messages, list):
+            raise HTTPException(status_code=400, detail="messages must be a list")
+        resolve_route(model, request.app.state.ctx.models)
+        return JSONResponse({"input_tokens": _estimate_anthropic_input_tokens(raw)})
 
     return app

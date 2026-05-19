@@ -34,10 +34,10 @@ function ToggleButton({
 }
 
 export function ApiKeysView() {
-  const {apiKeys, createApiKey, updateApiKey, deleteApiKey, loading, t, readinessOverview} = useAppContext();
-  const [copyDone, setCopyDone] = useState(false);
+  const {apiKeys, createApiKey, updateApiKey, deleteApiKey, loading, t, readinessOverview, copyToClipboard} = useAppContext();
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [visibleSecrets, setVisibleSecrets] = useState<Record<number, boolean>>({});
 
   const [name, setName] = useState('Web Console');
   const [scopeAdmin, setScopeAdmin] = useState(true);
@@ -79,13 +79,6 @@ export function ApiKeysView() {
     }
   }
 
-  async function copyText(text: string) {
-    if (!text) return;
-    await navigator.clipboard.writeText(text);
-    setCopyDone(true);
-    setTimeout(() => setCopyDone(false), 1200);
-  }
-
   async function handleToggle(key: ApiKeyRow) {
     setBusyId(key.id);
     try {
@@ -104,6 +97,10 @@ export function ApiKeysView() {
     }
   }
 
+  function toggleSecretVisibility(keyId: number) {
+    setVisibleSecrets((previous) => ({...previous, [keyId]: !previous[keyId]}));
+  }
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 h-full flex flex-col">
       {readinessOverview?.base_urls && (
@@ -118,7 +115,7 @@ export function ApiKeysView() {
               <code className="flex-1 bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm font-mono text-blue-700">
                 {readinessOverview.base_urls.local}
               </code>
-              <button onClick={() => void copyText(readinessOverview.base_urls.local)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')}>
+              <button onClick={() => void copyToClipboard(readinessOverview.base_urls.local)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')}>
                 <Copy className="w-4 h-4" />
               </button>
             </div>
@@ -127,7 +124,7 @@ export function ApiKeysView() {
               <code className="flex-1 bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm font-mono text-blue-700">
                 {readinessOverview.base_urls.lan}
               </code>
-              <button onClick={() => void copyText(readinessOverview.base_urls.lan)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')}>
+              <button onClick={() => void copyToClipboard(readinessOverview.base_urls.lan)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')}>
                 <Copy className="w-4 h-4" />
               </button>
             </div>
@@ -244,29 +241,29 @@ export function ApiKeysView() {
                     </td>
                     <td className="px-5 py-4">
                       <div className="space-y-2">
-                        <div className="flex items-center gap-1">
-                          <div className="font-mono text-xs text-slate-600">{key.masked_key}</div>
-                          <button onClick={() => void copyText(key.masked_key)} className="p-0.5 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyMasked')}>
+                        <div className="grid grid-cols-[minmax(0,36ch)_auto_auto] items-center gap-1 max-w-[28rem]">
+                          <div
+                            data-testid={`api-key-secret-${key.id}`}
+                            className="w-[36ch] max-w-full overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-slate-600"
+                          >
+                            {key.plain_secret && visibleSecrets[key.id] ? key.plain_secret : key.masked_key}
+                          </div>
+                          <button
+                            onClick={() => void copyToClipboard(key.plain_secret || key.masked_key)}
+                            className="p-0.5 text-slate-400 hover:text-blue-600 transition-colors"
+                            title={key.plain_secret ? t('keys.copySecret') : t('keys.copyMasked')}
+                          >
                             <Copy className="w-3.5 h-3.5" />
                           </button>
+                          {key.plain_secret && (
+                            <button
+                              onClick={() => toggleSecretVisibility(key.id)}
+                              className="w-10 px-1.5 py-0.5 text-[10px] border border-slate-200 rounded text-slate-500 hover:text-slate-700 hover:bg-slate-50 transition-colors"
+                            >
+                              {visibleSecrets[key.id] ? t('keys.hide') : t('keys.show')}
+                            </button>
+                          )}
                         </div>
-                        {key.plain_secret && (
-                          <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 px-2.5 py-2">
-                            <div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-emerald-700/80">
-                              {t('keys.liveKey')}
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <div className="font-mono text-xs text-emerald-800 break-all">{key.plain_secret}</div>
-                              <button
-                                onClick={() => void copyText(key.plain_secret!)}
-                                className="shrink-0 p-0.5 text-emerald-600 hover:text-emerald-800 transition-colors"
-                                title={t('keys.copySecret')}
-                              >
-                                <Copy className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        )}
                       </div>
                     </td>
                     <td className="px-5 py-4">

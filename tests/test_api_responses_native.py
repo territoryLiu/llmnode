@@ -268,8 +268,24 @@ def test_native_responses_stream_posts_to_upstream_responses_stream():
                         body += chunk
                     assert "event: response.output_text.delta" in body
                     assert "event: response.completed" in body
+                    completed_json = body.split("event: response.completed\ndata: ", 1)[1].strip()
+                    response_id = json.loads(completed_json)["id"]
                 assert calls[0][1] == "/v1/responses"
                 assert calls[0][3] == {"authorization": "Bearer sk-upstream-openai-responses-stream"}
+        state = app.state.db.execute(
+            """
+            SELECT route_name, client_protocol, upstream_protocol, request_json, output_json
+            FROM response_states
+            WHERE response_id = ?
+            """,
+            (response_id,),
+        ).fetchone()
+        assert state is not None
+        assert state[0] == "gpt-4o"
+        assert state[1] == "responses"
+        assert state[2] == "responses"
+        assert json.loads(state[3])["model"] == "gpt-4o"
+        assert json.loads(state[4])["id"] == "resp_upstream_stream_1"
 
     asyncio.run(run())
 

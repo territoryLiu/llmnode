@@ -104,6 +104,26 @@ def test_admin_status_includes_runtime_config():
     asyncio.run(run())
 
 
+def test_admin_status_options_preflight_allows_web_console_origin():
+    async def run():
+        app = create_app()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.options(
+                "/admin/status",
+                headers={
+                    "Origin": "http://127.0.0.1:5173",
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": "x-api-key",
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+            assert "x-api-key" in resp.headers["access-control-allow-headers"].lower()
+
+    asyncio.run(run())
+
+
 def test_chat_completions_passes_through_real_model_name():
     async def run():
         app = create_app()
@@ -342,7 +362,7 @@ def test_chat_completions_rejects_external_non_chat_route():
                 },
             )
             assert resp.status_code == 400
-            assert resp.json()["detail"] == "unsupported_route_protocol_combination"
+            assert resp.json()["detail"] == "native_protocol_not_supported"
 
     asyncio.run(run())
 
@@ -431,6 +451,7 @@ def test_admin_request_logs_endpoint_exists():
             assert "logs" in payload
             assert isinstance(payload["logs"], list)
             assert len(payload["logs"]) >= 1
+            assert payload["logs"][0]["metadata"]["client_protocol"] == "chat"
 
     asyncio.run(run())
 
@@ -460,6 +481,8 @@ def test_admin_models_can_be_updated():
             updated = next(item for item in models if item["name"] == original["name"])
             assert updated["display_name"] == "Updated Name"
             assert updated["enabled"] is False
+            assert updated["native_protocols_json"] == ["chat", "responses", "messages"]
+            assert updated["tool_policies_json"]["anthropic_function_tools"] is True
 
     asyncio.run(run())
 

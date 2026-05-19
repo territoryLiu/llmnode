@@ -6,6 +6,11 @@ import {defineConfig, loadEnv} from 'vite';
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   const proxyTarget = env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:4000';
+  const proxyApiKey = env.VITE_API_PROXY_KEY || '';
+
+  function proxyHeaders() {
+    return proxyApiKey ? {'x-api-key': proxyApiKey} : {};
+  }
 
   return {
     plugins: [react(), tailwindcss()],
@@ -31,14 +36,17 @@ export default defineConfig(({mode}) => {
         '/admin': {
           target: proxyTarget,
           changeOrigin: true,
+          headers: proxyHeaders(),
         },
         '/health': {
           target: proxyTarget,
           changeOrigin: true,
+          headers: proxyHeaders(),
         },
         '/v1': {
           target: proxyTarget,
           changeOrigin: true,
+          headers: proxyHeaders(),
         },
       },
     },

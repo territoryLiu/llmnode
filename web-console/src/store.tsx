@@ -22,6 +22,14 @@ export interface RequestLog {
   client_ip: string | null;
   user_agent: string | null;
   rejection_reason: string | null;
+  metadata: {
+    client_protocol?: string;
+    execution_mode?: string;
+    adapter_selected?: string | null;
+    tool_classes_detected?: string[];
+    request_mutation?: boolean;
+    mutation_reason?: string | null;
+  };
 }
 
 export interface RequestLogsResponse {
@@ -108,6 +116,29 @@ export interface ModelRouteRow {
     supports_builtin_tools: boolean;
     supports_previous_response_id_native: boolean;
     supports_json_schema: boolean;
+  };
+  native_protocols_json: string[];
+  adapter_policies_json: string[];
+  tool_policies_json: {
+    openai_function_tools?: boolean;
+    anthropic_function_tools?: boolean;
+    builtin_tools?: boolean;
+  };
+  protocol_features_json: {
+    stream?: boolean;
+    count_tokens?: boolean;
+    json_schema?: boolean;
+    previous_response_id?: boolean;
+  };
+  recommended_runtime_semantics?: {
+    native_protocols_json: string[];
+    adapter_policies_json: string[];
+    protocol_features_json: {
+      stream?: boolean;
+      count_tokens?: boolean;
+      json_schema?: boolean;
+      previous_response_id?: boolean;
+    };
   };
 }
 
@@ -344,6 +375,10 @@ interface UpdateModelRoutePayload {
   upstream_auth_kind?: 'none' | 'bearer' | 'x_api_key';
   upstream_auth_ref?: string | null;
   capabilities_json?: ModelRouteRow['capabilities_json'];
+  native_protocols_json?: string[];
+  adapter_policies_json?: string[];
+  tool_policies_json?: ModelRouteRow['tool_policies_json'];
+  protocol_features_json?: ModelRouteRow['protocol_features_json'];
 }
 
 interface CreateModelRoutePayload {
@@ -357,6 +392,10 @@ interface CreateModelRoutePayload {
   upstream_auth_ref?: string | null;
   enabled?: boolean;
   capabilities_json?: ModelRouteRow['capabilities_json'];
+  native_protocols_json?: string[];
+  adapter_policies_json?: string[];
+  tool_policies_json?: ModelRouteRow['tool_policies_json'];
+  protocol_features_json?: ModelRouteRow['protocol_features_json'];
 }
 
 interface LoadingState {
@@ -378,11 +417,14 @@ interface AppState {
   pageTitle: string;
   apiBase: string;
   setApiBase: (url: string) => void;
-  apiKey: string;
-  setApiKey: (key: string) => void;
   sseConnected: boolean;
   globalError: string | null;
   setGlobalError: (error: string | null) => void;
+  copyFeedback: {
+    message: string;
+    visible: boolean;
+  } | null;
+  copyToClipboard: (value: string, message?: string) => Promise<void>;
   lastUpdated: Date | null;
   snapshot: AdminSnapshot | null;
   snapshotHistory: SnapshotHistoryPoint[];
@@ -438,17 +480,12 @@ interface AppState {
 
 function inferDefaultApiBase(): string {
   if (typeof window === 'undefined') {
-    return 'http://127.0.0.1:4000';
+    return '/';
   }
-  const {protocol, hostname, port} = window.location;
-  if (port === '4000') {
-    return window.location.origin;
-  }
-  return `${protocol}//${hostname}:4000`;
+  return window.location.origin;
 }
 
 const defaultApiBase = localStorage.getItem('vllm-console-api-base') || inferDefaultApiBase();
-const defaultApiKey = localStorage.getItem('vllm-console-api-key') || '';
 
 const AppContext = createContext<AppState | undefined>(undefined);
 
@@ -464,10 +501,9 @@ function buildUrl(apiBase: string, path: string): string {
   return new URL(path, resolveApiBase(apiBase)).toString();
 }
 
-function authHeaders(apiKey: string, headers?: HeadersInit): HeadersInit {
+function authHeaders(headers?: HeadersInit): HeadersInit {
   return {
     Accept: 'application/json',
-    'x-api-key': apiKey,
     ...headers,
   };
 }
@@ -496,9 +532,9 @@ export function AppProvider({children}: {children: ReactNode}) {
   const [currentPage, setCurrentPage] = useState<Page>('overview');
   const [locale, setLocaleState] = useState<Locale>(readStoredLocale());
   const [apiBase, setApiBase] = useState(defaultApiBase);
-  const [apiKey, setApiKey] = useState(defaultApiKey);
   const [sseConnected, setSseConnected] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState<{message: string; visible: boolean} | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [snapshot, setSnapshot] = useState<AdminSnapshot | null>(null);
   const [snapshotHistory, setSnapshotHistory] = useState<SnapshotHistoryPoint[]>([]);
@@ -523,14 +559,12 @@ export function AppProvider({children}: {children: ReactNode}) {
   });
   const streamAbortRef = useRef<AbortController | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const copyFeedbackHideTimerRef = useRef<number | null>(null);
+  const copyFeedbackClearTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     localStorage.setItem('vllm-console-api-base', apiBase);
   }, [apiBase]);
-
-  useEffect(() => {
-    localStorage.setItem('vllm-console-api-key', apiKey);
-  }, [apiKey]);
 
   useEffect(() => {
     writeStoredLocale(locale);
@@ -548,10 +582,37 @@ export function AppProvider({children}: {children: ReactNode}) {
     return translate(locale, key, vars);
   }
 
+  async function copyToClipboard(value: string, message?: string) {
+    if (!value) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      if (copyFeedbackHideTimerRef.current) {
+        window.clearTimeout(copyFeedbackHideTimerRef.current);
+      }
+      if (copyFeedbackClearTimerRef.current) {
+        window.clearTimeout(copyFeedbackClearTimerRef.current);
+      }
+      setCopyFeedback({message: message ?? t('common.copied'), visible: true});
+      copyFeedbackHideTimerRef.current = window.setTimeout(() => {
+        setCopyFeedback((previous) => (previous ? {...previous, visible: false} : null));
+        copyFeedbackHideTimerRef.current = null;
+      }, 1500);
+      copyFeedbackClearTimerRef.current = window.setTimeout(() => {
+        setCopyFeedback(null);
+        copyFeedbackClearTimerRef.current = null;
+      }, 1900);
+    } catch (error) {
+      setGlobalError(toErrorMessage(error, '复制失败'));
+      throw error;
+    }
+  }
+
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(buildUrl(apiBase, path), {
       ...init,
-      headers: authHeaders(apiKey, init?.headers),
+      headers: authHeaders(init?.headers),
     });
 
     if (!response.ok) {
@@ -693,7 +754,7 @@ export function AppProvider({children}: {children: ReactNode}) {
     try {
       const agentBase = apiBase.replace(/\/+$/, '').replace(/:\d+$/, ':4010');
       const payload = await fetch(`${agentBase}/admin/diagnostics/status`, {
-        headers: {Accept: 'application/json'},
+        headers: authHeaders(),
       });
       if (payload.ok) {
         const data = await payload.json() as DiagnosticsStatus;
@@ -757,7 +818,10 @@ export function AppProvider({children}: {children: ReactNode}) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
     });
-    setApiKeys((previous) => [{...response.key, plain_secret: response.secret}, ...previous]);
+    setApiKeys((previous) => {
+      const nextKey = {...response.key, plain_secret: response.secret};
+      return [nextKey, ...previous.filter((item) => item.id !== nextKey.id)];
+    });
     setLastUpdated(new Date());
     setGlobalError(null);
     return response;
@@ -864,7 +928,7 @@ export function AppProvider({children}: {children: ReactNode}) {
       params.set('query', options.query.trim());
     }
     const response = await fetch(buildUrl(apiBase, `/admin/request-logs/export?${params.toString()}`), {
-      headers: authHeaders(apiKey),
+      headers: authHeaders(),
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
@@ -909,7 +973,7 @@ export function AppProvider({children}: {children: ReactNode}) {
 
       try {
         const response = await fetch(buildUrl(apiBase, '/admin/stream?interval=3'), {
-          headers: authHeaders(apiKey),
+          headers: authHeaders(),
           signal: controller.signal,
           cache: 'no-store',
         });
@@ -977,6 +1041,14 @@ export function AppProvider({children}: {children: ReactNode}) {
     return () => {
       disposed = true;
       setSseConnected(false);
+      if (copyFeedbackHideTimerRef.current) {
+        window.clearTimeout(copyFeedbackHideTimerRef.current);
+        copyFeedbackHideTimerRef.current = null;
+      }
+      if (copyFeedbackClearTimerRef.current) {
+        window.clearTimeout(copyFeedbackClearTimerRef.current);
+        copyFeedbackClearTimerRef.current = null;
+      }
       if (reconnectTimerRef.current) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
@@ -986,7 +1058,7 @@ export function AppProvider({children}: {children: ReactNode}) {
         streamAbortRef.current = null;
       }
     };
-  }, [apiBase, apiKey]);
+  }, [apiBase]);
 
   const pageTitle = getPageLabel(currentPage, locale);
 
@@ -1002,11 +1074,11 @@ export function AppProvider({children}: {children: ReactNode}) {
         pageTitle,
         apiBase,
         setApiBase,
-        apiKey,
-        setApiKey,
         sseConnected,
         globalError,
         setGlobalError,
+        copyFeedback,
+        copyToClipboard,
         lastUpdated,
         snapshot,
         snapshotHistory,

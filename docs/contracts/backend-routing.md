@@ -76,6 +76,11 @@
 - `upstream_auth_kind`
 - `upstream_auth_ref`
 - `capabilities_json`
+- `native_protocols_json`
+- `adapter_policies_json`
+- `tool_policies_json`
+- `protocol_features_json`
+- `recommended_runtime_semantics`
 - `enabled`
 - `source_kind`
 - `source_ref`
@@ -108,6 +113,18 @@
   - phase1 当前正式语义：环境变量名，而不是数据库内嵌 secret
 - `capabilities_json`
   - 表示该 route 可声明的协议与能力边界
+- `native_protocols_json`
+  - 表示该 route 当前持久化的原生协议声明
+- `adapter_policies_json`
+  - 表示该 route 当前持久化的协议适配白名单
+- `tool_policies_json`
+  - 表示该 route 当前持久化的工具治理开关
+- `protocol_features_json`
+  - 表示该 route 当前持久化的协议特性开关
+- `recommended_runtime_semantics`
+  - 表示控制面基于 route 基础字段派生出的推荐 runtime 默认
+  - 当前由 `llmnode/models.py` 的 `ModelRoute.recommended_runtime_semantics()` 生成
+  - 当前用于管理台的“风险提示 / 恢复推荐默认 / 协议切换默认值”闭环
 - `enabled`
   - 控制逻辑模型是否对正式 API 暴露
 - `source_kind`
@@ -183,13 +200,51 @@
 - `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值（`_VALID_BACKEND_TYPES`）
 - 协议入口当前的 route-aware 分发状态：
   - `/v1/responses`
-    - 可按 route 选择 `native responses`、`responses -> chat` 或 `responses -> messages` 适配
+    - 先按 route 的 `native_protocols` 判定是否原生支持 `responses`
+    - 仅当 route 显式声明 `adapter_policies` 时，才允许 `responses -> chat` 或 `responses -> messages`
+    - 若既非原生支持、也未显式开启 adapter，则返回 `native_protocol_not_supported` 或 `adapter_not_enabled_for_route`
   - `/v1/chat/completions`
-    - `managed_local + chat` 继续走本地后端
+    - `managed_local + vLLM` 当前按原生 chat path 走本地后端
     - `external + chat` 已可直连外部 `/v1/chat/completions`
   - `/v1/messages`
-    - `managed_local + chat` 继续保留现有 anthropic facade 兼容路径
+    - `managed_local + vLLM` 当前按原生 messages path 服务本地后端
+    - 仍保留 Claude Code builtin metadata 的最小过滤；但 Anthropic function tools 已按原生语义透传，不再被误判成 builtin
+    - `/v1/messages/count_tokens` 已提供最小兼容实现，供 Claude Code 等客户端做协议探测
+    - 当前已验证本地后端可通过 `/v1/messages` 返回 `tool_use`；真正仍受限的只有 builtin tools，本地 route 现按 `builtin_tools_not_supported` 拒绝
     - `external + messages` 已可直连外部 `/v1/messages`
+
+- route 运行时治理语义当前正式分成四层：
+  - `native_protocols`
+  - `adapter_policies`
+  - `tool_policies`
+  - `protocol_features`
+- 在持久化与管理面返回里，这四层当前正式对应：
+  - `native_protocols_json`
+  - `adapter_policies_json`
+  - `tool_policies_json`
+  - `protocol_features_json`
+- `recommended_runtime_semantics` 当前表示这四层的推荐默认：
+  - `managed_local + vllm`
+    - 默认原生支持 `chat / responses / messages`
+    - 默认不启用 adapter
+  - `external`
+    - 默认 `native_protocols_json = [upstream_protocol]`
+    - 默认 `adapter_policies_json = []`
+    - 默认 `protocol_features_json.count_tokens = (upstream_protocol == "messages")`
+- 其中工具治理当前正式拆成三类：
+  - `openai_function_tools`
+  - `anthropic_function_tools`
+  - `builtin_tools`
+- gateway 当前正式原则：
+  - `native pass-through first`
+  - `adapter opt-in only`
+  - `governance without silent mutation`
+- 客户端兼容当前正式按“协议类型”治理，而不是按“客户端品牌”治理：
+  - `Claude Code`
+  - `Codex`
+  - `Cherry Studio`
+  - 其他 `chat / responses / messages` 客户端
+- 只要 route 原生支持客户端协议，gateway 当前不应因为请求来自某个特定客户端品牌，就额外重写业务 payload
 
 因此当前结论是：字段层面已开始从“本地后端类型”与“上游协议类型”两层语义拆分；控制面（`control.py`、`service.py`）当前仍主要按 `backend_type` 驱动本地受控路径。
 
@@ -202,7 +257,8 @@
   - `llmnode/models.py` 会为缺省路由补 `lifecycle_mode="managed_local"`
   - `llmnode/models.py` 会为缺省路由补 `upstream_protocol="chat"`
 - 存储约束
-  - `llmnode/storage/db.py` 中 `model_routes` 应持久化 `upstream_protocol / lifecycle_mode / capabilities_json / source_kind / source_ref / stale`
+  - `llmnode/storage/db.py` 中 `model_routes` 应持久化 `upstream_protocol / lifecycle_mode / capabilities_json / native_protocols_json / adapter_policies_json / tool_policies_json / protocol_features_json / source_kind / source_ref / stale`
+  - `upsert_model_route()` 当前正式会在调用方未显式提供 runtime 四层字段时，按 `ModelRoute.runtime_capabilities()` 自动补齐后再落库
 - 管理面约束
   - `llmnode/api/app.py` 的 `/admin/models/{name}` 接受 `vllm / llama.cpp / sglang`
   - `lifecycle_mode` 仅允许 `managed_local / external`
@@ -218,9 +274,11 @@
   - 管理台前端当前会把 `profile_seed` route 的 `lifecycle_mode` 选择器锁定，防止用户走到后端 409 才知道不允许转换
   - 管理台前端当前会对 `stale + profile_seed` route 展示“已脱离当前 profile 默认供给、需人工确认”的治理提示
   - `stale + profile_seed` route 当前不允许直接重新启用；如需恢复，应切回来源 profile，或新建 `manual` route 承接
+  - `/admin/status` 与 `GET /admin/models` 当前会为每条 route 返回 `recommended_runtime_semantics`
   - 启动 seed 的 route reconcile 结果当前会作为结构化事件写入 `/admin/events`
   - `route_marked_stale` 事件当前至少包含 `route_name / source_kind / source_ref / action=marked_stale`
   - `route_manual_preserved` 事件当前至少包含 `route_name / source_kind / source_ref / action=preserved`
+  - `request_logs` 当前应保留 `metadata_json`，至少可记录 `client_protocol / execution_mode / adapter_selected / request_mutation`
 - API 暴露约束
   - `enabled=false` 的逻辑模型不应出现在正式模型列表里
 
@@ -239,7 +297,93 @@
 - 后端差异不应直接暴露给客户端
 - 同一逻辑模型在任一时刻应只绑定一个正式后端目标
 
-## 10. 当前与未来的差异
+## 10. Gateway 治理边界
+
+gateway 当前正式允许做的事情：
+
+- 鉴权
+- 限流与并发治理
+- 逻辑模型到 route 的解析
+- 上游目标地址与 model 名映射
+- 上游鉴权头注入
+- 审计与日志记录
+- 基于 route 能力做放行、拒绝或显式 adapter 决策
+
+gateway 当前不应做的事情：
+
+- 因为客户端来自 `Claude Code / Codex / Cherry Studio` 就静默改写协议语义
+- 在 route 已原生支持客户端协议时重写业务 payload 主体
+- 把未显式启用的 adapter 当成默认兜底路径
+- 通过剥字段、改字段把“不支持”伪装成“兼容”
+
+对“业务 payload 主体”的当前正式理解至少包括：
+
+- `messages`
+- `input`
+- `tools`
+- `tool_choice`
+- `response_format`
+- `stream`
+- `previous_response_id`
+- Anthropic function tool 的 `name / description / input_schema`
+
+唯一仍允许的最小协议清理边界是：
+
+- 对工程客户端默认附带的 builtin tool metadata 做最小过滤
+- 该过滤只用于避免把 builtin tool 元数据误透传到不支持 builtin tools 的后端
+- 该过滤不应影响 Anthropic function tools 的原生透传
+
+## 11. 工程客户端兼容边界
+
+当前正式兼容边界如下：
+
+- `Claude Code`
+  - 走 `/v1/messages`
+  - Anthropic function tools 当前按原生语义透传
+  - `/v1/messages/count_tokens` 已提供最小兼容实现，供工程模式探测
+  - builtin tools 仍默认不开放，不支持时返回 `builtin_tools_not_supported`
+- `Codex`
+  - 若其请求最终落在 route 原生支持的 `chat / responses / messages` 协议上，gateway 当前应按原生透传处理
+  - 不应因为其工程代理属性就引入额外 payload 语义改写
+- `Cherry Studio` 等 chat 客户端
+  - 若 route 原生支持 `chat` 或 `responses`，gateway 当前应直接按原生协议透传
+  - 不应为此类客户端额外套一层协议转换或字段清洗
+
+因此当前正式兼容原则不是“为某个客户端做专门魔改”，而是：
+
+- 客户端选择协议
+- route 声明原生支持或显式 adapter
+- gateway 只负责治理和分发
+
+## 12. 错误与日志语义
+
+当前协议治理至少应在错误与日志中体现以下语义：
+
+- 若客户端协议不在 route 的 `native_protocols` 中，且 route 未显式开启对应 adapter：
+  - 返回 `native_protocol_not_supported` 或 `adapter_not_enabled_for_route`
+- 若请求包含 builtin tools，且 route 未显式允许：
+  - 返回 `builtin_tools_not_supported`
+
+`request_logs.metadata_json` 当前至少应能表达：
+
+- `client_protocol`
+- `execution_mode`
+  - `native`
+  - `adapter`
+- `adapter_selected`
+- `request_mutation`
+
+当前正式期望是：
+
+- native pass-through 路径：
+  - `execution_mode = native`
+  - `request_mutation = false`
+- adapter 路径：
+  - `execution_mode = adapter`
+  - `request_mutation = true`
+  - `adapter_selected` 记录具体 adapter 名称
+
+## 13. 当前与未来的差异
 
 当前正式状态：
 
@@ -259,7 +403,7 @@
 - 性能指标采集的多维分组与时间窗口查询
 - route 生命周期管理闭环：新增 / 删除 / 持久化策略与 catalog 同步边界
 
-## 11. 诊断 API 端点
+## 14. 诊断 API 端点
 
 Agent 服务（`llmnode/agent/service.py`）暴露以下诊断 API 端点：
 
@@ -272,7 +416,7 @@ Agent 服务（`llmnode/agent/service.py`）暴露以下诊断 API 端点：
 
 这些端点供管理台前端和外部监控系统使用，返回 JSON 格式数据。
 
-## 12. 管理台 API 端点
+## 15. 管理台 API 端点
 
 网关服务（`llmnode/api/app.py`）暴露以下管理台 API 端点：
 
@@ -287,7 +431,7 @@ Agent 服务（`llmnode/agent/service.py`）暴露以下诊断 API 端点：
 - `PATCH /admin/keys/{id}` - 更新 API Key 状态/名称/权限
 - `DELETE /admin/keys/{id}` - 删除 API Key
 
-## 12. 长期扩展方向
+## 16. 长期扩展方向
 
 后续三后端落地后，本契约应继续扩展：
 
@@ -298,7 +442,7 @@ Agent 服务（`llmnode/agent/service.py`）暴露以下诊断 API 端点：
 - `tool_calling_capability`
 - `streaming_capability`
 
-## 13. 文档回流要求
+## 17. 文档回流要求
 
 如果路由字段或后端类型发生变化，应至少检查是否同步更新：
 

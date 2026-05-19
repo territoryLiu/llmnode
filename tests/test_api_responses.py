@@ -5,13 +5,14 @@ from unittest.mock import patch
 import httpx
 
 from llmnode.api.app import create_app
+from llmnode.config import load_settings
 from llmnode.models import ModelCapabilities, ModelRoute
 from llmnode.proxy.vllm_client import VLLMClient
 from llmnode.security import hash_api_key
 from llmnode.storage.db import create_api_key
 
 
-TEST_MODEL = "qwen36-27b-fp8"
+TEST_MODEL = load_settings().vllm.model_name
 
 
 def seed_inference_key(app, secret: str = "sk-responses-test") -> str:
@@ -34,26 +35,20 @@ class ResponsesSyncFakeClient(VLLMClient):
 
     async def post_json(self, path, payload):
         self.calls.append((path, payload))
-        assert path == "/v1/chat/completions"
+        assert path == "/v1/responses"
         return {
-            "id": "chatcmpl_resp_sync",
-            "object": "chat.completion",
+            "id": "resp_sync_1",
+            "object": "response",
+            "status": "completed",
             "model": payload["model"],
-            "choices": [
+            "output": [
                 {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": "hello from responses",
-                    },
-                    "finish_reason": "stop",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hello from responses"}],
                 }
             ],
-            "usage": {
-                "prompt_tokens": 5,
-                "completion_tokens": 7,
-                "total_tokens": 12,
-            },
+            "usage": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
         }
 
 
@@ -65,35 +60,21 @@ class ResponsesToolFakeClient(VLLMClient):
         return True
 
     async def post_json(self, path, payload):
+        assert path == "/v1/responses"
         return {
-            "id": "chatcmpl_resp_tool",
-            "object": "chat.completion",
+            "id": "resp_tool_1",
+            "object": "response",
+            "status": "completed",
             "model": payload["model"],
-            "choices": [
+            "output": [
                 {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": "call_1",
-                                "type": "function",
-                                "function": {
-                                    "name": "run_code",
-                                    "arguments": "{\"code\":\"print(1)\"}",
-                                },
-                            }
-                        ],
-                    },
-                    "finish_reason": "tool_calls",
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "run_code",
+                    "arguments": "{\"code\":\"print(1)\"}",
                 }
             ],
-            "usage": {
-                "prompt_tokens": 9,
-                "completion_tokens": 4,
-                "total_tokens": 13,
-            },
+            "usage": {"input_tokens": 9, "output_tokens": 4, "total_tokens": 13},
         }
 
 
@@ -105,33 +86,55 @@ class ResponsesStreamingFakeClient(VLLMClient):
         return True
 
     async def stream_bytes(self, path, payload):
-        assert path == "/v1/chat/completions"
+        assert path == "/v1/responses"
         chunks = [
-            b'data: {"id":"chatcmpl_resp_stream","choices":[{"delta":{"content":"Hel"}}]}\n\n',
-            b'data: {"id":"chatcmpl_resp_stream","choices":[{"delta":{"content":"lo"}}]}\n\n',
+            b'event: response.created\ndata: {"id":"resp_stream_1","object":"response","status":"in_progress"}\n\n',
+            b'event: response.output_text.delta\ndata: {"response_id":"resp_stream_1","delta":"Hel"}\n\n',
+            b'event: response.output_text.delta\ndata: {"response_id":"resp_stream_1","delta":"lo"}\n\n',
             (
-                "data: "
+                "event: response.completed\ndata: "
                 + json.dumps(
                     {
-                        "id": "chatcmpl_resp_stream",
-                        "choices": [{"delta": {}, "finish_reason": "stop"}],
-                        "usage": {
-                            "prompt_tokens": 3,
-                            "completion_tokens": 5,
-                            "total_tokens": 8,
-                        },
+                        "id": "resp_stream_1",
+                        "object": "response",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "Hello"}],
+                            }
+                        ],
+                        "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
                     }
                 )
                 + "\n\n"
             ).encode(),
-            b"data: [DONE]\n\n",
         ]
         for chunk in chunks:
             yield chunk
 
 
 def _responses_messages_route(auth_ref: str = "ANTHROPIC_RESPONSES_KEY") -> ModelRoute:
-    return ModelRoute(
+    class ResponsesMessagesRoute(ModelRoute):
+        def runtime_capabilities(self) -> dict[str, object]:
+            return {
+                "native_protocols": ["messages"],
+                "adapter_policies": ["responses->messages"],
+                "tool_policies": {
+                    "openai_function_tools": True,
+                    "anthropic_function_tools": True,
+                    "builtin_tools": False,
+                },
+                "protocol_features": {
+                    "stream": True,
+                    "count_tokens": True,
+                    "json_schema": False,
+                    "previous_response_id": False,
+                },
+            }
+
+    return ResponsesMessagesRoute(
         name=TEST_MODEL,
         display_name="Claude Messages Route",
         backend_model=None,
@@ -151,6 +154,79 @@ def _responses_messages_route(auth_ref: str = "ANTHROPIC_RESPONSES_KEY") -> Mode
             supports_function_tools=True,
             supports_builtin_tools=False,
         ),
+        source_kind="manual",
+    )
+
+
+def _external_chat_only_route(auth_ref: str = "OPENAI_CHAT_ONLY_KEY") -> ModelRoute:
+    return ModelRoute(
+        name=TEST_MODEL,
+        display_name="External Chat Only Route",
+        backend_model=None,
+        backend_type=None,
+        enabled=True,
+        lifecycle_mode="external",
+        upstream_protocol="chat",
+        upstream_base_url="https://chat.example.com",
+        upstream_model="gpt-4.1-mini",
+        upstream_auth_kind="bearer",
+        upstream_auth_ref=auth_ref,
+        capabilities=ModelCapabilities(
+            supports_responses=False,
+            supports_chat=True,
+            supports_messages=False,
+            supports_stream=True,
+            supports_function_tools=True,
+            supports_builtin_tools=False,
+            supports_previous_response_id_native=False,
+            supports_json_schema=True,
+        ),
+        source_kind="manual",
+    )
+
+
+def _external_chat_adapter_route(auth_ref: str = "OPENAI_CHAT_ADAPTER_KEY") -> ModelRoute:
+    class ExternalChatAdapterRoute(ModelRoute):
+        def runtime_capabilities(self) -> dict[str, object]:
+            return {
+                "native_protocols": ["chat"],
+                "adapter_policies": ["responses->chat"],
+                "tool_policies": {
+                    "openai_function_tools": True,
+                    "anthropic_function_tools": True,
+                    "builtin_tools": False,
+                },
+                "protocol_features": {
+                    "stream": True,
+                    "count_tokens": False,
+                    "json_schema": True,
+                    "previous_response_id": False,
+                },
+            }
+
+    return ExternalChatAdapterRoute(
+        name=TEST_MODEL,
+        display_name="External Chat Adapter Route",
+        backend_model=None,
+        backend_type=None,
+        enabled=True,
+        lifecycle_mode="external",
+        upstream_protocol="chat",
+        upstream_base_url="https://chat.example.com",
+        upstream_model="gpt-4.1-mini",
+        upstream_auth_kind="bearer",
+        upstream_auth_ref=auth_ref,
+        capabilities=ModelCapabilities(
+            supports_responses=False,
+            supports_chat=True,
+            supports_messages=False,
+            supports_stream=True,
+            supports_function_tools=True,
+            supports_builtin_tools=False,
+            supports_previous_response_id_native=False,
+            supports_json_schema=True,
+        ),
+        source_kind="manual",
     )
 
 
@@ -180,9 +256,9 @@ def test_responses_sync_request_is_adapted_from_input():
             assert payload["usage"]["input_tokens"] == 5
             assert payload["usage"]["output_tokens"] == 7
             path, forwarded = backend.calls[0]
-            assert path == "/v1/chat/completions"
-            assert forwarded["messages"] == [{"role": "user", "content": "hello gateway"}]
-            assert forwarded["max_tokens"] == 32
+            assert path == "/v1/responses"
+            assert forwarded["input"] == "hello gateway"
+            assert forwarded["max_output_tokens"] == 32
 
     asyncio.run(run())
 
@@ -214,11 +290,8 @@ def test_responses_previous_response_id_replays_prior_context():
             )
             assert second.status_code == 200
             _, forwarded = backend.calls[-1]
-            assert forwarded["messages"] == [
-                {"role": "user", "content": "first turn"},
-                {"role": "assistant", "content": "hello from responses"},
-                {"role": "user", "content": "second turn"},
-            ]
+            assert forwarded["previous_response_id"] == "resp_sync_1"
+            assert forwarded["input"] == "second turn"
 
     asyncio.run(run())
 
@@ -226,36 +299,137 @@ def test_responses_previous_response_id_replays_prior_context():
 def test_chat_route_previous_response_id_replays_local_messages_not_upstream_id():
     async def run():
         app = create_app()
-        backend = ResponsesSyncFakeClient()
-        app.state.ctx.backend_client = backend
+        app.state.ctx.models[TEST_MODEL] = _external_chat_adapter_route()
         secret = seed_inference_key(app, "sk-responses-local-replay")
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            first = await client.post(
-                "/v1/responses",
-                headers={"Authorization": f"Bearer {secret}"},
-                json={"model": TEST_MODEL, "input": "first turn"},
-            )
-            assert first.status_code == 200
-            previous_response_id = first.json()["id"]
+        with patch.dict("os.environ", {"OPENAI_CHAT_ADAPTER_KEY": "sk-upstream-chat-adapter"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                app.state.db.execute(
+                    """
+                    INSERT INTO response_states(
+                        response_id, request_id, model_name, input_items_json, output_items_json, messages_json,
+                        parent_response_id, route_name, client_protocol, upstream_protocol, upstream_response_id,
+                        request_json, output_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "resp_local_chat_1",
+                        "req_local_chat_1",
+                        TEST_MODEL,
+                        '[{"role":"user","content":"first turn"}]',
+                        '[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello from responses"}]}]',
+                        '[{"role":"user","content":"first turn"},{"role":"assistant","content":"hello from responses"}]',
+                        None,
+                        TEST_MODEL,
+                        "responses",
+                        "chat",
+                        None,
+                        '{"model":"%s","input":"first turn"}' % TEST_MODEL,
+                        '{"id":"resp_local_chat_1"}',
+                    ),
+                )
+                app.state.db.commit()
 
-            second = await client.post(
-                "/v1/responses",
-                headers={"Authorization": f"Bearer {secret}"},
-                json={
-                    "model": TEST_MODEL,
-                    "previous_response_id": previous_response_id,
-                    "input": "second turn",
-                },
-            )
-            assert second.status_code == 200
-            _, forwarded = backend.calls[-1]
-            assert "previous_response_id" not in forwarded
-            assert forwarded["messages"] == [
-                {"role": "user", "content": "first turn"},
-                {"role": "assistant", "content": "hello from responses"},
-                {"role": "user", "content": "second turn"},
-            ]
+                calls: list[tuple[str, str, dict, dict | None]] = []
+
+                async def fake_post_json_to(base_url, path, payload, headers=None):
+                    calls.append((base_url, path, payload, headers))
+                    return {
+                        "id": "chat_sync_external_1",
+                        "object": "chat.completion",
+                        "model": payload["model"],
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "external chat reply",
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9},
+                    }
+
+                app.state.post_json_to = fake_post_json_to
+                app.state.ctx.post_json_to = fake_post_json_to
+
+                second = await client.post(
+                    "/v1/responses",
+                    headers={"Authorization": f"Bearer {secret}"},
+                    json={
+                        "model": TEST_MODEL,
+                        "previous_response_id": "resp_local_chat_1",
+                        "input": "second turn",
+                    },
+                )
+                assert second.status_code == 200
+                _, path, forwarded, _ = calls[-1]
+                assert path == "/v1/chat/completions"
+                assert "previous_response_id" not in forwarded
+                assert forwarded["messages"] == [
+                    {"role": "user", "content": "first turn"},
+                    {"role": "assistant", "content": "hello from responses"},
+                    {"role": "user", "content": "second turn"},
+                ]
+
+    asyncio.run(run())
+
+
+def test_responses_sync_chat_adapter_persists_response_state_metadata():
+    async def run():
+        app = create_app()
+        app.state.ctx.models[TEST_MODEL] = _external_chat_adapter_route()
+        secret = seed_inference_key(app, "sk-responses-chat-state")
+        transport = httpx.ASGITransport(app=app)
+
+        async def fake_post_json_to(base_url, path, payload, headers=None):
+            return {
+                "id": "chat_sync_external_state_1",
+                "object": "chat.completion",
+                "model": payload["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "external chat reply",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9},
+            }
+
+        app.state.post_json_to = fake_post_json_to
+        app.state.ctx.post_json_to = fake_post_json_to
+
+        with patch.dict("os.environ", {"OPENAI_CHAT_ADAPTER_KEY": "sk-upstream-chat-adapter"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/v1/responses",
+                    headers={"Authorization": f"Bearer {secret}"},
+                    json={"model": TEST_MODEL, "input": "hello gateway"},
+                )
+                assert resp.status_code == 200
+                response_id = resp.json()["id"]
+
+        state = app.state.db.execute(
+            """
+            SELECT route_name, client_protocol, upstream_protocol, parent_response_id, request_json, output_json
+            FROM response_states
+            WHERE response_id = ?
+            """,
+            (response_id,),
+        ).fetchone()
+        assert state is not None
+        assert state[0] == TEST_MODEL
+        assert state[1] == "responses"
+        assert state[2] == "chat"
+        assert state[3] is None
+        assert json.loads(state[4])["model"] == "gpt-4.1-mini"
+        assert json.loads(state[5])["id"] == "chat_sync_external_state_1"
 
     asyncio.run(run())
 
@@ -311,7 +485,25 @@ def test_chat_route_rejects_builtin_tools():
                 },
             )
             assert resp.status_code == 400
-            assert resp.json()["detail"] == "unsupported_builtin_tools"
+            assert resp.json()["detail"] == "builtin_tools_not_supported"
+
+    asyncio.run(run())
+
+
+def test_responses_rejects_external_chat_only_route_without_adapter():
+    async def run():
+        app = create_app()
+        app.state.ctx.models[TEST_MODEL] = _external_chat_only_route()
+        secret = seed_inference_key(app, "sk-responses-chat-only")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/responses",
+                headers={"Authorization": f"Bearer {secret}"},
+                json={"model": TEST_MODEL, "input": "hello gateway"},
+            )
+            assert resp.status_code == 400
+            assert resp.json()["detail"] == "adapter_not_enabled_for_route"
 
     asyncio.run(run())
 
@@ -342,6 +534,57 @@ def test_responses_stream_emits_event_style_sse():
                 assert "event: response.completed" in body
                 assert '"delta":"Hel"' in body
                 assert '"delta":"lo"' in body
+
+    asyncio.run(run())
+
+
+def test_responses_stream_chat_adapter_persists_response_state_metadata():
+    async def run():
+        app = create_app()
+        app.state.ctx.models[TEST_MODEL] = _external_chat_adapter_route()
+        secret = seed_inference_key(app, "sk-responses-chat-stream-state")
+        transport = httpx.ASGITransport(app=app)
+
+        async def fake_stream_bytes_from(base_url, path, payload, headers=None):
+            yield b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+            yield (
+                'data: {"choices":[{"delta":{"content":" there"}}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\n'
+            ).encode()
+
+        app.state.stream_bytes_from = fake_stream_bytes_from
+        app.state.ctx.stream_bytes_from = fake_stream_bytes_from
+
+        with patch.dict("os.environ", {"OPENAI_CHAT_ADAPTER_KEY": "sk-upstream-chat-adapter"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                async with client.stream(
+                    "POST",
+                    "/v1/responses",
+                    headers={"Authorization": f"Bearer {secret}"},
+                    json={"model": TEST_MODEL, "input": "hello stream", "stream": True},
+                ) as resp:
+                    assert resp.status_code == 200
+                    body = ""
+                    async for chunk in resp.aiter_text():
+                        body += chunk
+                    assert "event: response.completed" in body
+                    completed_json = body.split("event: response.completed\ndata: ", 1)[1].strip()
+                    response_id = json.loads(completed_json)["id"]
+
+        state = app.state.db.execute(
+            """
+            SELECT route_name, client_protocol, upstream_protocol, parent_response_id, request_json, output_json
+            FROM response_states
+            WHERE response_id = ?
+            """,
+            (response_id,),
+        ).fetchone()
+        assert state is not None
+        assert state[0] == TEST_MODEL
+        assert state[1] == "responses"
+        assert state[2] == "chat"
+        assert state[3] is None
+        assert json.loads(state[4])["model"] == "gpt-4.1-mini"
+        assert json.loads(state[5])["status"] == "completed"
 
     asyncio.run(run())
 
@@ -478,8 +721,24 @@ def test_responses_stream_can_adapt_to_external_messages_route():
                     assert '"delta":"Hi"' in body
                     assert '"delta":" there"' in body
                     assert "event: response.completed" in body
+                    completed_json = body.split("event: response.completed\ndata: ", 1)[1].strip()
+                    response_id = json.loads(completed_json)["id"]
                 assert calls[0][1] == "/v1/messages"
                 assert calls[0][3] == {"x-api-key": "sk-upstream-anthropic-responses-stream"}
+        state = app.state.db.execute(
+            """
+            SELECT route_name, client_protocol, upstream_protocol, request_json, output_json
+            FROM response_states
+            WHERE response_id = ?
+            """,
+            (response_id,),
+        ).fetchone()
+        assert state is not None
+        assert state[0] == TEST_MODEL
+        assert state[1] == "responses"
+        assert state[2] == "messages"
+        assert json.loads(state[3])["model"] == "claude-sonnet-4"
+        assert json.loads(state[4])["status"] == "completed"
 
     asyncio.run(run())
 
@@ -501,6 +760,6 @@ def test_responses_messages_route_rejects_builtin_tools():
                 },
             )
             assert resp.status_code == 400
-            assert resp.json()["detail"] == "unsupported_builtin_tools"
+            assert resp.json()["detail"] == "builtin_tools_not_supported"
 
     asyncio.run(run())

@@ -20,12 +20,22 @@ function formatClock(value: string) {
 }
 
 export function OverviewView() {
-  const {snapshot, snapshotHistory, refreshSnapshot, loading, setCurrentPage, restartBackend, locale, t} =
+  const {snapshot, snapshotHistory, refreshSnapshot, loading, setCurrentPage, restartBackend, locale, t, copyToClipboard} =
     useAppContext();
   const [restarting, setRestarting] = useState(false);
 
   const recentLogs = snapshot?.logs ?? [];
   const backendLabel = snapshot?.backend_type?.toUpperCase() ?? 'VLLM';
+  const statusLabel = loading.snapshot && snapshot === null
+    ? t('overview.loading')
+    : snapshot === null
+      ? t('overview.unreachable')
+      : snapshot.backend_ready
+        ? t('overview.healthy')
+        : t('overview.degraded');
+  const modeLabel = snapshot === null
+    ? t('overview.awaitingConnection')
+    : `${backendLabel} · ${snapshot.require_agent_ready ? t('overview.agentGated') : t('overview.directGateway')}`;
   const modelRoutes = snapshot?.runtime.model_routes ?? [];
   const queueLimit = snapshot?.runtime.gateway.queue_limit ?? 0;
   const errorLogs = recentLogs.filter((log) => log.status !== 'ok');
@@ -45,13 +55,6 @@ export function OverviewView() {
     () => modelRoutes.filter((route) => route.source_kind === 'profile_seed'),
     [modelRoutes],
   );
-
-  async function copyText(value: string) {
-    if (!value) {
-      return;
-    }
-    await navigator.clipboard.writeText(value);
-  }
 
   async function handleRestart() {
     setRestarting(true);
@@ -73,11 +76,9 @@ export function OverviewView() {
             </span>
             <span className="text-[10px] uppercase tracking-widest font-bold text-white/30">{t('overview.status')}</span>
           </div>
-          <h3 className="text-4xl font-bold text-white relative z-10">
-            {snapshot?.backend_ready ? t('overview.healthy') : t('overview.degraded')}
-          </h3>
+          <h3 className="text-4xl font-bold text-white relative z-10">{statusLabel}</h3>
           <p className="text-sm text-white/50 mt-1 relative z-10">
-            {backendLabel} · {snapshot?.require_agent_ready ? t('overview.agentGated') : t('overview.directGateway')}
+            {modeLabel}
           </p>
         </div>
 
@@ -185,7 +186,7 @@ export function OverviewView() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => void copyText(route.name)}
+                      onClick={() => void copyToClipboard(route.name)}
                       className="shrink-0 rounded-full border border-slate-200 bg-white/70 p-2 text-slate-500 transition-colors hover:text-blue-600"
                       title={t('overview.copyModel')}
                     >

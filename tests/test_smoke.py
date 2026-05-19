@@ -163,3 +163,16 @@ def test_settings_local_profile_missing_fields_fall_back_to_same_repo_profile(tm
     assert settings.vllm.model_file == "repo-demo.gguf"
     assert settings.vllm.model_name == "repo-demo-model"
     assert settings.vllm.host_port == 16666
+
+
+def test_settings_load_repo_awq_int4_profile(tmp_path: Path):
+    defaults = tmp_path / "defaults.yaml"
+    defaults.write_text("active_backend_profile: vllm_qwen36-27b-awq-int4\n", encoding="utf-8")
+
+    profile_settings = load_settings(defaults)
+    assert profile_settings.active_backend_profile == "vllm_qwen36-27b-awq-int4"
+    assert profile_settings.vllm.backend_type == "vllm"
+    assert profile_settings.vllm.model_dir.endswith("models/Qwen/Qwen3.6-27B-AWQ-INT4")
+    assert profile_settings.vllm.model_name == "qwen36-27b-awq-int4"
+    assert profile_settings.vllm.gpu_memory_utilization == 0.5
+    assert profile_settings.gateway.backend_model == "qwen36-27b-awq-int4"

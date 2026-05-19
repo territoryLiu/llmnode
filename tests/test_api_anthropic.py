@@ -62,6 +62,223 @@ def test_anthropic_messages_endpoint_exists():
     asyncio.run(run())
 
 
+def test_anthropic_messages_managed_local_allows_claude_code_builtin_tool_metadata():
+    async def run():
+        app = create_app()
+        captured: list[tuple[str, dict]] = []
+
+        class CapturingClient(FakeClient):
+            async def post_json(self, path, payload):
+                captured.append((path, payload))
+                return await super().post_json(path, payload)
+
+        app.state.ctx.backend_client = CapturingClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "max_tokens": 16,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "tools": [
+                        {
+                            "type": "bash_20241022",
+                            "name": "web_search",
+                            "max_uses": 5,
+                        },
+                        {
+                            "name": "Read",
+                            "description": "Read files from local filesystem",
+                            "input_schema": {
+                                "type": "object",
+                                "properties": {"file_path": {"type": "string"}},
+                                "required": ["file_path"],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert resp.status_code == 200
+            assert captured[0][0] == "/v1/messages"
+            assert len(captured[0][1]["tools"]) == 1
+            assert captured[0][1]["tools"][0]["name"] == "Read"
+
+    asyncio.run(run())
+
+
+def test_anthropic_messages_managed_local_forwards_anthropic_tool_definitions():
+    async def run():
+        app = create_app()
+        captured: list[tuple[str, dict]] = []
+
+        class CapturingClient(FakeClient):
+            async def post_json(self, path, payload):
+                captured.append((path, payload))
+                return {
+                    "id": "msg_tool_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "Read",
+                            "input": {"file_path": "README.md"},
+                        }
+                    ],
+                    "model": payload["model"],
+                }
+
+        app.state.ctx.backend_client = CapturingClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "max_tokens": 16,
+                    "messages": [{"role": "user", "content": "read readme"}],
+                    "tools": [
+                        {
+                            "name": "Read",
+                            "description": "Read files from local filesystem",
+                            "input_schema": {
+                                "type": "object",
+                                "properties": {"file_path": {"type": "string"}},
+                                "required": ["file_path"],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert resp.status_code == 200
+            assert captured[0][0] == "/v1/messages"
+            assert captured[0][1]["tools"][0]["name"] == "Read"
+            assert resp.json()["content"][0]["type"] == "tool_use"
+
+    asyncio.run(run())
+
+
+def test_anthropic_messages_managed_local_accepts_tool_result_followup():
+    async def run():
+        app = create_app()
+        captured: list[tuple[str, dict]] = []
+
+        class CapturingClient(FakeClient):
+            async def post_json(self, path, payload):
+                captured.append((path, payload))
+                return {
+                    "id": "msg_tool_2",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "done"}],
+                    "model": payload["model"],
+                }
+
+        app.state.ctx.backend_client = CapturingClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "max_tokens": 16,
+                    "messages": [
+                        {"role": "user", "content": "read readme"},
+                        {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "toolu_1",
+                                    "name": "Read",
+                                    "input": {"file_path": "README.md"},
+                                }
+                            ],
+                        },
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "toolu_1",
+                                    "content": "README contents",
+                                }
+                            ],
+                        },
+                    ],
+                    "tools": [
+                        {
+                            "name": "Read",
+                            "description": "Read files from local filesystem",
+                            "input_schema": {
+                                "type": "object",
+                                "properties": {"file_path": {"type": "string"}},
+                                "required": ["file_path"],
+                            },
+                        }
+                    ],
+                },
+            )
+            assert resp.status_code == 200
+            assert captured[0][1]["messages"][2]["content"][0]["type"] == "tool_result"
+
+    asyncio.run(run())
+
+
+def test_anthropic_messages_managed_local_rejects_generic_builtin_tools():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "max_tokens": 16,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "tools": [{"type": "web_search"}],
+                },
+            )
+            assert resp.status_code == 400
+            assert resp.json()["detail"] == "builtin_tools_not_supported"
+
+    asyncio.run(run())
+
+
+def test_anthropic_count_tokens_endpoint_exists():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/messages/count_tokens",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert "input_tokens" in payload
+            assert isinstance(payload["input_tokens"], int)
+
+    asyncio.run(run())
+
+
 def test_anthropic_messages_external_messages_route_posts_to_upstream_messages():
     async def run():
         app = create_app()
@@ -273,7 +490,7 @@ def test_anthropic_messages_rejects_external_non_messages_route():
                 },
             )
             assert resp.status_code == 400
-            assert resp.json()["detail"] == "unsupported_route_protocol_combination"
+            assert resp.json()["detail"] == "native_protocol_not_supported"
 
     asyncio.run(run())
 

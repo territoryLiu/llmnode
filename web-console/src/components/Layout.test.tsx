@@ -226,16 +226,16 @@ describe('Layout locale switch', () => {
     expect(screen.queryByDisplayValue('http://127.0.0.1:5173')).not.toBeInTheDocument();
   });
 
-  it('renders api key input banner when no key is configured', async () => {
+  it('does not render legacy api key input controls', async () => {
     render(<App />);
 
     await waitFor(() => {
       expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
     });
 
-    expect(screen.getByText('当前未配置 API 密钥。请先用控制命令创建一把 sk- 管理员密钥，然后在这里输入。')).toBeInTheDocument();
-    expect(screen.getByRole('button', {name: '保存密钥'})).toBeInTheDocument();
-    expect(screen.getByLabelText('输入 sk- 开头的 API 密钥')).toBeInTheDocument();
+    expect(screen.queryByText('当前未配置 API 密钥。请先用控制命令创建一把 sk- 管理员密钥，然后在这里输入。')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: '保存密钥'})).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('输入 sk- 开头的 API 密钥')).not.toBeInTheDocument();
   });
 
   it('does not render legacy system status navigation entry', async () => {
@@ -246,5 +246,17 @@ describe('Layout locale switch', () => {
     });
 
     expect(screen.queryByRole('button', {name: '系统状态'})).not.toBeInTheDocument();
+  });
+
+  it('renders copy toast shell hidden by default', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    const toast = screen.getByTestId('copy-toast');
+    expect(toast).toHaveClass('invisible');
+    expect(toast).toHaveClass('opacity-0');
   });
 });

@@ -14,6 +14,11 @@ type CreateRouteDraft = {
   upstream_auth_ref: string;
   enabled: boolean;
   capabilities_json: ModelRouteRow['capabilities_json'];
+  native_protocols_json: string[];
+  adapter_policies_json: string[];
+  tool_policies_json: ModelRouteRow['tool_policies_json'];
+  protocol_features_json: ModelRouteRow['protocol_features_json'];
+  recommended_runtime_semantics?: ModelRouteRow['recommended_runtime_semantics'];
 };
 
 const capabilityFields: Array<{
@@ -30,6 +35,79 @@ const capabilityFields: Array<{
   {key: 'supports_previous_response_id_native', labelKey: 'models.capabilityPreviousResponse', ariaLabel: 'Previous Response'},
   {key: 'supports_json_schema', labelKey: 'models.capabilityJsonSchema', ariaLabel: 'JSON Schema'},
 ];
+
+const protocolOptions: Array<{value: ModelRouteRow['upstream_protocol']; label: string}> = [
+  {value: 'chat', label: 'chat'},
+  {value: 'messages', label: 'messages'},
+  {value: 'responses', label: 'responses'},
+];
+
+const adapterOptions = [
+  {value: 'responses->chat', labelKey: 'models.adapterResponsesToChat'},
+  {value: 'responses->messages', labelKey: 'models.adapterResponsesToMessages'},
+] as const;
+
+const toolPolicyFields: Array<{
+  key: keyof ModelRouteRow['tool_policies_json'];
+  labelKey: string;
+}> = [
+  {key: 'openai_function_tools', labelKey: 'models.toolPolicyOpenaiFunctions'},
+  {key: 'anthropic_function_tools', labelKey: 'models.toolPolicyAnthropicFunctions'},
+  {key: 'builtin_tools', labelKey: 'models.toolPolicyBuiltin'},
+];
+
+const protocolFeatureFields: Array<{
+  key: keyof ModelRouteRow['protocol_features_json'];
+  labelKey: string;
+}> = [
+  {key: 'stream', labelKey: 'models.featureStream'},
+  {key: 'count_tokens', labelKey: 'models.featureCountTokens'},
+  {key: 'json_schema', labelKey: 'models.featureJsonSchema'},
+  {key: 'previous_response_id', labelKey: 'models.featurePreviousResponseId'},
+];
+
+function buildRecommendedRuntimeSemantics(
+  upstreamProtocol: ModelRouteRow['upstream_protocol'],
+): Pick<
+  ModelRouteRow,
+  'native_protocols_json' | 'adapter_policies_json' | 'protocol_features_json'
+> {
+  return {
+    native_protocols_json: [upstreamProtocol],
+    adapter_policies_json: [],
+    protocol_features_json: {
+      stream: true,
+      count_tokens: upstreamProtocol === 'messages',
+      json_schema: false,
+      previous_response_id: false,
+    },
+  };
+}
+
+function resolveRecommendedRuntimeSemantics(
+  route: Pick<
+    ModelRouteRow,
+    'upstream_protocol' | 'recommended_runtime_semantics'
+  >,
+): Pick<ModelRouteRow, 'native_protocols_json' | 'adapter_policies_json' | 'protocol_features_json'> {
+  return route.recommended_runtime_semantics ?? buildRecommendedRuntimeSemantics(route.upstream_protocol);
+}
+
+function hasRuntimeSemanticsConflict(
+  route: Pick<
+    ModelRouteRow,
+    'upstream_protocol' | 'native_protocols_json' | 'adapter_policies_json' | 'recommended_runtime_semantics'
+  >,
+) {
+  const recommended = resolveRecommendedRuntimeSemantics(route);
+  const sameNativeProtocols =
+    route.native_protocols_json.length === recommended.native_protocols_json.length &&
+    route.native_protocols_json.every((value, index) => value === recommended.native_protocols_json[index]);
+  const sameAdapterPolicies =
+    route.adapter_policies_json.length === recommended.adapter_policies_json.length &&
+    route.adapter_policies_json.every((value, index) => value === recommended.adapter_policies_json[index]);
+  return !sameNativeProtocols || !sameAdapterPolicies;
+}
 
 function normalizeRoute(route: ModelRouteRow): ModelRouteRow {
   return {
@@ -55,6 +133,20 @@ function normalizeRoute(route: ModelRouteRow): ModelRouteRow {
       supports_previous_response_id_native: route.capabilities_json?.supports_previous_response_id_native ?? false,
       supports_json_schema: route.capabilities_json?.supports_json_schema ?? false,
     },
+    native_protocols_json: route.native_protocols_json ?? [],
+    adapter_policies_json: route.adapter_policies_json ?? [],
+    tool_policies_json: {
+      openai_function_tools: route.tool_policies_json?.openai_function_tools ?? true,
+      anthropic_function_tools: route.tool_policies_json?.anthropic_function_tools ?? true,
+      builtin_tools: route.tool_policies_json?.builtin_tools ?? false,
+    },
+    protocol_features_json: {
+      stream: route.protocol_features_json?.stream ?? true,
+      count_tokens: route.protocol_features_json?.count_tokens ?? false,
+      json_schema: route.protocol_features_json?.json_schema ?? false,
+      previous_response_id: route.protocol_features_json?.previous_response_id ?? false,
+    },
+    recommended_runtime_semantics: route.recommended_runtime_semantics ?? buildRecommendedRuntimeSemantics(route.upstream_protocol ?? 'chat'),
   };
 }
 
@@ -82,6 +174,20 @@ function buildCreateRouteDraft(): CreateRouteDraft {
       supports_previous_response_id_native: false,
       supports_json_schema: false,
     },
+    native_protocols_json: ['responses'],
+    adapter_policies_json: [],
+    tool_policies_json: {
+      openai_function_tools: true,
+      anthropic_function_tools: true,
+      builtin_tools: false,
+    },
+    protocol_features_json: {
+      stream: true,
+      count_tokens: false,
+      json_schema: false,
+      previous_response_id: false,
+    },
+    recommended_runtime_semantics: buildRecommendedRuntimeSemantics('responses'),
   };
 }
 
@@ -98,6 +204,18 @@ export function ModelRoutesView() {
   }, [modelRoutes]);
 
   const runtime = snapshot?.runtime.vllm;
+
+  function recommendedRuntimeSemanticsForProtocol(
+    upstreamProtocol: ModelRouteRow['upstream_protocol'],
+  ): Pick<ModelRouteRow, 'native_protocols_json' | 'adapter_policies_json' | 'protocol_features_json'> {
+    const matchedRoute = modelRoutes.find(
+      (item) => item.upstream_protocol === upstreamProtocol && item.recommended_runtime_semantics,
+    );
+    return resolveRecommendedRuntimeSemantics({
+      upstream_protocol: upstreamProtocol,
+      recommended_runtime_semantics: matchedRoute?.recommended_runtime_semantics,
+    });
+  }
 
   function updateDraft(name: string, patch: Partial<ModelRouteRow>) {
     setDrafts((previous) => {
@@ -129,6 +247,19 @@ export function ModelRoutesView() {
               supports_previous_response_id_native: false,
               supports_json_schema: false,
             },
+            native_protocols_json: ['chat', 'responses', 'messages'],
+            adapter_policies_json: [],
+            tool_policies_json: {
+              openai_function_tools: true,
+              anthropic_function_tools: true,
+              builtin_tools: false,
+            },
+            protocol_features_json: {
+              stream: true,
+              count_tokens: true,
+              json_schema: false,
+              previous_response_id: true,
+            },
           },
         );
       return {
@@ -139,6 +270,14 @@ export function ModelRoutesView() {
           capabilities_json: {
             ...base.capabilities_json,
             ...(patch.capabilities_json || {}),
+          },
+          tool_policies_json: {
+            ...base.tool_policies_json,
+            ...(patch.tool_policies_json || {}),
+          },
+          protocol_features_json: {
+            ...base.protocol_features_json,
+            ...(patch.protocol_features_json || {}),
           },
         },
       };
@@ -157,6 +296,77 @@ export function ModelRoutesView() {
     updateDraft(name, {
       capabilities_json: {
         ...draft.capabilities_json,
+        [key]: value,
+      },
+    });
+  }
+
+  function updateCreateCapability(
+    key: keyof CreateRouteDraft['capabilities_json'],
+    value: boolean,
+  ) {
+    updateCreateDraft({
+      capabilities_json: {
+        ...createDraft.capabilities_json,
+        [key]: value,
+      },
+    });
+  }
+
+  function applyRecommendedDefaultsToDraft(name: string) {
+    const draft = drafts[name];
+    if (!draft) {
+      return;
+    }
+    updateDraft(name, resolveRecommendedRuntimeSemantics(draft));
+  }
+
+  function applyRecommendedDefaultsToCreateDraft(
+    upstreamProtocol: CreateRouteDraft['upstream_protocol'] = createDraft.upstream_protocol,
+  ) {
+    updateCreateDraft(
+      createDraft.upstream_protocol === upstreamProtocol
+        ? resolveRecommendedRuntimeSemantics(createDraft)
+        : recommendedRuntimeSemanticsForProtocol(upstreamProtocol),
+    );
+  }
+
+  function toggleListValue(values: string[], item: string, enabled: boolean) {
+    if (enabled) {
+      return values.includes(item) ? values : [...values, item];
+    }
+    return values.filter((value) => value !== item);
+  }
+
+  function updateToolPolicy(
+    name: string,
+    key: keyof ModelRouteRow['tool_policies_json'],
+    value: boolean,
+  ) {
+    const draft = drafts[name];
+    if (!draft) {
+      return;
+    }
+    updateDraft(name, {
+      tool_policies_json: {
+        ...draft.tool_policies_json,
+        [key]: value,
+      },
+    });
+  }
+
+  function updateProtocolFeature(
+    name: string,
+    key: keyof ModelRouteRow['protocol_features_json'],
+    value: boolean,
+  ) {
+    const draft = drafts[name];
+    if (!draft) {
+      return;
+    }
+    updateDraft(name, {
+      protocol_features_json: {
+        ...draft.protocol_features_json,
         [key]: value,
       },
     });
@@ -181,6 +391,10 @@ export function ModelRoutesView() {
         upstream_auth_kind: draft.upstream_auth_kind,
         upstream_auth_ref: draft.upstream_auth_kind === 'none' ? null : draft.upstream_auth_ref || null,
         capabilities_json: draft.capabilities_json,
+        native_protocols_json: draft.native_protocols_json,
+        adapter_policies_json: draft.adapter_policies_json,
+        tool_policies_json: draft.tool_policies_json,
+        protocol_features_json: draft.protocol_features_json,
       });
       setDrafts((previous) => ({...previous, [name]: normalizeRoute(updated)}));
     } finally {
@@ -210,6 +424,14 @@ export function ModelRoutesView() {
         ...previous.capabilities_json,
         ...(patch.capabilities_json || {}),
       },
+      tool_policies_json: {
+        ...previous.tool_policies_json,
+        ...(patch.tool_policies_json || {}),
+      },
+      protocol_features_json: {
+        ...previous.protocol_features_json,
+        ...(patch.protocol_features_json || {}),
+      },
     }));
   }
 
@@ -230,6 +452,10 @@ export function ModelRoutesView() {
             : createDraft.upstream_auth_ref.trim() || null,
         enabled: createDraft.enabled,
         capabilities_json: createDraft.capabilities_json,
+        native_protocols_json: createDraft.native_protocols_json,
+        adapter_policies_json: createDraft.adapter_policies_json,
+        tool_policies_json: createDraft.tool_policies_json,
+        protocol_features_json: createDraft.protocol_features_json,
       });
       setCreateDraft(buildCreateRouteDraft());
     } finally {
@@ -338,13 +564,22 @@ export function ModelRoutesView() {
                   onChange={(event) =>
                     updateCreateDraft({
                       upstream_protocol: event.target.value as ModelRouteRow['upstream_protocol'],
+                      recommended_runtime_semantics:
+                        createDraft.upstream_protocol === event.target.value
+                          ? createDraft.recommended_runtime_semantics
+                          : recommendedRuntimeSemanticsForProtocol(event.target.value as ModelRouteRow['upstream_protocol']),
+                      ...(
+                        createDraft.upstream_protocol === event.target.value
+                          ? resolveRecommendedRuntimeSemantics(createDraft)
+                          : recommendedRuntimeSemanticsForProtocol(event.target.value as ModelRouteRow['upstream_protocol'])
+                      ),
                     })
                   }
                   className="w-full bg-white/80 border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500/30"
                 >
-                  <option value="chat">chat</option>
-                  <option value="messages">messages</option>
-                  <option value="responses">responses</option>
+                  {protocolOptions.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
                 </select>
               </label>
             </div>
@@ -425,19 +660,126 @@ export function ModelRoutesView() {
                       aria-label={`create-route-${String(item.key).replaceAll('_', '-')}`}
                       type="checkbox"
                       checked={createDraft.capabilities_json[item.key]}
-                      onChange={(event) =>
-                        updateCreateDraft({
-                          capabilities_json: {
-                            ...createDraft.capabilities_json,
-                            [item.key]: event.target.checked,
-                          },
-                        })
-                      }
+                      onChange={(event) => updateCreateCapability(item.key, event.target.checked)}
                       className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                     />
                     <span>{t(item.labelKey)}</span>
                   </label>
                 ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <div className="space-y-3">
+                <div className="text-xs font-medium text-slate-500">{t('models.runtimeSemantics')}</div>
+                {hasRuntimeSemanticsConflict({
+                  upstream_protocol: createDraft.upstream_protocol,
+                  native_protocols_json: createDraft.native_protocols_json,
+                  adapter_policies_json: createDraft.adapter_policies_json,
+                  recommended_runtime_semantics: createDraft.recommended_runtime_semantics,
+                }) ? (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 space-y-2">
+                    <div className="font-semibold">{t('models.runtimeWarningTitle')}</div>
+                    <div>{t('models.runtimeWarningBody')}</div>
+                    <button
+                      type="button"
+                      onClick={() => applyRecommendedDefaultsToCreateDraft()}
+                      className="inline-flex items-center justify-center rounded-md border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition-colors"
+                    >
+                      {t('models.applyRecommendedDefaults')}
+                    </button>
+                    <div className="text-[11px] text-amber-700">{t('models.recommendedDefaultsHint')}</div>
+                  </div>
+                ) : null}
+                <div className="rounded-2xl border border-emerald-100 bg-white/80 p-4 space-y-3">
+                  <div className="text-xs font-medium text-slate-500">{t('models.nativeProtocols')}</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {protocolOptions.map((item) => (
+                      <label key={`create-native-${item.value}`} className="flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          aria-label={`create-native-protocol-${item.value}`}
+                          type="checkbox"
+                          checked={createDraft.native_protocols_json.includes(item.value)}
+                          onChange={(event) =>
+                            updateCreateDraft({
+                              native_protocols_json: toggleListValue(createDraft.native_protocols_json, item.value, event.target.checked),
+                            })
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <span>{item.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="text-xs font-medium text-slate-500">{t('models.adapterPolicies')}</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {adapterOptions.map((item) => (
+                      <label key={`create-adapter-${item.value}`} className="flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          aria-label={`create-adapter-policy-${item.value.replaceAll('->', '-')}`}
+                          type="checkbox"
+                          checked={createDraft.adapter_policies_json.includes(item.value)}
+                          onChange={(event) =>
+                            updateCreateDraft({
+                              adapter_policies_json: toggleListValue(createDraft.adapter_policies_json, item.value, event.target.checked),
+                            })
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <span>{t(item.labelKey)}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-emerald-100 bg-white/80 p-4 space-y-3">
+                  <div className="text-xs font-medium text-slate-500">{t('models.toolPolicies')}</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {toolPolicyFields.map((item) => (
+                      <label key={`create-tool-${item.key}`} className="flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          aria-label={`create-tool-policy-${String(item.key).replaceAll('_', '-')}`}
+                          type="checkbox"
+                          checked={Boolean(createDraft.tool_policies_json[item.key])}
+                          onChange={(event) =>
+                            updateCreateDraft({
+                              tool_policies_json: {
+                                ...createDraft.tool_policies_json,
+                                [item.key]: event.target.checked,
+                              },
+                            })
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <span>{t(item.labelKey)}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="text-xs font-medium text-slate-500">{t('models.protocolFeatures')}</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {protocolFeatureFields.map((item) => (
+                      <label key={`create-feature-${item.key}`} className="flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          aria-label={`create-protocol-feature-${String(item.key).replaceAll('_', '-')}`}
+                          type="checkbox"
+                          checked={Boolean(createDraft.protocol_features_json[item.key])}
+                          onChange={(event) =>
+                            updateCreateDraft({
+                              protocol_features_json: {
+                                ...createDraft.protocol_features_json,
+                                [item.key]: event.target.checked,
+                              },
+                            })
+                          }
+                          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <span>{t(item.labelKey)}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -451,6 +793,7 @@ export function ModelRoutesView() {
               const draft = drafts[route.name] || normalizeRoute(route);
               const lifecycleLocked = route.source_kind === 'profile_seed';
               const enabledLocked = route.source_kind === 'profile_seed' && route.stale;
+              const runtimeConflict = hasRuntimeSemanticsConflict(draft);
               return (
                 <section key={route.name} className="rounded-2xl border border-slate-200/70 bg-white/60 p-5 space-y-5">
                   <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
@@ -554,13 +897,25 @@ export function ModelRoutesView() {
                         onChange={(event) =>
                           updateDraft(route.name, {
                             upstream_protocol: event.target.value as ModelRouteRow['upstream_protocol'],
+                            recommended_runtime_semantics:
+                              route.upstream_protocol === event.target.value
+                                ? route.recommended_runtime_semantics
+                                : buildRecommendedRuntimeSemantics(event.target.value as ModelRouteRow['upstream_protocol']),
+                            ...(
+                              route.upstream_protocol === event.target.value
+                                ? resolveRecommendedRuntimeSemantics({
+                                    upstream_protocol: event.target.value as ModelRouteRow['upstream_protocol'],
+                                    recommended_runtime_semantics: route.recommended_runtime_semantics,
+                                  })
+                                : buildRecommendedRuntimeSemantics(event.target.value as ModelRouteRow['upstream_protocol'])
+                            ),
                           })
                         }
                         className="w-full bg-white/70 border border-slate-200 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500/30"
                       >
-                        <option value="chat">chat</option>
-                        <option value="messages">messages</option>
-                        <option value="responses">responses</option>
+                        {protocolOptions.map((item) => (
+                          <option key={item.value} value={item.value}>{item.label}</option>
+                        ))}
                       </select>
                     </label>
                     <label className="space-y-1.5">
@@ -656,6 +1011,97 @@ export function ModelRoutesView() {
                           <span>{t(item.labelKey)}</span>
                         </label>
                       ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 space-y-3">
+                      <div className="text-xs font-medium text-slate-500">{t('models.runtimeSemantics')}</div>
+                      {runtimeConflict ? (
+                        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 space-y-2">
+                          <div className="font-semibold">{t('models.runtimeWarningTitle')}</div>
+                          <div>{t('models.runtimeWarningBody')}</div>
+                          <button
+                            type="button"
+                            onClick={() => applyRecommendedDefaultsToDraft(route.name)}
+                            className="inline-flex items-center justify-center rounded-md border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100 transition-colors"
+                          >
+                            {t('models.applyRecommendedDefaults')}
+                          </button>
+                          <div className="text-[11px] text-amber-700">{t('models.recommendedDefaultsHint')}</div>
+                        </div>
+                      ) : null}
+                      <div className="text-xs font-medium text-slate-500">{t('models.nativeProtocols')}</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {protocolOptions.map((item) => (
+                          <label key={`${route.name}-native-${item.value}`} className="flex items-center gap-2 text-sm text-slate-700">
+                            <input
+                              aria-label={`${route.name}-native-protocol-${item.value}`}
+                              type="checkbox"
+                              checked={draft.native_protocols_json.includes(item.value)}
+                              onChange={(event) =>
+                                updateDraft(route.name, {
+                                  native_protocols_json: toggleListValue(draft.native_protocols_json, item.value, event.target.checked),
+                                })
+                              }
+                              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span>{item.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="text-xs font-medium text-slate-500">{t('models.adapterPolicies')}</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {adapterOptions.map((item) => (
+                          <label key={`${route.name}-adapter-${item.value}`} className="flex items-center gap-2 text-sm text-slate-700">
+                            <input
+                              aria-label={`${route.name}-adapter-policy-${item.value.replaceAll('->', '-')}`}
+                              type="checkbox"
+                              checked={draft.adapter_policies_json.includes(item.value)}
+                              onChange={(event) =>
+                                updateDraft(route.name, {
+                                  adapter_policies_json: toggleListValue(draft.adapter_policies_json, item.value, event.target.checked),
+                                })
+                              }
+                              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span>{t(item.labelKey)}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 space-y-3">
+                      <div className="text-xs font-medium text-slate-500">{t('models.toolPolicies')}</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {toolPolicyFields.map((item) => (
+                          <label key={`${route.name}-tool-${item.key}`} className="flex items-center gap-2 text-sm text-slate-700">
+                            <input
+                              aria-label={`${route.name}-tool-policy-${String(item.key).replaceAll('_', '-')}`}
+                              type="checkbox"
+                              checked={Boolean(draft.tool_policies_json[item.key])}
+                              onChange={(event) => updateToolPolicy(route.name, item.key, event.target.checked)}
+                              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span>{t(item.labelKey)}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="text-xs font-medium text-slate-500">{t('models.protocolFeatures')}</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {protocolFeatureFields.map((item) => (
+                          <label key={`${route.name}-feature-${item.key}`} className="flex items-center gap-2 text-sm text-slate-700">
+                            <input
+                              aria-label={`${route.name}-protocol-feature-${String(item.key).replaceAll('_', '-')}`}
+                              type="checkbox"
+                              checked={Boolean(draft.protocol_features_json[item.key])}
+                              onChange={(event) => updateProtocolFeature(route.name, item.key, event.target.checked)}
+                              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span>{t(item.labelKey)}</span>
+                          </label>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 </section>

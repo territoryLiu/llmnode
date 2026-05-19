@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from pathlib import Path
 
+from ..models import ModelCapabilities, ModelRoute
+
 _UNSET = object()
 _ALLOWED_CHART_WINDOWS = {"12h", "day", "month", "year"}
 _ALLOWED_CHART_GROUP_BY = {"backend_type", "model_name", "device_type"}
@@ -41,6 +43,7 @@ def _decode_api_key_row(row: Any) -> dict[str, Any]:
         "disabled_at": row[8],
         "last_used_at": row[9],
         "note": row[10],
+        "plain_secret": row[11] if len(row) > 11 else None,
     }
 
 
@@ -79,6 +82,7 @@ def init_db(path: Path) -> sqlite3.Connection:
             "client_ip": "TEXT",
             "user_agent": "TEXT",
             "rejection_reason": "TEXT",
+            "metadata_json": "TEXT",
         },
     )
     conn.execute(
@@ -124,6 +128,10 @@ def init_db(path: Path) -> sqlite3.Connection:
             "upstream_auth_kind": "TEXT NOT NULL DEFAULT 'none'",
             "upstream_auth_ref": "TEXT",
             "capabilities_json": "TEXT NOT NULL DEFAULT '{}'",
+            "native_protocols_json": "TEXT NOT NULL DEFAULT '[]'",
+            "adapter_policies_json": "TEXT NOT NULL DEFAULT '[]'",
+            "tool_policies_json": "TEXT NOT NULL DEFAULT '{}'",
+            "protocol_features_json": "TEXT NOT NULL DEFAULT '{}'",
             "source_kind": "TEXT NOT NULL DEFAULT 'profile_seed'",
             "source_ref": "TEXT",
             "stale": "INTEGER NOT NULL DEFAULT 0",
@@ -166,6 +174,7 @@ def init_db(path: Path) -> sqlite3.Connection:
         {
             "last_used_at": "TEXT",
             "note": "TEXT",
+            "plain_secret": "TEXT",
         },
     )
     conn.execute(
@@ -263,13 +272,14 @@ def write_request_log(
     client_ip: str | None = None,
     user_agent: str | None = None,
     rejection_reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     conn.execute(
         """
         INSERT INTO request_logs(
-            request_id, model_name, status, protocol, error_message, api_key_id, auth_source, client_ip, user_agent, rejection_reason
+            request_id, model_name, status, protocol, error_message, api_key_id, auth_source, client_ip, user_agent, rejection_reason, metadata_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             request_id,
@@ -282,6 +292,7 @@ def write_request_log(
             client_ip,
             user_agent,
             rejection_reason,
+            json.dumps(metadata or {}, ensure_ascii=False),
         ),
     )
     conn.commit()
@@ -612,6 +623,7 @@ def list_request_logs(
     ).fetchone()[0]
     sql = f"""
         SELECT id, request_id, model_name, status, protocol, error_message, created_at, api_key_id, auth_source, client_ip, user_agent, rejection_reason
+               , metadata_json
         FROM request_logs
         {clause}
         ORDER BY id DESC
@@ -639,6 +651,7 @@ def list_request_logs(
                 "client_ip": row[9],
                 "user_agent": row[10],
                 "rejection_reason": row[11],
+                "metadata": json.loads(row[12]) if row[12] else {},
             }
             for row in rows
         ],
@@ -679,6 +692,7 @@ def get_request_log_detail(conn: sqlite3.Connection, request_id: str) -> dict[st
     log_row = conn.execute(
         """
         SELECT id, request_id, model_name, status, protocol, error_message, created_at, api_key_id, auth_source, client_ip, user_agent, rejection_reason
+               , metadata_json
         FROM request_logs
         WHERE request_id = ?
         ORDER BY id DESC
@@ -713,6 +727,7 @@ def get_request_log_detail(conn: sqlite3.Connection, request_id: str) -> dict[st
             "client_ip": log_row[9],
             "user_agent": log_row[10],
             "rejection_reason": log_row[11],
+            "metadata": json.loads(log_row[12]) if log_row[12] else {},
         },
         "metrics": None if metrics_row is None else {
             "request_id": metrics_row[0],
@@ -742,6 +757,7 @@ def create_api_key(
     *,
     name: str,
     key_hash: str,
+    plain_secret: str | None = None,
     scopes: list[str],
     rpm_limit: int | None = None,
     concurrency_limit: int | None = None,
@@ -751,8 +767,8 @@ def create_api_key(
     disabled_at = _now_sql() if status == "disabled" else None
     cursor = conn.execute(
         """
-        INSERT INTO api_keys(key_hash, name, status, scopes, rpm_limit, concurrency_limit, disabled_at, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO api_keys(key_hash, name, status, scopes, rpm_limit, concurrency_limit, disabled_at, note, plain_secret)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             key_hash,
@@ -763,12 +779,13 @@ def create_api_key(
             concurrency_limit,
             disabled_at,
             note,
+            plain_secret,
         ),
     )
     conn.commit()
     row = conn.execute(
         """
-        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
         FROM api_keys
         WHERE id = ?
         """,
@@ -781,7 +798,7 @@ def create_api_key(
 def list_api_keys(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     cursor = conn.execute(
         """
-        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
         FROM api_keys
         ORDER BY id DESC
         """
@@ -792,7 +809,7 @@ def list_api_keys(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def get_api_key_by_hash(conn: sqlite3.Connection, key_hash: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
-        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
         FROM api_keys
         WHERE key_hash = ?
         """,
@@ -801,10 +818,22 @@ def get_api_key_by_hash(conn: sqlite3.Connection, key_hash: str) -> dict[str, An
     return _decode_api_key_row(row) if row else None
 
 
+def get_api_key_by_name(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
+        FROM api_keys
+        WHERE name = ?
+        """,
+        (name,),
+    ).fetchone()
+    return _decode_api_key_row(row) if row else None
+
+
 def get_api_key_by_id(conn: sqlite3.Connection, key_id: int) -> dict[str, Any] | None:
     row = conn.execute(
         """
-        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
         FROM api_keys
         WHERE id = ?
         """,
@@ -817,6 +846,8 @@ def update_api_key(
     conn: sqlite3.Connection,
     key_id: int,
     *,
+    key_hash: str | None | object = _UNSET,
+    plain_secret: str | None | object = _UNSET,
     name: str | None | object = _UNSET,
     status: str | None | object = _UNSET,
     scopes: list[str] | None | object = _UNSET,
@@ -827,6 +858,12 @@ def update_api_key(
     assignments: list[str] = []
     params: list[Any] = []
 
+    if key_hash is not _UNSET:
+        assignments.append("key_hash = ?")
+        params.append(key_hash)
+    if plain_secret is not _UNSET:
+        assignments.append("plain_secret = ?")
+        params.append(plain_secret)
     if name is not _UNSET:
         assignments.append("name = ?")
         params.append(name)
@@ -882,6 +919,7 @@ def list_model_routes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         SELECT name, display_name, backend_model, backend_type, enabled,
                lifecycle_mode, upstream_protocol, upstream_base_url, upstream_model,
                upstream_auth_kind, upstream_auth_ref, capabilities_json,
+               native_protocols_json, adapter_policies_json, tool_policies_json, protocol_features_json,
                source_kind, source_ref, stale
         FROM model_routes
         ORDER BY name
@@ -902,9 +940,13 @@ def list_model_routes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "upstream_auth_kind": row[9],
             "upstream_auth_ref": row[10],
             "capabilities_json": json.loads(row[11]) if row[11] else {},
-            "source_kind": row[12] or "profile_seed",
-            "source_ref": row[13],
-            "stale": bool(row[14]),
+            "native_protocols_json": json.loads(row[12]) if row[12] else [],
+            "adapter_policies_json": json.loads(row[13]) if row[13] else [],
+            "tool_policies_json": json.loads(row[14]) if row[14] else {},
+            "protocol_features_json": json.loads(row[15]) if row[15] else {},
+            "source_kind": row[16] or "profile_seed",
+            "source_ref": row[17],
+            "stale": bool(row[18]),
         }
         for row in rows
     ]
@@ -962,15 +1004,40 @@ def seed_model_routes(conn: sqlite3.Connection, routes: list[dict[str, Any]]) ->
 
 
 def upsert_model_route(conn: sqlite3.Connection, route: dict[str, Any]) -> None:
+    capabilities_payload = route.get("capabilities_json") or {}
+    capabilities = ModelCapabilities(**capabilities_payload)
+    normalized_route = ModelRoute(
+        name=route["name"],
+        display_name=route["display_name"],
+        backend_model=route.get("backend_model"),
+        backend_type=route.get("backend_type"),
+        enabled=bool(route.get("enabled", True)),
+        lifecycle_mode=route.get("lifecycle_mode", "managed_local"),
+        upstream_protocol=route.get("upstream_protocol", "chat"),
+        upstream_base_url=route.get("upstream_base_url"),
+        upstream_model=route.get("upstream_model", route.get("backend_model")),
+        upstream_auth_kind=route.get("upstream_auth_kind", "none"),
+        upstream_auth_ref=route.get("upstream_auth_ref"),
+        capabilities=capabilities,
+        native_protocols_json=list(route.get("native_protocols_json") or []),
+        adapter_policies_json=list(route.get("adapter_policies_json") or []),
+        tool_policies_json=dict(route.get("tool_policies_json") or {}),
+        protocol_features_json=dict(route.get("protocol_features_json") or {}),
+        source_kind=route.get("source_kind", "profile_seed"),
+        source_ref=route.get("source_ref"),
+        stale=bool(route.get("stale", False)),
+    )
+    runtime_caps = normalized_route.runtime_capabilities()
     conn.execute(
         """
         INSERT INTO model_routes(
             name, display_name, backend_model, backend_type, enabled,
             lifecycle_mode, upstream_protocol, upstream_base_url, upstream_model,
             upstream_auth_kind, upstream_auth_ref, capabilities_json,
+            native_protocols_json, adapter_policies_json, tool_policies_json, protocol_features_json,
             source_kind, source_ref, stale
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
             display_name=excluded.display_name,
             backend_model=excluded.backend_model,
@@ -983,26 +1050,34 @@ def upsert_model_route(conn: sqlite3.Connection, route: dict[str, Any]) -> None:
             upstream_auth_kind=excluded.upstream_auth_kind,
             upstream_auth_ref=excluded.upstream_auth_ref,
             capabilities_json=excluded.capabilities_json,
+            native_protocols_json=excluded.native_protocols_json,
+            adapter_policies_json=excluded.adapter_policies_json,
+            tool_policies_json=excluded.tool_policies_json,
+            protocol_features_json=excluded.protocol_features_json,
             source_kind=excluded.source_kind,
             source_ref=excluded.source_ref,
             stale=excluded.stale
         """,
         (
-            route["name"],
-            route["display_name"],
-            route["backend_model"],
-            route["backend_type"],
-            int(bool(route.get("enabled", True))),
-            route.get("lifecycle_mode", "managed_local"),
-            route.get("upstream_protocol", "chat"),
-            route.get("upstream_base_url"),
-            route.get("upstream_model", route.get("backend_model")),
-            route.get("upstream_auth_kind", "none"),
-            route.get("upstream_auth_ref"),
-            json.dumps(route.get("capabilities_json", {}), ensure_ascii=False),
-            route.get("source_kind", "profile_seed"),
-            route.get("source_ref"),
-            int(bool(route.get("stale", False))),
+            normalized_route.name,
+            normalized_route.display_name,
+            normalized_route.backend_model,
+            normalized_route.backend_type,
+            int(normalized_route.enabled),
+            normalized_route.lifecycle_mode,
+            normalized_route.upstream_protocol,
+            normalized_route.upstream_base_url,
+            normalized_route.upstream_model,
+            normalized_route.upstream_auth_kind,
+            normalized_route.upstream_auth_ref,
+            json.dumps(capabilities_payload, ensure_ascii=False),
+            json.dumps(runtime_caps["native_protocols"], ensure_ascii=False),
+            json.dumps(runtime_caps["adapter_policies"], ensure_ascii=False),
+            json.dumps(runtime_caps["tool_policies"], ensure_ascii=False),
+            json.dumps(runtime_caps["protocol_features"], ensure_ascii=False),
+            normalized_route.source_kind,
+            normalized_route.source_ref,
+            int(normalized_route.stale),
         ),
     )
     conn.commit()

@@ -3,9 +3,9 @@ import {
   Activity,
   AlertCircle,
   CalendarClock,
+  CheckCircle2,
   Key,
   LayoutDashboard,
-  LockKeyhole,
   Network,
   Wifi,
   WifiOff,
@@ -23,18 +23,11 @@ export function Layout({children}: {children: React.ReactNode}) {
     toggleLocale,
     pageTitle,
     t,
-    apiKey,
-    setApiKey,
     sseConnected,
     globalError,
-    setGlobalError,
+    copyFeedback,
     lastUpdated,
   } = useAppContext();
-  const [draftApiKey, setDraftApiKey] = React.useState(apiKey);
-
-  React.useEffect(() => {
-    setDraftApiKey(apiKey);
-  }, [apiKey]);
 
   const navItems = [
     {id: 'overview', label: t('layout.nav.overview'), icon: LayoutDashboard},
@@ -96,33 +89,6 @@ export function Layout({children}: {children: React.ReactNode}) {
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 rounded-full border border-white/60 bg-white/40 px-3 py-2 backdrop-blur-md">
-              <LockKeyhole className="w-4 h-4 text-slate-500" />
-              <input
-                type="password"
-                value={draftApiKey}
-                onChange={(event) => setDraftApiKey(event.target.value)}
-                placeholder={t('layout.apiKeyPlaceholder')}
-                aria-label={t('layout.apiKeyPlaceholder')}
-                className="w-64 bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  const nextKey = draftApiKey.trim();
-                  if (!nextKey) {
-                    setGlobalError(t('layout.apiKeyRequired'));
-                    return;
-                  }
-                  setApiKey(nextKey);
-                  setGlobalError(null);
-                }}
-                className="rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-slate-800"
-              >
-                {t('layout.saveApiKey')}
-              </button>
-            </div>
-
             <button
               onClick={toggleLocale}
               className="px-4 py-2 rounded-full border border-white/60 bg-white/40 backdrop-blur-md text-sm font-medium hover:bg-white/60 transition-colors"
@@ -136,7 +102,7 @@ export function Layout({children}: {children: React.ReactNode}) {
                 <span className="truncate">{globalError}</span>
               </div>
             )}
-            
+
             <div
               className={cn(
                 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border backdrop-blur-md transition-colors',
@@ -158,14 +124,25 @@ export function Layout({children}: {children: React.ReactNode}) {
 
         {/* Page Content View */}
         <div className="flex-1 z-10 relative">
-          {!apiKey && (
-            <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-sm text-amber-800">
-              {t('layout.apiKeyMissingBanner')}
-            </div>
-          )}
           {children}
         </div>
       </main>
+
+      <div className="pointer-events-none fixed right-6 top-6 z-50">
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="copy-toast"
+          className={cn(
+            'flex items-center gap-3 rounded-2xl border border-emerald-200/80 bg-white/90 px-4 py-3 text-sm font-medium text-emerald-700 shadow-lg shadow-emerald-200/40 backdrop-blur-md transition-all duration-300',
+            copyFeedback?.visible ? 'translate-y-0 opacity-100' : '-translate-y-2 opacity-0',
+            copyFeedback ? 'visible' : 'invisible',
+          )}
+        >
+          <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
+          <span className="max-w-xs truncate">{copyFeedback?.message ?? ''}</span>
+        </div>
+      </div>
     </div>
   );
 }

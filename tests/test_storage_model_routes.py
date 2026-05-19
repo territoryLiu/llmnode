@@ -133,3 +133,53 @@ def test_seed_model_routes_keeps_manual_routes_and_marks_old_profile_routes_stal
         "source_ref": "old_profile",
         "action": "marked_stale",
     }
+
+
+def test_upsert_model_route_fills_recommended_runtime_semantics_for_external_manual_route(tmp_path: Path):
+    conn = init_db(tmp_path / "gateway.db")
+
+    upsert_model_route(
+        conn,
+        {
+            "name": "manual-anthropic",
+            "display_name": "Manual Anthropic",
+            "backend_model": None,
+            "backend_type": None,
+            "enabled": True,
+            "lifecycle_mode": "external",
+            "upstream_protocol": "messages",
+            "upstream_base_url": "https://api.anthropic.com",
+            "upstream_model": "claude-sonnet",
+            "upstream_auth_kind": "x_api_key",
+            "upstream_auth_ref": "ANTHROPIC_KEY",
+            "capabilities_json": {
+                "supports_responses": False,
+                "supports_chat": False,
+                "supports_messages": True,
+                "supports_stream": True,
+                "supports_function_tools": True,
+                "supports_builtin_tools": False,
+                "supports_previous_response_id_native": False,
+                "supports_json_schema": False,
+            },
+            "source_kind": "manual",
+            "source_ref": None,
+            "stale": 0,
+        },
+    )
+
+    route = {item["name"]: item for item in list_model_routes(conn)}["manual-anthropic"]
+
+    assert route["native_protocols_json"] == ["messages"]
+    assert route["adapter_policies_json"] == []
+    assert route["tool_policies_json"] == {
+        "openai_function_tools": True,
+        "anthropic_function_tools": True,
+        "builtin_tools": False,
+    }
+    assert route["protocol_features_json"] == {
+        "stream": True,
+        "count_tokens": True,
+        "json_schema": False,
+        "previous_response_id": False,
+    }

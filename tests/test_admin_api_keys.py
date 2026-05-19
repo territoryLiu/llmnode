@@ -44,6 +44,7 @@ def test_admin_can_create_and_list_api_keys():
             assert key_row["name"] == "console-admin"
             assert "secret" not in key_row
             assert "key_hash" not in key_row
+            assert key_row["plain_secret"] == body["secret"]
             # Listed key returns masked_key
             assert "masked_key" in key_row
             assert key_row["masked_key"].startswith("sk-")

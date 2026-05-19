@@ -128,3 +128,82 @@ def test_admin_cannot_reenable_stale_profile_seed_route():
             assert patch.json()["detail"] == "stale profile_seed routes cannot be re-enabled; create a manual route or switch back to the source profile"
 
     asyncio.run(run())
+
+
+def test_admin_can_create_and_update_runtime_semantics_for_manual_route():
+    async def run():
+        app = create_app()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            created = await client.post(
+                "/admin/models",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "name": "openai-gpt-4.1",
+                    "display_name": "OpenAI GPT-4.1",
+                    "lifecycle_mode": "external",
+                    "upstream_protocol": "responses",
+                    "upstream_base_url": "https://api.openai.com/v1",
+                    "upstream_model": "gpt-4.1",
+                    "upstream_auth_kind": "bearer",
+                    "upstream_auth_ref": "OPENAI_KEY",
+                    "enabled": True,
+                    "capabilities_json": {
+                        "supports_responses": True,
+                        "supports_chat": True,
+                        "supports_messages": False,
+                        "supports_stream": True,
+                        "supports_function_tools": True,
+                        "supports_builtin_tools": False,
+                        "supports_previous_response_id_native": True,
+                        "supports_json_schema": True,
+                    },
+                    "native_protocols_json": ["responses"],
+                    "adapter_policies_json": [],
+                    "tool_policies_json": {
+                        "openai_function_tools": True,
+                        "anthropic_function_tools": False,
+                        "builtin_tools": False,
+                    },
+                    "protocol_features_json": {
+                        "stream": True,
+                        "count_tokens": False,
+                        "json_schema": True,
+                        "previous_response_id": True,
+                    },
+                },
+            )
+            assert created.status_code == 200
+            created_model = created.json()["model"]
+            assert created_model["native_protocols_json"] == ["responses"]
+            assert created_model["tool_policies_json"]["anthropic_function_tools"] is False
+            assert created_model["protocol_features_json"]["previous_response_id"] is True
+
+            patched = await client.patch(
+                "/admin/models/openai-gpt-4.1",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "native_protocols_json": ["chat"],
+                    "adapter_policies_json": ["responses->chat"],
+                    "tool_policies_json": {
+                        "openai_function_tools": True,
+                        "anthropic_function_tools": True,
+                        "builtin_tools": False,
+                    },
+                    "protocol_features_json": {
+                        "stream": True,
+                        "count_tokens": False,
+                        "json_schema": False,
+                        "previous_response_id": False,
+                    },
+                },
+            )
+            assert patched.status_code == 200
+            patched_model = patched.json()["model"]
+            assert patched_model["native_protocols_json"] == ["chat"]
+            assert patched_model["adapter_policies_json"] == ["responses->chat"]
+            assert patched_model["tool_policies_json"]["anthropic_function_tools"] is True
+            assert patched_model["protocol_features_json"]["previous_response_id"] is False
+
+    asyncio.run(run())

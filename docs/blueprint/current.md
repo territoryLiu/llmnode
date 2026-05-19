@@ -228,21 +228,40 @@
   - `profile_seed` route 的 `lifecycle_mode` 已在前端锁定，不再允许直接改成 `external`
   - `stale + profile_seed` route 当前也不允许直接重新启用；如需恢复，应切回来源 profile，或新建 manual route
   - 管理台总览页已新增 route 治理摘要，可直接看到 `stale / manual / profile_seed` 数量
+- Claude Code 本地兼容边界已补齐协议透传（2026-05-18）：
+  - `/v1/messages` 的 `managed_local + chat` facade 现已保留 Anthropic / Claude Code 风格的 function tool 定义（`name + description + input_schema`）并透传到本地后端
+  - `/v1/messages/count_tokens` 已提供最小兼容实现，避免 Claude Code 在工程模式探测时直接 404
+  - 默认附带的 builtin tool 元数据（如 `bash_* / web_search_* / text_editor_*`）仍会被过滤；真正未开放的仍是 builtin tools，而不是 Anthropic function tools
   - 启动 seed 的 route reconcile 结果现已接入 `/admin/events`，至少可观察到 `route_marked_stale` 与 `route_manual_preserved`
+- gateway 原生透传治理模型已切换到 phase 1（2026-05-18）：
+  - 正式原则已改为 `native pass-through first`，只要 route 原生支持客户端协议，gateway 默认不改业务 payload 语义
+  - `adapter opt-in only` 已生效；协议转换不再默认兜底，只允许 route 显式开启的 adapter 生效
+  - 当前兼容边界按 `client_protocol + route 能力声明` 判定，而不是按 `Claude Code / Codex / Cherry Studio` 这类客户端品牌做专门 payload 魔改
+  - `managed_local + vLLM` 当前按 `chat / responses / messages` 三协议原生支持处理
+  - route 运行时语义已拆成 `native_protocols / adapter_policies / tool_policies / protocol_features`
+  - 工具治理已拆成 `OpenAI function / Anthropic function / builtin tools` 三类，默认仍拒绝 builtin tools
+  - `request_logs` 已开始记录 `execution_mode / adapter_selected / request_mutation` 等结构化元数据，供管理面排查协议路径
+- route runtime 语义推荐默认与管理闭环已收口到统一真相源（2026-05-19）：
+  - `ModelRoute.recommended_runtime_semantics()` 已成为推荐 runtime 默认的正式派生入口
+  - `/admin/status` 与 `/admin/models` 当前会为每条 route 返回 `recommended_runtime_semantics`
+  - 管理台模型页当前优先消费后端返回的推荐默认，不再只依赖前端本地 helper
+  - 管理台已具备基于推荐默认的风险提示、协议切换自动套用、恢复推荐默认闭环
+  - `upsert_model_route()` 当前会在调用方未显式提供 runtime 四层字段时自动补齐推荐默认再落库，避免 direct write / CLI / seed 路径把 runtime 语义写成空值
 - 配置真相源与测试基线继续收口（2026-05-18）：
   - `tests/test_smoke.py` 已改为围绕 repo 当前激活 profile 与 profile 文件解析断言配置行为，不再断言固定默认模型名
   - `load_settings()` 在自定义 defaults/backends 场景下，若本地 active profile 缺字段，现会优先回退到 repo 中同名 profile，而不是串回 repo 默认 profile
-- 三协议入口的 route-aware 上游分发已补到 phase1 最小闭环（2026-05-15）：
-  - `/v1/responses` 已可按 route 选择：
-    - native responses upstream
-    - responses-to-chat 适配
-    - responses-to-messages 适配
+- 三协议入口的 route-aware 上游分发已补到 phase1 最小闭环（2026-05-18）：
+  - `/v1/responses` 当前先按 route 的 `native_protocols` 判定：
+    - 原生支持 `responses` 时走 native upstream `/v1/responses`
+    - 仅在 route 显式开启时，才允许 `responses -> chat` 或 `responses -> messages` 适配
+    - 未声明原生支持且未显式开启 adapter 时，默认保守失败
   - `/v1/chat/completions` 已可按 route 直连 external chat upstream
   - `/v1/messages` 已可按 route 直连 external messages upstream
   - external upstream 鉴权已不再发送占位 token；`upstream_auth_ref` 当前按环境变量名解析真实 secret
-  - 现有本地 Qwen 主路径仍保持兼容：
-    - `managed_local + chat` 继续服务 `/v1/chat/completions`
-    - `managed_local + chat` 仍可兼容 `/v1/messages` 入口
+  - 现有本地 vLLM 主路径当前按原生三协议处理：
+    - `managed_local + vLLM` 继续服务 `/v1/chat/completions`
+    - `managed_local + vLLM` 原生服务 `/v1/responses`
+    - `managed_local + vLLM` 原生兼容 `/v1/messages` 入口
 
 当前模型与 profile 边界应这样理解：
 
@@ -296,6 +315,11 @@
 - 当前激活 profile 仍决定本地受控 route 的默认供给
 - 启动时会把该默认供给增量同步到 SQLite 的 `model_routes`
 - `model_routes` 现已作为长期 route 注册表保存 manual route、stale 状态与治理字段
+- `model_routes` 当前也会持久化 route 的 runtime 四层治理字段：
+  - `native_protocols_json`
+  - `adapter_policies_json`
+  - `tool_policies_json`
+  - `protocol_features_json`
 - 当前 phase 1 已形成 external route 新增、manual route 删除、profile seed 增量同步的最小管理闭环
 
 ## 9. 当前文档系统状态

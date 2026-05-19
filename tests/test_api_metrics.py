@@ -5,6 +5,8 @@ from unittest.mock import patch
 import httpx
 
 from llmnode.api.app import create_app
+from llmnode.config import load_settings
+from llmnode.models import ModelCapabilities, ModelRoute
 from llmnode.proxy.vllm_client import VLLMClient
 from llmnode.security import hash_api_key
 from llmnode.storage.db import aggregate_request_metrics, create_api_key
@@ -31,7 +33,7 @@ class UsageFakeClient(VLLMClient):
         }
 
 
-TEST_MODEL = "qwen36-27b-fp8"
+TEST_MODEL = load_settings().vllm.model_name
 
 
 def seed_admin_key(app, secret: str = "sk-admin-test") -> str:
@@ -364,5 +366,175 @@ def test_native_responses_sync_records_metrics_on_completion():
             "SELECT protocol, status, backend_type FROM request_metrics"
         ).fetchone()
         assert row == ("responses", "ok", "external")
+
+    asyncio.run(run())
+
+
+def test_request_log_marks_native_execution_mode():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = UsageFakeClient()
+        create_api_key(
+            app.state.db,
+            name="native-log-meta",
+            key_hash=hash_api_key("sk-native-log-meta"),
+            scopes=["inference"],
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/responses",
+                headers={"Authorization": "Bearer sk-native-log-meta"},
+                json={"model": TEST_MODEL, "input": "hello"},
+            )
+            assert resp.status_code == 200
+            request_id = resp.headers["x-request-id"]
+
+        detail = app.state.db.execute(
+            "SELECT metadata_json FROM request_logs WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+        assert detail is not None
+        payload = json.loads(detail[0]) if detail[0] else {}
+        assert payload["execution_mode"] == "native"
+        assert payload["request_mutation"] is False
+        assert payload["client_protocol"] == "responses"
+
+    asyncio.run(run())
+
+
+def test_chat_external_route_success_metrics_use_external_backend_type():
+    async def run():
+        app = create_app()
+        app.state.ctx.models = {
+            "gpt-4o-chat-ext": ModelRoute(
+                name="gpt-4o-chat-ext",
+                display_name="GPT-4o Chat External",
+                backend_model=None,
+                backend_type=None,
+                enabled=True,
+                lifecycle_mode="external",
+                upstream_protocol="chat",
+                upstream_base_url="https://api.openai.com/v1",
+                upstream_model="gpt-4o-mini",
+                upstream_auth_kind="bearer",
+                upstream_auth_ref="OPENAI_CHAT_METRICS_TOKEN",
+                capabilities=ModelCapabilities(
+                    supports_responses=False,
+                    supports_chat=True,
+                    supports_messages=False,
+                    supports_stream=True,
+                    supports_function_tools=True,
+                    supports_builtin_tools=False,
+                    supports_previous_response_id_native=False,
+                    supports_json_schema=True,
+                ),
+            )
+        }
+        create_api_key(
+            app.state.db,
+            name="chat-external-metrics",
+            key_hash=hash_api_key("sk-chat-external-metrics"),
+            scopes=["inference"],
+        )
+
+        async def fake_post_json_to(base_url, path, payload, headers=None):
+            return {
+                "id": "chat-ext-metric-1",
+                "object": "chat.completion",
+                "model": payload["model"],
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+            }
+
+        app.state.post_json_to = fake_post_json_to
+        app.state.ctx.post_json_to = fake_post_json_to
+        transport = httpx.ASGITransport(app=app)
+        with patch.dict("os.environ", {"OPENAI_CHAT_METRICS_TOKEN": "sk-upstream-openai-chat"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-chat-external-metrics"},
+                    json={
+                        "model": "gpt-4o-chat-ext",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "max_tokens": 16,
+                    },
+                )
+                assert resp.status_code == 200
+
+        row = app.state.db.execute(
+            "SELECT backend_type FROM request_metrics ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        assert row == ("external",)
+
+    asyncio.run(run())
+
+
+def test_anthropic_external_route_success_metrics_use_external_backend_type():
+    async def run():
+        app = create_app()
+        app.state.ctx.models = {
+            "claude-ext-messages": ModelRoute(
+                name="claude-ext-messages",
+                display_name="Claude External Messages",
+                backend_model=None,
+                backend_type=None,
+                enabled=True,
+                lifecycle_mode="external",
+                upstream_protocol="messages",
+                upstream_base_url="https://api.anthropic.com",
+                upstream_model="claude-sonnet-4",
+                upstream_auth_kind="x_api_key",
+                upstream_auth_ref="ANTHROPIC_METRICS_TOKEN",
+                capabilities=ModelCapabilities(
+                    supports_responses=False,
+                    supports_chat=False,
+                    supports_messages=True,
+                    supports_stream=True,
+                    supports_function_tools=True,
+                    supports_builtin_tools=False,
+                    supports_previous_response_id_native=False,
+                    supports_json_schema=False,
+                ),
+            )
+        }
+        create_api_key(
+            app.state.db,
+            name="anthropic-external-metrics",
+            key_hash=hash_api_key("sk-anthropic-external-metrics"),
+            scopes=["inference"],
+        )
+
+        async def fake_post_json_to(base_url, path, payload, headers=None):
+            return {
+                "id": "msg-ext-metric-1",
+                "type": "message",
+                "role": "assistant",
+                "model": payload["model"],
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 4, "output_tokens": 5},
+            }
+
+        app.state.post_json_to = fake_post_json_to
+        app.state.ctx.post_json_to = fake_post_json_to
+        transport = httpx.ASGITransport(app=app)
+        with patch.dict("os.environ", {"ANTHROPIC_METRICS_TOKEN": "sk-upstream-anthropic"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/v1/messages",
+                    headers={"Authorization": "Bearer sk-anthropic-external-metrics"},
+                    json={
+                        "model": "claude-ext-messages",
+                        "max_tokens": 16,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+                assert resp.status_code == 200
+
+        row = app.state.db.execute(
+            "SELECT backend_type FROM request_metrics ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        assert row == ("external",)
 
     asyncio.run(run())

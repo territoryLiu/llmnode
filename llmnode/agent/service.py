@@ -167,6 +167,12 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
         if app.state.recovery_lock.locked():
             return
         snapshot = await app.state.run_sync(app.state.backend_driver.snapshot)
+
+        # Container is running — it's warming up, not crashed; never recover
+        if snapshot.get("exists") and str(snapshot.get("status")) == "running":
+            app.state.agent.mark("starting", "container running, waiting for backend warmup")
+            return
+
         if _within_startup_grace(snapshot):
             app.state.agent.mark("starting", "waiting for backend warmup")
             return
@@ -263,7 +269,7 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
     app.state.poll_interval = int(getattr(settings.agent, "poll_interval", 15))
     app.state.auto_recover = bool(getattr(settings.agent, "auto_recover", True))
     app.state.recovery_threshold = int(getattr(settings.agent, "recovery_threshold", 2))
-    app.state.startup_grace_period = int(getattr(settings.agent, "startup_grace_period", 180))
+    app.state.startup_grace_period = int(getattr(settings.agent, "startup_grace_period", 300))
     app.state.warming_up_retry_after = int(getattr(settings.agent, "warming_up_retry_after", 5))
     app.state.recovery_lock = asyncio.Lock()
     app.state.monitor_task = None
@@ -305,12 +311,29 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
     async def events(limit: int = 50):
         return {"events": list_agent_events(app.state.db, limit=limit)}
 
+    async def _background_start() -> None:
+        try:
+            await app.state.run_sync(app.state.backend_driver.start)
+        except Exception as exc:
+            app.state.agent.last_error = f"backend start failed: {exc}"
+            app.state.agent.mark("degraded", f"backend start failed: {exc}")
+            write_agent_event(
+                app.state.db, "degraded", f"backend start failed: {exc}",
+                event_type="backend_error",
+                readiness_state="degraded",
+                http_ready=False,
+                inference_ready=False,
+                metadata={"error": str(exc)},
+            )
+
     @app.post("/manage/start")
     async def start_backend():
+        if app.state.agent.desired_state == "running" and app.state.agent.status in ("starting", "warming_up", "ready", "recovering"):
+            return {"status": app.state.agent.status, "message": "already starting or running"}
         app.state.agent.desired_state = "running"
-        await app.state.run_sync(app.state.backend_driver.start)
         app.state.agent.mark("starting", "manual start requested")
         write_agent_event(app.state.db, "starting", "manual start requested")
+        asyncio.create_task(_background_start())
         return {"status": app.state.agent.status}
 
     @app.post("/manage/stop")

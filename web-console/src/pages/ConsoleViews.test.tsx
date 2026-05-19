@@ -112,6 +112,19 @@ const emptySnapshot = {
           supports_previous_response_id_native: false,
           supports_json_schema: false,
         },
+        native_protocols_json: ['chat', 'responses', 'messages'],
+        adapter_policies_json: [],
+        tool_policies_json: {
+          openai_function_tools: true,
+          anthropic_function_tools: true,
+          builtin_tools: false,
+        },
+        protocol_features_json: {
+          stream: true,
+          count_tokens: true,
+          json_schema: false,
+          previous_response_id: true,
+        },
       },
       {
         name: 'qwen36-35b-a3b-fp8',
@@ -137,6 +150,19 @@ const emptySnapshot = {
           supports_builtin_tools: false,
           supports_previous_response_id_native: false,
           supports_json_schema: false,
+        },
+        native_protocols_json: ['chat', 'responses', 'messages'],
+        adapter_policies_json: [],
+        tool_policies_json: {
+          openai_function_tools: true,
+          anthropic_function_tools: true,
+          builtin_tools: false,
+        },
+        protocol_features_json: {
+          stream: true,
+          count_tokens: true,
+          json_schema: false,
+          previous_response_id: true,
         },
       },
       {
@@ -164,6 +190,29 @@ const emptySnapshot = {
           supports_previous_response_id_native: false,
           supports_json_schema: false,
         },
+        native_protocols_json: ['messages'],
+        adapter_policies_json: [],
+        tool_policies_json: {
+          openai_function_tools: true,
+          anthropic_function_tools: true,
+          builtin_tools: false,
+        },
+        protocol_features_json: {
+          stream: true,
+          count_tokens: true,
+          json_schema: false,
+          previous_response_id: false,
+        },
+        recommended_runtime_semantics: {
+          native_protocols_json: ['messages'],
+          adapter_policies_json: [],
+          protocol_features_json: {
+            stream: true,
+            count_tokens: true,
+            json_schema: false,
+            previous_response_id: false,
+          },
+        },
       },
       {
         name: 'legacy-qwen-route',
@@ -189,6 +238,29 @@ const emptySnapshot = {
           supports_builtin_tools: false,
           supports_previous_response_id_native: false,
           supports_json_schema: false,
+        },
+        native_protocols_json: ['chat'],
+        adapter_policies_json: [],
+        tool_policies_json: {
+          openai_function_tools: true,
+          anthropic_function_tools: true,
+          builtin_tools: false,
+        },
+        protocol_features_json: {
+          stream: true,
+          count_tokens: false,
+          json_schema: false,
+          previous_response_id: false,
+        },
+        recommended_runtime_semantics: {
+          native_protocols_json: ['chat'],
+          adapter_policies_json: [],
+          protocol_features_json: {
+            stream: true,
+            count_tokens: false,
+            json_schema: false,
+            previous_response_id: false,
+          },
         },
       },
     ],
@@ -267,6 +339,7 @@ const keyListResponse = {
       id: 1,
       name: 'Console',
       masked_key: 'sk-************************************0001',
+      plain_secret: 'sk-console-real-0001',
       status: 'active',
       scopes: ['admin', 'inference'],
       rpm_limit: null,
@@ -275,6 +348,21 @@ const keyListResponse = {
       disabled_at: null,
       last_used_at: null,
       note: null,
+      usage_summary: {total_requests: 0, total_tokens: null},
+    },
+    {
+      id: 2,
+      name: 'CLI Admin',
+      masked_key: 'sk-************************************0002',
+      plain_secret: 'sk-cli-admin-real-0002',
+      status: 'active',
+      scopes: ['admin'],
+      rpm_limit: null,
+      concurrency_limit: null,
+      created_at: '2026-05-15 09:00:00',
+      disabled_at: null,
+      last_used_at: null,
+      note: 'created by cli',
       usage_summary: {total_requests: 0, total_tokens: null},
     },
   ],
@@ -295,6 +383,14 @@ const requestLogsResponse = {
       client_ip: '127.0.0.1',
       user_agent: 'Mozilla/5.0',
       rejection_reason: null,
+      metadata: {
+        client_protocol: 'chat',
+        execution_mode: 'native',
+        adapter_selected: null,
+        tool_classes_detected: [],
+        request_mutation: false,
+        mutation_reason: null,
+      },
     },
   ],
   total: 26,
@@ -317,6 +413,14 @@ const requestLogsPageTwoResponse = {
       client_ip: '127.0.0.2',
       user_agent: 'curl/8.0',
       rejection_reason: 'backend_error',
+      metadata: {
+        client_protocol: 'responses',
+        execution_mode: 'adapter',
+        adapter_selected: 'responses_to_chat',
+        tool_classes_detected: ['openai_function_tools'],
+        request_mutation: true,
+        mutation_reason: 'responses_to_chat',
+      },
     },
   ],
   total: 26,
@@ -339,6 +443,14 @@ const requestLogDetailResponse = {
     client_ip: '127.0.0.1',
     user_agent: 'Mozilla/5.0',
     rejection_reason: null,
+    metadata: {
+      client_protocol: 'chat',
+      execution_mode: 'native',
+      adapter_selected: null,
+      tool_classes_detected: [],
+      request_mutation: false,
+      mutation_reason: null,
+    },
   },
   metrics: {
     request_id: 'req-1',
@@ -385,7 +497,6 @@ function cloneJson<T>(value: T): T {
 }
 
 beforeEach(() => {
-  window.localStorage.setItem('vllm-console-api-key', 'sk-test-console');
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -411,8 +522,9 @@ beforeEach(() => {
       return jsonResponse({
         key: {
           ...keyListResponse.keys[0],
-          id: 2,
-          masked_key: 'sk-************************************0002',
+          id: 3,
+          name: 'Web Console',
+          masked_key: 'sk-************************************0003',
         },
         secret: 'sk-abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd',
       });
@@ -470,6 +582,59 @@ beforeEach(() => {
   );
 });
 
+it('shows loading state before first snapshot resolves instead of degraded', async () => {
+  let releaseSnapshot: (() => void) | null = null;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/admin/status')) {
+        return new Promise<Response>((resolve) => {
+          releaseSnapshot = () => resolve(new Response(JSON.stringify(emptySnapshot), {
+            status: 200,
+            headers: {'Content-Type': 'application/json'},
+          }));
+        });
+      }
+      if (url.includes('/admin/request-logs')) {
+        return jsonResponse(requestLogsResponse);
+      }
+      if (url.includes('/admin/overview/usage')) {
+        return jsonResponse(usageOverview);
+      }
+      if (url.includes('/admin/keys')) {
+        return jsonResponse(keyListResponse);
+      }
+      if (url.includes('/admin/models')) {
+        return jsonResponse({models: emptySnapshot.runtime.model_routes});
+      }
+      if (url.includes('/admin/schedule')) {
+        return jsonResponse({schedule: emptySnapshot.runtime.schedule});
+      }
+      if (url.includes('/admin/overview/readiness')) {
+        return jsonResponse({
+          readiness: {status: 'ready'},
+          base_urls: {
+            local: 'http://127.0.0.1:4000',
+            lan: 'http://10.18.90.100:4000',
+          },
+        });
+      }
+      if (url.includes('/admin/stream')) {
+        return Promise.resolve(new Response(null, {status: 503}));
+      }
+      return jsonResponse({});
+    }),
+  );
+
+  render(<App />);
+  expect(await screen.findByText('加载中')).toBeInTheDocument();
+  expect(screen.queryByText('降级')).not.toBeInTheDocument();
+
+  releaseSnapshot?.();
+  await screen.findByText('健康');
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -495,6 +660,19 @@ describe('Console views', () => {
     expect(screen.queryByText('后端用量分布')).not.toBeInTheDocument();
   });
 
+  it('shows copy success toast after copying a model name', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('当前可访问模型')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getAllByTitle('复制模型名')[0]);
+
+    expect(await screen.findByText('已复制到剪贴板')).toBeInTheDocument();
+    expect(screen.getByTestId('copy-toast')).toHaveClass('opacity-100');
+  });
+
   it('does not show generated secret success panel after creating a key', async () => {
     render(<App />);
 
@@ -508,8 +686,15 @@ describe('Console views', () => {
     await waitFor(() => {
       expect(screen.queryByText('密钥生成成功')).not.toBeInTheDocument();
       expect(screen.queryByText('请立刻保存这个密钥。关闭后将无法再次查看。')).not.toBeInTheDocument();
-      expect(screen.getByText('sk-abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd')).toBeInTheDocument();
+      expect(screen.getByText('sk-************************************0002')).toBeInTheDocument();
     });
+
+    const createdRow = screen.getByText('Web Console').closest('tr');
+    expect(createdRow).toBeTruthy();
+    const createdScope = within(createdRow as HTMLElement);
+
+    await userEvent.click(createdScope.getByRole('button', {name: '显示'}));
+    expect(createdScope.getByText('sk-abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd')).toBeInTheDocument();
   });
 
   it('renders usage trend controls and records table headings', async () => {
@@ -630,6 +815,10 @@ describe('Console views', () => {
             source_ref: null,
             stale: false,
             capabilities_json: payload.capabilities_json,
+            native_protocols_json: payload.native_protocols_json,
+            adapter_policies_json: payload.adapter_policies_json,
+            tool_policies_json: payload.tool_policies_json,
+            protocol_features_json: payload.protocol_features_json,
           },
         });
       }
@@ -735,6 +924,16 @@ describe('Console views', () => {
         supports_previous_response_id_native: true,
         supports_json_schema: true,
       });
+      expect(payload.native_protocols_json).toEqual(['responses']);
+      expect(payload.adapter_policies_json).toEqual([]);
+      expect(payload.tool_policies_json).toMatchObject({
+        anthropic_function_tools: true,
+        builtin_tools: false,
+      });
+      expect(payload.protocol_features_json).toMatchObject({
+        stream: true,
+        count_tokens: false,
+      });
     });
   });
 
@@ -822,6 +1021,19 @@ describe('Console views', () => {
           source_ref: null,
           stale: false,
           capabilities_json: payload.capabilities_json,
+          native_protocols_json: payload.native_protocols_json ?? [payload.upstream_protocol],
+          adapter_policies_json: payload.adapter_policies_json ?? [],
+          tool_policies_json: payload.tool_policies_json ?? {
+            openai_function_tools: true,
+            anthropic_function_tools: true,
+            builtin_tools: false,
+          },
+          protocol_features_json: payload.protocol_features_json ?? {
+            stream: true,
+            count_tokens: payload.upstream_protocol === 'messages',
+            json_schema: false,
+            previous_response_id: false,
+          },
         };
         runtimeModelRoutes.push(createdRoute);
         return jsonResponse({model: createdRoute});
@@ -897,9 +1109,205 @@ describe('Console views', () => {
         enabled: true,
       });
       expect(payload.capabilities_json.supports_responses).toBe(true);
+      expect(payload.native_protocols_json).toEqual(['responses']);
     });
 
     expect(await screen.findByText('openai-gpt-4o')).toBeInTheDocument();
     expect(screen.getByDisplayValue('OpenAI GPT-4o')).toBeInTheDocument();
+  });
+
+  it('shows cli-created keys from admin list', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('密钥管理')[0]);
+
+    expect(await screen.findByText('CLI Admin')).toBeInTheDocument();
+    expect(screen.getByText('created by cli')).toBeInTheDocument();
+    expect(screen.getByText('sk-************************************0002')).toBeInTheDocument();
+  });
+
+  it('copies real secret from key list instead of masked key', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {writeText},
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('密钥管理')[0]);
+    const consoleRow = (await screen.findByText('Console')).closest('tr');
+    expect(consoleRow).toBeTruthy();
+    const consoleScope = within(consoleRow as HTMLElement);
+
+    expect(consoleScope.getByText('sk-************************************0001')).toBeInTheDocument();
+
+    await userEvent.click(consoleScope.getByRole('button', {name: '显示'}));
+    expect(consoleScope.getByText('sk-console-real-0001')).toBeInTheDocument();
+
+    const secretCopyButton = consoleScope.getByRole('button', {name: '复制真实密钥'});
+    await userEvent.click(secretCopyButton);
+
+    expect(writeText).toHaveBeenCalledWith('sk-console-real-0001');
+    expect(await screen.findByText('已复制到剪贴板')).toBeInTheDocument();
+    expect(screen.getByTestId('copy-toast')).toHaveClass('opacity-100');
+
+    await userEvent.click(consoleScope.getByRole('button', {name: '隐藏'}));
+    expect(consoleScope.getByText('sk-************************************0001')).toBeInTheDocument();
+  });
+
+  it('keeps api key display width fixed when toggling secret visibility', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('密钥管理')[0]);
+    const secretValue = await screen.findByTestId('api-key-secret-1');
+
+    expect(secretValue).toHaveClass('w-[36ch]');
+    expect(secretValue).toHaveTextContent('sk-************************************0001');
+
+    const consoleRow = (await screen.findByText('Console')).closest('tr');
+    expect(consoleRow).toBeTruthy();
+    const consoleScope = within(consoleRow as HTMLElement);
+
+    await userEvent.click(consoleScope.getByRole('button', {name: '显示'}));
+    expect(secretValue).toHaveClass('w-[36ch]');
+    expect(secretValue).toHaveTextContent('sk-console-real-0001');
+  });
+
+  it('updates recommended runtime defaults when create route protocol changes', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('模型路由')[0]);
+
+    const createSectionHeading = await screen.findByText('新增外部路由');
+    const createSection = createSectionHeading.closest('section');
+    expect(createSection).toBeTruthy();
+    const createScope = within(createSection as HTMLElement);
+
+    await userEvent.selectOptions(await createScope.findByLabelText('create-route-protocol'), 'messages');
+
+    expect(createScope.getByRole('checkbox', {name: 'create-native-protocol-messages'})).toBeChecked();
+    expect(createScope.getByRole('checkbox', {name: 'create-native-protocol-chat'})).not.toBeChecked();
+    expect(createScope.getByRole('checkbox', {name: 'create-native-protocol-responses'})).not.toBeChecked();
+    expect(createScope.getByRole('checkbox', {name: 'create-protocol-feature-count-tokens'})).toBeChecked();
+  });
+
+  it('uses backend recommended runtime semantics when create route protocol changes', async () => {
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    const snapshotWithCustomRecommended = cloneJson(emptySnapshot);
+    snapshotWithCustomRecommended.runtime.model_routes[0].recommended_runtime_semantics = {
+      native_protocols_json: ['chat'],
+      adapter_policies_json: ['responses->chat'],
+      protocol_features_json: {
+        stream: true,
+        count_tokens: false,
+        json_schema: false,
+        previous_response_id: false,
+      },
+    };
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/admin/status')) {
+        return jsonResponse(snapshotWithCustomRecommended);
+      }
+      if (url.includes('/admin/request-logs')) {
+        return jsonResponse(requestLogsResponse);
+      }
+      if (url.includes('/admin/overview/usage')) {
+        return jsonResponse(usageOverview);
+      }
+      if (url.includes('/admin/keys')) {
+        return jsonResponse(keyListResponse);
+      }
+      if (url.includes('/admin/models')) {
+        return jsonResponse({models: snapshotWithCustomRecommended.runtime.model_routes});
+      }
+      if (url.includes('/admin/schedule')) {
+        return jsonResponse({schedule: snapshotWithCustomRecommended.runtime.schedule});
+      }
+      if (url.includes('/admin/overview/readiness')) {
+        return jsonResponse({
+          readiness: {status: 'ready'},
+          base_urls: {
+            local: 'http://127.0.0.1:4000',
+            lan: 'http://10.18.90.100:4000',
+          },
+        });
+      }
+      if (url.includes('/admin/stream')) {
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(snapshotWithCustomRecommended)}\n\n`));
+            controller.close();
+          },
+        });
+        return Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: {'Content-Type': 'text/event-stream'},
+          }),
+        );
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('模型路由')[0]);
+
+    const createSectionHeading = await screen.findByText('新增外部路由');
+    const createSection = createSectionHeading.closest('section');
+    expect(createSection).toBeTruthy();
+    const createScope = within(createSection as HTMLElement);
+
+    await userEvent.selectOptions(await createScope.findByLabelText('create-route-protocol'), 'chat');
+
+    expect(createScope.getByRole('checkbox', {name: 'create-native-protocol-chat'})).toBeChecked();
+    expect(createScope.getByRole('checkbox', {name: 'create-native-protocol-responses'})).not.toBeChecked();
+    expect(createScope.getByRole('checkbox', {name: 'create-adapter-policy-responses-chat'})).toBeChecked();
+  });
+
+  it('shows runtime warning and can apply recommended defaults for manual route', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('模型路由')[0]);
+
+    const row = await screen.findByText('anthropic-claude');
+    const routeCard = row.closest('section');
+    expect(routeCard).toBeTruthy();
+    const routeScope = within(routeCard as HTMLElement);
+
+    await userEvent.click(routeScope.getByRole('checkbox', {name: 'anthropic-claude-native-protocol-chat'}));
+
+    expect(routeScope.getByRole('button', {name: '恢复推荐默认'})).toBeInTheDocument();
+
+    await userEvent.click(routeScope.getByRole('button', {name: '恢复推荐默认'}));
+
+    expect(routeScope.getByRole('checkbox', {name: 'anthropic-claude-native-protocol-messages'})).toBeChecked();
+    expect(routeScope.getByRole('checkbox', {name: 'anthropic-claude-native-protocol-chat'})).not.toBeChecked();
+    expect(routeScope.queryByRole('button', {name: '恢复推荐默认'})).not.toBeInTheDocument();
   });
 });

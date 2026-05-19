@@ -199,6 +199,7 @@ def test_agent_manage_start_stop_use_docker_controls():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             r1 = await client.post("/manage/start")
+            await asyncio.sleep(0)
             r2 = await client.post("/manage/stop")
             assert r1.status_code == 200
             assert r2.status_code == 200
@@ -279,6 +280,7 @@ def test_agent_manual_start_restores_auto_recovery_target():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             start_resp = await client.post("/manage/start")
+            await asyncio.sleep(0)
             assert start_resp.status_code == 200
 
             app.state.agent.failure_count = app.state.recovery_threshold - 1
@@ -322,6 +324,7 @@ def test_agent_state_exposes_started_at_after_manual_start():
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             start_resp = await client.post("/manage/start")
+            await asyncio.sleep(0)
             assert start_resp.status_code == 200
             state_resp = await client.get("/state")
             assert state_resp.status_code == 200
@@ -368,13 +371,14 @@ def test_agent_defers_auto_recovery_during_startup_grace():
             assert resp.status_code == 200
             payload = resp.json()
             assert payload["status"] == "starting"
-            assert payload["last_error"] == "waiting for backend warmup"
+            assert payload["last_error"] == "container running, waiting for backend warmup"
             assert restart_calls == []
 
     asyncio.run(run())
 
 
-def test_agent_recovers_after_startup_grace_expires():
+def test_agent_skips_recovery_when_container_running():
+    """容器 running 时即使过了 startup_grace_period 也不触发恢复（模型在 warmup）"""
     async def run():
         app = create_agent_app(enable_monitor=False)
         app.state.agent.status = "starting"
@@ -387,6 +391,50 @@ def test_agent_recovers_after_startup_grace_expires():
 
         def fake_snapshot():
             return {"exists": True, "status": "running"}
+
+        restart_calls = []
+
+        def fake_stop():
+            restart_calls.append("stop")
+
+        def fake_start():
+            restart_calls.append("start")
+
+        async def run_sync(func):
+            return func()
+
+        app.state.backend_driver.health = fake_health
+        app.state.backend_driver.snapshot = fake_snapshot
+        app.state.backend_driver.stop = fake_stop
+        app.state.backend_driver.start = fake_start
+        app.state.run_sync = run_sync
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/state")
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["status"] == "starting"
+            assert payload["last_error"] == "container running, waiting for backend warmup"
+            assert restart_calls == []
+
+    asyncio.run(run())
+
+
+def test_agent_recovers_when_container_missing_and_grace_expired():
+    """容器不存在且超过 grace period 才触发恢复重启"""
+    async def run():
+        app = create_agent_app(enable_monitor=False)
+        app.state.agent.status = "starting"
+        app.state.agent.desired_state = "running"
+        app.state.agent.started_at = (datetime.now(timezone.utc) - timedelta(seconds=400)).isoformat()
+        app.state.agent.failure_count = app.state.recovery_threshold
+
+        async def fake_health(_):
+            return False
+
+        def fake_snapshot():
+            return {"exists": False, "status": "missing"}
 
         restart_calls = []
 

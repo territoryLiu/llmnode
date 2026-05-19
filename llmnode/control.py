@@ -29,7 +29,7 @@ from .diagnostics import (
     parse_model_config,
 )
 from .security import generate_api_key, hash_api_key
-from .storage.db import create_api_key, init_db
+from .storage.db import create_api_key, get_api_key_by_hash, get_api_key_by_name, init_db, update_api_key
 
 
 def _load_dotenv() -> None:
@@ -64,6 +64,7 @@ class RuntimeConfig:
     web_console_port: int
     web_console_url: str
     web_console_log_file: Path
+    web_console_system_key_name: str
     model_dir: str
     python_bin: str
     gateway_pid_file: Path
@@ -130,6 +131,7 @@ def _runtime_config() -> RuntimeConfig:
     web_console_dir = Path(
         os.getenv("VLLM_CLAUDE_WEB_CONSOLE_DIR", str(PROJECT_ROOT / "web-console"))
     ).resolve()
+    web_console_system_key_name = os.getenv("VLLM_CLAUDE_WEB_CONSOLE_KEY_NAME", "Web Console")
     python_bin = _default_python_bin()
 
     return RuntimeConfig(
@@ -144,6 +146,7 @@ def _runtime_config() -> RuntimeConfig:
         web_console_port=web_console_port,
         web_console_url=web_console_url,
         web_console_log_file=log_dir / "web-console.log",
+        web_console_system_key_name=web_console_system_key_name,
         model_dir=settings.vllm.model_dir,
         python_bin=python_bin,
         gateway_pid_file=run_dir / "gateway.pid",
@@ -175,6 +178,49 @@ def _runtime_config() -> RuntimeConfig:
         sglang_max_running_requests=settings.vllm.max_running_requests,
         sglang_reasoning_parser=settings.vllm.reasoning_parser,
     )
+
+
+def _ensure_web_console_api_key(config: RuntimeConfig) -> str:
+    db_path = PROJECT_ROOT / "runtime" / "data" / "gateway.db"
+    secret_path = config.runtime_dir / "data" / "web-console-admin.key"
+    conn = init_db(db_path)
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+
+    secret = secret_path.read_text(encoding="utf-8").strip() if secret_path.exists() else ""
+    row = get_api_key_by_hash(conn, hash_api_key(secret)) if secret else None
+    if row is None:
+        existing_named = get_api_key_by_name(conn, config.web_console_system_key_name)
+        secret = generate_api_key()
+        if existing_named is None:
+            create_api_key(
+                conn,
+                name=config.web_console_system_key_name,
+                key_hash=hash_api_key(secret),
+                plain_secret=secret,
+                scopes=["admin", "inference"],
+                note="system-managed local web console key",
+            )
+        else:
+            update_api_key(
+                conn,
+                existing_named["id"],
+                key_hash=hash_api_key(secret),
+                plain_secret=secret,
+                status="active",
+                scopes=["admin", "inference"],
+                note="system-managed local web console key",
+            )
+        secret_path.write_text(f"{secret}\n", encoding="utf-8")
+    elif row["status"] != "active" or set(row["scopes"]) != {"admin", "inference"}:
+        update_api_key(
+            conn,
+            row["id"],
+            plain_secret=secret,
+            status="active",
+            scopes=["admin", "inference"],
+            note="system-managed local web console key",
+        )
+    return secret
 
 
 def _print_header(title: str) -> None:
@@ -234,9 +280,9 @@ def _http_ok(url: str, method: str = "GET") -> bool:
         return False
 
 
-def _http_post(url: str) -> None:
+def _http_post(url: str, timeout: int = 60) -> None:
     request = Request(url, data=b"", method="POST")
-    with urlopen(request, timeout=10):
+    with urlopen(request, timeout=timeout):
         return
 
 
@@ -515,6 +561,33 @@ def _wait_for_http(url: str, label: str, timeout_seconds: int = 30) -> None:
     raise RuntimeError(f"{label} did not become ready: {url}")
 
 
+def _wait_for_backend_ready(config: RuntimeConfig, timeout_seconds: int = 900) -> None:
+    state_url = f"{config.agent_url}/state"
+    deadline = time.time() + timeout_seconds
+    last_status = ""
+    while time.time() < deadline:
+        try:
+            with urlopen(Request(state_url), timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+            if data.get("inference_ready"):
+                _print_success(f"{config.backend_type} inference ready")
+                return
+            status = data.get("status", "unknown")
+            detail = f"status={status}"
+            probe_error = data.get("last_probe_error", "")
+            if probe_error:
+                detail += f", error={probe_error}"
+            if detail != last_status:
+                _print_info(f"waiting for {config.backend_type}", detail)
+                last_status = detail
+        except Exception:
+            if last_status != "agent unreachable":
+                _print_info(f"waiting for {config.backend_type}", "agent not reachable")
+                last_status = "agent unreachable"
+        time.sleep(5)
+    raise RuntimeError(f"{config.backend_type} did not become ready within {timeout_seconds}s")
+
+
 def _find_process_by_pattern(pattern: str) -> str:
     try:
         proc = subprocess.run(
@@ -722,6 +795,28 @@ def _find_web_console_pid(config: RuntimeConfig) -> str:
     return _find_process_by_pattern(pattern)
 
 
+def _web_console_has_expected_proxy_env(pid: str, expected_target: str, expected_key: str | None = None) -> bool:
+    if not pid:
+        return False
+    environ_path = Path(f"/proc/{pid}/environ")
+    try:
+        raw = environ_path.read_bytes()
+    except Exception:
+        return False
+    entries = {}
+    for item in raw.split(b"\0"):
+        if not item or b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        entries[key.decode("utf-8", errors="ignore")] = value.decode("utf-8", errors="ignore")
+    proxy_key = entries.get("VITE_API_PROXY_KEY")
+    if entries.get("VITE_API_PROXY_TARGET") != expected_target or not proxy_key:
+        return False
+    if expected_key is not None and proxy_key != expected_key:
+        return False
+    return True
+
+
 def _adopt_web_console_pid_if_needed(config: RuntimeConfig) -> str:
     existing_pid = _pid_from_file(config.web_pid_file)
     if existing_pid and _is_pid_running(existing_pid):
@@ -737,12 +832,19 @@ def _adopt_web_console_pid_if_needed(config: RuntimeConfig) -> str:
 def _start_web_console(config: RuntimeConfig) -> None:
     if not config.web_console_dir.exists():
         raise RuntimeError(f"Web console directory not found: {config.web_console_dir}")
+    console_secret = _ensure_web_console_api_key(config)
+    adopted_pid = _adopt_web_console_pid_if_needed(config)
+    if adopted_pid and not _web_console_has_expected_proxy_env(adopted_pid, config.gateway_url, console_secret):
+        _print_warn(f"web-console pid={adopted_pid} is missing managed proxy env; restarting it")
+        _stop_pid(adopted_pid)
+        config.web_pid_file.unlink(missing_ok=True)
+        time.sleep(1)
     if _web_console_matches_project(config):
         adopted_pid = _adopt_web_console_pid_if_needed(config)
-        if adopted_pid:
+        if adopted_pid and _web_console_has_expected_proxy_env(adopted_pid, config.gateway_url, console_secret):
             _print_info("web-console", f"adopted existing Vite process (pid={adopted_pid})")
-        _print_success(f"Web console already reachable at {config.web_console_url}")
-        return
+            _print_success(f"Web console already reachable at {config.web_console_url}")
+            return
     if _is_pid_file_running(config.web_pid_file):
         _print_info("web-console", f"already running (pid={_pid_from_file(config.web_pid_file)})")
         return
@@ -755,6 +857,9 @@ def _start_web_console(config: RuntimeConfig) -> None:
             f"Port {config.web_console_port} is already in use, and {config.web_console_url} is not responding"
         )
     with config.web_console_log_file.open("a", encoding="utf-8") as handle:
+        env = os.environ.copy()
+        env["VITE_API_PROXY_TARGET"] = config.gateway_url
+        env["VITE_API_PROXY_KEY"] = console_secret
         process = subprocess.Popen(  # noqa: S603
             [
                 "npm",
@@ -771,7 +876,7 @@ def _start_web_console(config: RuntimeConfig) -> None:
             stdout=handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
-            env=os.environ.copy(),
+            env=env,
         )
     config.web_pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
     _print_success(f"Web console started (pid={process.pid})")
@@ -937,6 +1042,18 @@ def _status_stack(config: RuntimeConfig) -> int:
     backend_http_state = "ok" if _http_ok(config.backend_url) else "unreachable"
     web_console_http_state = "ok" if _http_ok(config.web_console_url) else "unreachable"
 
+    # 从 agent /state 获取推理探针结果
+    agent_inference_ready = False
+    agent_probe_error = ""
+    if agent_http_state == "ok":
+        try:
+            with urlopen(Request(f"{config.agent_url}/state"), timeout=5) as resp:
+                agent_state_data = json.loads(resp.read().decode())
+            agent_inference_ready = bool(agent_state_data.get("inference_ready", False))
+            agent_probe_error = str(agent_state_data.get("last_probe_error", ""))
+        except Exception:
+            pass
+
     # 栈状态细化（6 种状态）
     stack_state = "partial"
     stack_detail = "Some services are available, but the stack is not fully ready yet."
@@ -950,6 +1067,11 @@ def _status_stack(config: RuntimeConfig) -> int:
     elif agent_http_state == "ok" and backend_container_running and backend_http_state == "unreachable":
         stack_state = "warming"
         stack_detail = f"Control plane is up, and {config.backend_type} is warming up or loading the model."
+    elif agent_http_state == "ok" and backend_http_state == "ok" and not agent_inference_ready:
+        stack_state = "warming"
+        stack_detail = f"Backend HTTP reachable but inference not ready"
+        if agent_probe_error:
+            stack_detail += f": {agent_probe_error}"
     elif all(state == "ok" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_http_state)):
         # 检查是否有警告（容器重启次数 > 0）
         if backend_container_exists:
@@ -972,6 +1094,7 @@ def _status_stack(config: RuntimeConfig) -> int:
     _print_kv("gateway_http", f"{gateway_http_state} ({config.gateway_url}/health/liveliness)")
     _print_kv("agent_http", f"{agent_http_state} ({config.agent_url}/state)")
     _print_kv("backend_http", f"{backend_http_state} ({config.backend_url})")
+    _print_kv("backend_inference", f"{'ready' if agent_inference_ready else 'not ready'}" + (f" ({agent_probe_error})" if agent_probe_error else ""))
     _print_kv("web_console_http", f"{web_console_http_state} ({config.web_console_url})")
     return 0
 
@@ -1348,11 +1471,22 @@ def _stop_stack(config: RuntimeConfig) -> int:
         _print_step(f"requesting {config.backend_type} stop through agent")
         try:
             _http_post(f"{config.agent_url}/manage/stop")
-        except Exception:
-            pass
-        _print_success(f"{config.backend_type} stop requested through agent")
+        except Exception as exc:
+            _print_warn(f"stop request failed: {exc}")
+            _print_step(f"falling back to direct {config.backend_type} stop")
+            _stop_backend_direct(config)
+        else:
+            # Verify the backend actually stopped
+            _print_step("verifying backend stop")
+            for _ in range(30):
+                time.sleep(1)
+                if not _docker_container_running(config.backend_container_name):
+                    _print_success(f"{config.backend_type} container stopped")
+                    break
+            else:
+                _print_warn(f"{config.backend_type} container may still be running")
     else:
-        _print_step(f"stopping {config.backend_type} directly")
+        _print_step(f"agent not reachable, stopping {config.backend_type} directly")
         _stop_backend_direct(config)
 
     _print_step("stopping web-console")
@@ -1371,7 +1505,7 @@ def _stop_stack(config: RuntimeConfig) -> int:
 
 
 def _start_stack(config: RuntimeConfig) -> int:
-    started = False
+    started_agent = False
     try:
         _print_header("llmnode start")
         _print_kv("backend", config.backend_type)
@@ -1383,7 +1517,7 @@ def _start_stack(config: RuntimeConfig) -> int:
 
         _print_step("starting node-agent")
         _spawn_python_module(config, "llmnode.agent", config.agent_pid_file, config.agent_log_file, "Node agent")
-        started = True
+        started_agent = True
         _wait_for_http(f"{config.agent_url}/health/liveliness", "Agent")
 
         _print_step(f"requesting {config.backend_type} start through agent")
@@ -1398,6 +1532,9 @@ def _start_stack(config: RuntimeConfig) -> int:
         _start_web_console(config)
         _wait_for_http(config.web_console_url, "Web console")
 
+        _print_step(f"waiting for {config.backend_type} inference readiness")
+        _wait_for_backend_ready(config)
+
         _print_header("stack ready")
         _print_kv("gateway", config.gateway_url)
         _print_kv("agent", config.agent_url)
@@ -1405,9 +1542,9 @@ def _start_stack(config: RuntimeConfig) -> int:
         _print_kv("next", "Run 'python -m llmnode.control status' for a full health summary")
         return 0
     except Exception as exc:
-        if started:
-            _print_error("Startup failed; cleaning up started services")
-            _stop_stack(config)
+        if started_agent:
+            _print_error("Startup failed; stopping agent")
+            _stop_python_service(config.agent_pid_file, "Node agent", r"python(3)? -m llmnode\.agent$")
         _print_error(str(exc))
         return 1
 

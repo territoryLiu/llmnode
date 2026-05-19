@@ -19,6 +19,7 @@ def test_create_and_list_api_keys(tmp_path: Path):
         conn,
         name="console-admin",
         key_hash="hash-1",
+        plain_secret="sk-real-1",
         scopes=["admin"],
         rpm_limit=None,
         concurrency_limit=None,
@@ -28,6 +29,7 @@ def test_create_and_list_api_keys(tmp_path: Path):
     rows = list_api_keys(conn)
     assert len(rows) == 1
     assert rows[0]["key_hash"] == "hash-1"
+    assert rows[0]["plain_secret"] == "sk-real-1"
     assert rows[0]["note"] == "main key"
 
 
