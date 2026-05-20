@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from llmnode.control import RuntimeConfig, _build_backend_spec, _default_python_bin, _probe_process_state, _resolve_log_targets, _tail_lines, build_parser
+from llmnode.control import RuntimeConfig, _build_backend_spec, _default_python_bin, _probe_process_state, _resolve_log_targets, _restart_without_backend, _tail_lines, build_parser
 
 
 def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
@@ -23,6 +23,7 @@ def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
         web_console_port=5173,
         web_console_url="http://127.0.0.1:5173",
         web_console_log_file=log_dir / "web-console.log",
+        web_console_system_key_name="Web Console",
         model_dir=str(tmp_path / "models"),
         python_bin="/tmp/fake-python",
         gateway_pid_file=run_dir / "gateway.pid",
@@ -68,6 +69,13 @@ def test_control_parser_supports_service_options():
     assert args.action == "start"
     assert args.service == "agent"
     assert args.daemon is True
+
+
+def test_control_parser_supports_restart_exclude_backend():
+    parser = build_parser()
+    args = parser.parse_args(["restart", "--exclude-backend"])
+    assert args.action == "restart"
+    assert args.exclude_backend is True
 
 
 def test_control_parser_supports_doctor_action():
@@ -155,3 +163,46 @@ def test_control_parser_supports_create_api_key_action():
     assert args.action == "create-api-key"
     assert args.name == "console-admin"
     assert args.scope == ["admin", "inference"]
+
+
+def test_restart_without_backend_restarts_control_plane_only(tmp_path: Path, monkeypatch):
+    config = make_runtime_config(tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr("llmnode.control._print_header", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_step", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_kv", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._wait_for_http", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "llmnode.control._adopt_web_console_pid_if_needed",
+        lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        "llmnode.control._stop_pid_file",
+        lambda pid_file, label: calls.append(("stop_pid", label)),
+    )
+    monkeypatch.setattr(
+        "llmnode.control._stop_python_service",
+        lambda pid_file, label, legacy_pattern: calls.append(("stop_service", label)),
+    )
+    monkeypatch.setattr(
+        "llmnode.control._spawn_python_module",
+        lambda _config, module, pid_file, log_file, label: calls.append(("start_service", label)),
+    )
+    monkeypatch.setattr(
+        "llmnode.control._start_web_console",
+        lambda _config: calls.append(("start_service", "Web console")),
+    )
+
+    result = _restart_without_backend(config)
+
+    assert result == 0
+    assert calls == [
+        ("stop_pid", "Web console"),
+        ("stop_service", "Gateway"),
+        ("stop_service", "Node agent"),
+        ("start_service", "Node agent"),
+        ("start_service", "Gateway"),
+        ("start_service", "Web console"),
+    ]

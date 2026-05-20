@@ -87,10 +87,23 @@ python -m llmnode.control <action>
 
 ### 职责
 - 对整栈执行 stop + start
+- 支持在显式声明时只重启控制面，不触碰当前推理后端
 
 ### 输出要求
 - 保留完整阶段输出
 - 明确告诉用户当前执行的是重启路径
+
+### 当前扩展参数
+
+```bash
+python -m llmnode.control restart --exclude-backend
+```
+
+语义：
+
+- 只重启 `node-agent`、`gateway-api`、`web-console`
+- 不主动停止当前推理后端容器
+- 适用于“刷新控制面 / 网关 / 前端状态，但尽量不打断已加载模型”的场景
 
 ## 7. `status`
 

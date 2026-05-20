@@ -1556,6 +1556,40 @@ def _restart_stack(config: RuntimeConfig) -> int:
     return _start_stack(config)
 
 
+def _restart_without_backend(config: RuntimeConfig) -> int:
+    _print_header("llmnode restart")
+    _print_info("action", "restart control-plane services without touching backend container")
+
+    _print_step("stopping web-console")
+    _adopt_web_console_pid_if_needed(config)
+    _stop_pid_file(config.web_pid_file, "Web console")
+
+    _print_step("stopping gateway-api")
+    _stop_python_service(config.gateway_pid_file, "Gateway", r"python(3)? -m llmnode$")
+
+    _print_step("stopping node-agent")
+    _stop_python_service(config.agent_pid_file, "Node agent", r"python(3)? -m llmnode\.agent$")
+
+    _print_step("starting node-agent")
+    _spawn_python_module(config, "llmnode.agent", config.agent_pid_file, config.agent_log_file, "Node agent")
+    _wait_for_http(f"{config.agent_url}/health/liveliness", "Agent")
+
+    _print_step("starting gateway-api")
+    _spawn_python_module(config, "llmnode", config.gateway_pid_file, config.gateway_log_file, "Gateway")
+    _wait_for_http(f"{config.gateway_url}/health/liveliness", "Gateway")
+
+    _print_step("starting web-console")
+    _start_web_console(config)
+    _wait_for_http(config.web_console_url, "Web console")
+
+    _print_header("control-plane ready")
+    _print_kv("agent", config.agent_url)
+    _print_kv("gateway", config.gateway_url)
+    _print_kv("web_console", config.web_console_url)
+    _print_kv("backend", f"left untouched ({config.backend_type})")
+    return 0
+
+
 def _create_api_key_action(args: argparse.Namespace) -> int:
     db_path = PROJECT_ROOT / "runtime" / "data" / "gateway.db"
     conn = init_db(db_path)
@@ -1589,6 +1623,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m llmnode.control")
     parser.add_argument("action", choices=["start", "stop", "restart", "status", "doctor", "env", "logs", "create-api-key"], nargs="?", default="status")
     parser.add_argument("--service", choices=["agent", "gateway", "vllm"])
+    parser.add_argument("--exclude-backend", action="store_true")
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--foreground", action="store_true")
     parser.add_argument("--target", choices=["agent", "gateway", "web-console", "vllm", "backend", "all"], default="all")
@@ -1626,6 +1661,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     if args.action == "stop":
         return _stop_stack(config)
     if args.action == "restart":
+        if args.exclude_backend:
+            return _restart_without_backend(config)
         return _restart_stack(config)
     if args.action == "doctor":
         return _doctor(config)
