@@ -269,7 +269,7 @@ const emptySnapshot = {
 
 const usageOverview = {
   summary: {
-    request_count: 1,
+    request_count: 12345,
     success_count: 1,
     success_rate: 1,
     avg_latency_ms: 10,
@@ -277,7 +277,7 @@ const usageOverview = {
     p99_latency_ms: 10,
     throughput_tokens_per_s: 50,
     tokens_observed_requests: 1,
-    total_tokens: 42,
+    total_tokens: 12345678,
     cache_creation_tokens: 5,
     cache_read_tokens: 7,
     cache_miss_tokens: 0,
@@ -306,13 +306,13 @@ const usageOverview = {
         group: 'vllm',
         label: 'vLLM',
         totals: {
-          prompt_tokens: 10,
-          completion_tokens: 20,
+          prompt_tokens: 12345,
+          completion_tokens: 12345678,
           cache_creation_tokens: 5,
           cache_read_tokens: 7,
           cache_miss_tokens: 2,
           cache_tokens: 14,
-          total_tokens: 42,
+          total_tokens: 3456789123,
         },
         points: [
           {
@@ -344,7 +344,7 @@ const keyListResponse = {
       scopes: ['admin', 'inference'],
       rpm_limit: null,
       concurrency_limit: null,
-      created_at: '2026-05-15 08:00:00',
+      created_at: '2026-05-15T08:00:00Z',
       disabled_at: null,
       last_used_at: null,
       note: null,
@@ -359,7 +359,7 @@ const keyListResponse = {
       scopes: ['admin'],
       rpm_limit: null,
       concurrency_limit: null,
-      created_at: '2026-05-15 09:00:00',
+      created_at: '2026-05-15T09:00:00Z',
       disabled_at: null,
       last_used_at: null,
       note: 'created by cli',
@@ -712,7 +712,22 @@ describe('Console views', () => {
     expect(screen.getByText('调用记录')).toBeInTheDocument();
   });
 
+  it('formats large numeric values with grouping and compact suffixes', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('请求记录')[0]);
+
+    expect(await screen.findByText('12,345')).toBeInTheDocument();
+    expect(screen.getByText('12.35M')).toBeInTheDocument();
+    expect(screen.getByText('3.46B')).toBeInTheDocument();
+  });
+
   it('requests request logs with pagination and date filters', async () => {
+    vi.setSystemTime(new Date('2026-05-19T17:42:00+08:00'));
     render(<App />);
 
     await waitFor(() => {
@@ -731,7 +746,7 @@ describe('Console views', () => {
 
     await waitFor(() => {
       const calls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0]));
-      expect(calls.some((url) => url.includes('/admin/request-logs?limit=25&offset=0') && url.includes('date_from=2026-05-15T00%3A00') && url.includes('date_to=2026-05-15T23%3A59'))).toBe(true);
+      expect(calls.some((url) => url.includes('/admin/request-logs?limit=25&offset=0') && url.includes('date_from=2026-05-14T16%3A00%3A00Z') && url.includes('date_to=2026-05-15T15%3A59%3A00Z'))).toBe(true);
     });
   });
 

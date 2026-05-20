@@ -1,6 +1,7 @@
 import React, {useMemo, useState} from 'react';
 import {Copy, Globe, Key, Plus, Trash2} from 'lucide-react';
 import {useAppContext, type ApiKeyRow} from '../store';
+import {formatCompactNumber, formatGroupedNumber} from '../lib/numberFormat';
 
 function formatDate(value: string | null) {
   if (!value) {
@@ -135,19 +136,19 @@ export function ApiKeysView() {
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
         <div className="glass-panel p-6 flex flex-col justify-between">
           <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.totalKeys')}</div>
-          <div className="text-4xl font-bold text-slate-800">{stats.total}</div>
+          <div className="text-4xl font-bold text-slate-800">{formatCompactNumber(stats.total, '0')}</div>
         </div>
         <div className="glass-panel p-6 flex flex-col justify-between">
           <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.active')}</div>
-          <div className="text-4xl font-bold text-emerald-600">{stats.active}</div>
+          <div className="text-4xl font-bold text-emerald-600">{formatCompactNumber(stats.active, '0')}</div>
         </div>
         <div className="glass-panel p-6 flex flex-col justify-between">
           <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.inferenceScopes')}</div>
-          <div className="text-4xl font-bold text-blue-600">{stats.inference}</div>
+          <div className="text-4xl font-bold text-blue-600">{formatCompactNumber(stats.inference, '0')}</div>
         </div>
         <div className="glass-panel p-6 flex flex-col justify-between">
           <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.adminScopes')}</div>
-          <div className="text-4xl font-bold text-purple-600">{stats.admin}</div>
+          <div className="text-4xl font-bold text-purple-600">{formatCompactNumber(stats.admin, '0')}</div>
         </div>
       </div>
 
@@ -207,7 +208,7 @@ export function ApiKeysView() {
         <div className="p-4 border-b border-white/40 flex items-center justify-between gap-4 bg-white/20">
           <div className="font-semibold text-slate-800">{t('keys.keyList')}</div>
           <div className="text-xs text-slate-500">
-            {loading.apiKeys ? t('keys.loadingKeys') : t('keys.keysCount', {count: apiKeys.length})}
+            {loading.apiKeys ? t('keys.loadingKeys') : t('keys.keysCount', {count: formatGroupedNumber(apiKeys.length, '0')})}
           </div>
         </div>
 
@@ -288,13 +289,13 @@ export function ApiKeysView() {
                       </div>
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-600 font-mono">
-                      {key.rpm_limit || '∞'} / {key.concurrency_limit || '∞'}
+                      {key.rpm_limit ? formatCompactNumber(key.rpm_limit, '0') : '∞'} / {key.concurrency_limit ? formatCompactNumber(key.concurrency_limit, '0') : '∞'}
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-500">
                       {key.usage_summary ? (
                         <div>
-                          <div>{t('keys.totalRequests')}: {key.usage_summary.total_requests}</div>
-                          <div>{t('keys.totalTokens')}: {key.usage_summary.total_tokens ?? '-'}</div>
+                          <div>{t('keys.totalRequests')}: {formatCompactNumber(key.usage_summary.total_requests, '0')}</div>
+                          <div>{t('keys.totalTokens')}: {formatCompactNumber(key.usage_summary.total_tokens)}</div>
                         </div>
                       ) : (
                         <div>-</div>

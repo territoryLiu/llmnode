@@ -206,7 +206,7 @@ export interface UsageChartGroup {
 
 export interface UsageChart {
   window: '12h' | 'day' | 'month' | 'year';
-  group_by: 'backend_type' | 'model_name' | 'device_type';
+  group_by: 'backend_type' | 'model_name' | 'api_key_name';
   totals: Omit<UsageChartPoint, 'bucket' | 'label' | 'request_count'>;
   points: UsageChartPoint[];
   groups: UsageChartGroup[];
@@ -466,7 +466,7 @@ interface AppState {
   refreshUsageOverview: (options?: {
     granularity?: 'day' | 'month' | 'year';
     window?: '12h' | 'day' | 'month' | 'year';
-    groupBy?: 'backend_type' | 'model_name' | 'device_type';
+    groupBy?: 'backend_type' | 'model_name' | 'api_key_name';
   }) => Promise<void>;
   createApiKey: (payload: CreateApiKeyPayload) => Promise<{secret: string; key: ApiKeyRow}>;
   updateApiKey: (id: number, payload: UpdateApiKeyPayload) => Promise<ApiKeyRow>;
@@ -499,6 +499,17 @@ function resolveApiBase(apiBase: string): string {
 
 function buildUrl(apiBase: string, path: string): string {
   return new URL(path, resolveApiBase(apiBase)).toString();
+}
+
+function toUtcIsoParam(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 function authHeaders(headers?: HeadersInit): HeadersInit {
@@ -675,10 +686,10 @@ export function AppProvider({children}: {children: ReactNode}) {
       params.set('limit', String(options?.limit ?? 200));
       params.set('offset', String(options?.offset ?? 0));
       if (options?.dateFrom) {
-        params.set('date_from', options.dateFrom);
+        params.set('date_from', toUtcIsoParam(options.dateFrom) || options.dateFrom);
       }
       if (options?.dateTo) {
-        params.set('date_to', options.dateTo);
+        params.set('date_to', toUtcIsoParam(options.dateTo) || options.dateTo);
       }
       if (options?.status && options.status !== 'all') {
         params.set('status', options.status);
@@ -777,7 +788,7 @@ export function AppProvider({children}: {children: ReactNode}) {
   async function refreshUsageOverview(options?: {
     granularity?: 'day' | 'month' | 'year';
     window?: '12h' | 'day' | 'month' | 'year';
-    groupBy?: 'backend_type' | 'model_name' | 'device_type';
+    groupBy?: 'backend_type' | 'model_name' | 'api_key_name';
   }) {
     setLoading((previous) => ({...previous, usageOverview: true}));
     try {

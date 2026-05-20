@@ -11,10 +11,11 @@ import {
 } from 'recharts';
 import {Search} from 'lucide-react';
 import {mapRequestStatus} from '../i18n';
-import {useAppContext, type RequestLog, type UsageChartGroup} from '../store';
+import {useAppContext, type UsageChartGroup} from '../store';
+import {formatCompactNumber, formatGroupedNumber} from '../lib/numberFormat';
 
 type ChartWindow = '12h' | 'day' | 'month' | 'year';
-type GroupBy = 'backend_type' | 'model_name' | 'device_type';
+type GroupBy = 'backend_type' | 'model_name' | 'api_key_name';
 
 const TOKEN_LINES = [
   {key: 'prompt_tokens', color: '#2563eb'},
@@ -31,18 +32,58 @@ function formatDate(value: string) {
   return date.toLocaleString();
 }
 
-function inferDeviceLabel(log: RequestLog, t: (key: string) => string) {
-  const agent = (log.user_agent || '').toLowerCase();
-  if (agent.includes('iphone') || agent.includes('android') || agent.includes('mobile') || agent.includes('ipad')) {
-    return t('usage.deviceMobile');
+function usageLocale(locale: 'zh' | 'en') {
+  return locale === 'zh' ? 'zh-CN' : 'en-US';
+}
+
+function parseUsageBucket(bucket: string, window: ChartWindow) {
+  if (window === 'year') {
+    return null;
   }
-  if (agent.includes('curl') || agent.includes('postman') || agent.includes('python') || agent.includes('wget')) {
-    return t('usage.deviceTool');
+  if (window === 'month') {
+    return new Date(`${bucket}T00:00:00Z`);
   }
-  if (agent.includes('mozilla') || agent.includes('chrome') || agent.includes('safari') || agent.includes('firefox')) {
-    return t('usage.deviceDesktop');
+  return new Date(`${bucket.replace(' ', 'T')}:00Z`);
+}
+
+export function formatUsageChartBucketLabel(bucket: string, window: ChartWindow, locale: 'zh' | 'en') {
+  if (window === 'year') {
+    return bucket;
   }
-  return t('usage.deviceUnknown');
+  const date = parseUsageBucket(bucket, window);
+  if (!date || Number.isNaN(date.getTime())) {
+    return bucket;
+  }
+  if (window === '12h') {
+    return date.toLocaleTimeString(usageLocale(locale), {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  }
+  if (window === 'day') {
+    const month = date.toLocaleDateString(usageLocale(locale), {
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const time = date.toLocaleTimeString(usageLocale(locale), {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    return `${month} ${time}`;
+  }
+  return date.toLocaleDateString(usageLocale(locale), {
+    month: '2-digit',
+    day: '2-digit',
+  });
+}
+
+function usageSourceLabel(log: {api_key_id: number | null; auth_source: string | null}, t: (key: string) => string) {
+  if (log.api_key_id !== null) {
+    return `${t('usage.groupByApiKeyName')} #${log.api_key_id}`;
+  }
+  return log.auth_source || t('common.unknown');
 }
 
 function metricLabel(t: (key: string) => string, metric: string) {
@@ -58,7 +99,11 @@ function metricLabel(t: (key: string) => string, metric: string) {
 function groupButtonLabel(t: (key: string) => string, groupBy: GroupBy) {
   if (groupBy === 'backend_type') return t('usage.groupByBackend');
   if (groupBy === 'model_name') return t('usage.groupByModel');
-  return t('usage.groupByDevice');
+  return t('usage.groupByApiKeyName');
+}
+
+function formatMetricValue(value: number | null | undefined, fallback = '-') {
+  return formatCompactNumber(value, fallback);
 }
 
 export function UsageRecordsView() {
@@ -167,13 +212,13 @@ export function UsageRecordsView() {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 h-full flex flex-col">
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
         {[
-          {label: t('usage.totalRequests'), val: String(total)},
+          {label: t('usage.totalRequests'), val: formatMetricValue(total, '0')},
           {
             label: t('usage.successRate'),
             val: successRate === null ? '-' : `${(successRate * 100).toFixed(1)}%`,
             color: 'text-emerald-600',
           },
-          {label: t('usage.totalTokens'), val: totalTokens ?? '-'},
+          {label: t('usage.totalTokens'), val: formatMetricValue(totalTokens)},
           {label: t('usage.backendType'), val: backendType},
         ].map((kpi) => (
           <div key={kpi.label} className="glass-panel p-6 flex flex-col justify-between">
@@ -218,7 +263,7 @@ export function UsageRecordsView() {
                 {([
                   'backend_type',
                   'model_name',
-                  'device_type',
+                  'api_key_name',
                 ] as const).map((value) => (
                   <button
                     key={value}
@@ -239,7 +284,7 @@ export function UsageRecordsView() {
                 {summaryTiles.map((tile) => (
                   <div key={tile.label} className={`rounded-2xl border px-4 py-3 ${tile.tone}`}>
                     <div className="text-[10px] uppercase tracking-[0.18em] opacity-75">{tile.label}</div>
-                    <div className="mt-2 text-2xl font-semibold">{tile.value}</div>
+                    <div className="mt-2 text-2xl font-semibold">{formatMetricValue(tile.value, '0')}</div>
                   </div>
                 ))}
               </div>
@@ -256,11 +301,18 @@ export function UsageRecordsView() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={chartPoints} margin={{top: 12, right: 12, left: 4, bottom: 8}}>
                     <CartesianGrid stroke="rgba(148,163,184,0.22)" strokeDasharray="3 3" />
-                    <XAxis dataKey="label" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
+                    <XAxis
+                      dataKey="bucket"
+                      stroke="#94a3b8"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(bucket) => formatUsageChartBucketLabel(String(bucket), window, locale)}
+                    />
                     <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
                     <RechartsTooltip
-                      formatter={(value: number, name: string) => [value, metricLabel(t, name)]}
-                      labelFormatter={(label) => `${label}`}
+                      formatter={(value: number, name: string) => [formatMetricValue(value, '0'), metricLabel(t, name)]}
+                      labelFormatter={(bucket) => formatUsageChartBucketLabel(String(bucket), window, locale)}
                       contentStyle={{
                         borderRadius: '18px',
                         border: '1px solid rgba(231,225,214,0.9)',
@@ -314,7 +366,7 @@ export function UsageRecordsView() {
                 </div>
               </div>
               <div className={`mt-3 text-xs ${activeGroup === 'all' ? 'text-white/70' : 'text-slate-500'}`}>
-                {t('usage.metricTotal')}: {chart?.totals.total_tokens ?? 0}
+                {t('usage.metricTotal')}: {formatMetricValue(chart?.totals.total_tokens ?? 0, '0')}
               </div>
             </button>
 
@@ -332,14 +384,14 @@ export function UsageRecordsView() {
                 <div className="flex items-center justify-between gap-3">
                   <div className="font-semibold text-sm">{group.label}</div>
                   <div className={`text-xs ${activeGroup === group.group ? 'text-white/80' : 'text-slate-500'}`}>
-                    {group.totals.total_tokens}
+                    {formatMetricValue(group.totals.total_tokens, '0')}
                   </div>
                 </div>
                 <div className={`mt-3 grid grid-cols-2 gap-2 text-xs ${activeGroup === group.group ? 'text-white/80' : 'text-slate-500'}`}>
-                  <div>{t('usage.metricPrompt')}: {group.totals.prompt_tokens}</div>
-                  <div>{t('usage.metricCompletion')}: {group.totals.completion_tokens}</div>
-                  <div>{t('usage.metricCache')}: {group.totals.cache_tokens}</div>
-                  <div>{t('usage.metricTotal')}: {group.totals.total_tokens}</div>
+                  <div>{t('usage.metricPrompt')}: {formatMetricValue(group.totals.prompt_tokens, '0')}</div>
+                  <div>{t('usage.metricCompletion')}: {formatMetricValue(group.totals.completion_tokens, '0')}</div>
+                  <div>{t('usage.metricCache')}: {formatMetricValue(group.totals.cache_tokens, '0')}</div>
+                  <div>{t('usage.metricTotal')}: {formatMetricValue(group.totals.total_tokens, '0')}</div>
                 </div>
               </button>
             ))}
@@ -349,11 +401,11 @@ export function UsageRecordsView() {
                 {selectedGroup?.label || t('usage.allGroups')}
               </div>
               <div className="space-y-1">
-                <div>{t('usage.metricPrompt')}: {groupTotals?.prompt_tokens ?? 0}</div>
-                <div>{t('usage.metricCompletion')}: {groupTotals?.completion_tokens ?? 0}</div>
-                <div>{t('usage.metricCache')}: {groupTotals?.cache_tokens ?? 0}</div>
-                <div>{t('usage.metricTotal')}: {groupTotals?.total_tokens ?? 0}</div>
-                <div>{t('usage.cacheReadTokens')}: {cacheReadTokens ?? 0}</div>
+                <div>{t('usage.metricPrompt')}: {formatMetricValue(groupTotals?.prompt_tokens ?? 0, '0')}</div>
+                <div>{t('usage.metricCompletion')}: {formatMetricValue(groupTotals?.completion_tokens ?? 0, '0')}</div>
+                <div>{t('usage.metricCache')}: {formatMetricValue(groupTotals?.cache_tokens ?? 0, '0')}</div>
+                <div>{t('usage.metricTotal')}: {formatMetricValue(groupTotals?.total_tokens ?? 0, '0')}</div>
+                <div>{t('usage.cacheReadTokens')}: {formatMetricValue(cacheReadTokens ?? 0, '0')}</div>
               </div>
             </div>
           </div>
@@ -451,7 +503,10 @@ export function UsageRecordsView() {
             </button>
           </div>
           <div className="text-xs text-slate-500">
-            {t('usage.showing', {shown: requestLogs.length, total: requestLogsTotal || requestLogs.length})}
+            {t('usage.showing', {
+              shown: formatGroupedNumber(requestLogs.length, '0'),
+              total: formatGroupedNumber(requestLogsTotal || requestLogs.length, '0'),
+            })}
           </div>
         </div>
 
@@ -509,7 +564,7 @@ export function UsageRecordsView() {
                     </td>
                     <td className="px-5 py-3 text-slate-500 font-mono text-xs">{log.client_ip || '-'}</td>
                     <td className="px-5 py-3 text-slate-500 text-xs max-w-[260px]">
-                      <div className="font-medium text-slate-700">{inferDeviceLabel(log, t)}</div>
+                      <div className="font-medium text-slate-700">{usageSourceLabel(log, t)}</div>
                       <div className="truncate font-mono">{log.user_agent || '-'}</div>
                     </td>
                     <td className="px-5 py-3 text-slate-500 font-mono text-xs max-w-[220px] truncate">
@@ -524,7 +579,10 @@ export function UsageRecordsView() {
 
         <div className="border-t border-white/40 bg-white/20 px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
           <div className="text-xs text-slate-500">
-            {t('usage.pageStatus', {page: currentPage, pages: totalPages})}
+            {t('usage.pageStatus', {
+              page: formatGroupedNumber(currentPage, '0'),
+              pages: formatGroupedNumber(totalPages, '0'),
+            })}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -597,12 +655,12 @@ export function UsageRecordsView() {
                 [t('usage.backendLabel'), requestLogDetail.metrics?.backend_type || '-'],
                 [t('usage.source'), requestLogDetail.log.auth_source || '-'],
                 [t('usage.clientIp'), requestLogDetail.log.client_ip || '-'],
-                [t('usage.totalTokens'), requestLogDetail.metrics?.total_tokens ?? '-'],
-                [t('usage.latencyMs'), requestLogDetail.metrics?.latency_ms ?? '-'],
-                [t('usage.metricPrompt'), requestLogDetail.metrics?.prompt_tokens ?? '-'],
-                [t('usage.metricCompletion'), requestLogDetail.metrics?.completion_tokens ?? '-'],
-                [t('usage.metricCache'), (requestLogDetail.metrics?.cache_creation_tokens || 0) + (requestLogDetail.metrics?.cache_read_tokens || 0) + (requestLogDetail.metrics?.cache_miss_tokens || 0)],
-                [t('usage.tokensPerSecond'), requestLogDetail.metrics?.tokens_per_second ?? '-'],
+                [t('usage.totalTokens'), formatMetricValue(requestLogDetail.metrics?.total_tokens)],
+                [t('usage.latencyMs'), formatGroupedNumber(requestLogDetail.metrics?.latency_ms)],
+                [t('usage.metricPrompt'), formatMetricValue(requestLogDetail.metrics?.prompt_tokens)],
+                [t('usage.metricCompletion'), formatMetricValue(requestLogDetail.metrics?.completion_tokens)],
+                [t('usage.metricCache'), formatMetricValue((requestLogDetail.metrics?.cache_creation_tokens || 0) + (requestLogDetail.metrics?.cache_read_tokens || 0) + (requestLogDetail.metrics?.cache_miss_tokens || 0), '0')],
+                [t('usage.tokensPerSecond'), formatGroupedNumber(requestLogDetail.metrics?.tokens_per_second)],
               ].map(([label, value]) => (
                 <div key={String(label)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
                   <div className="text-[10px] uppercase tracking-[0.16em] text-slate-400">{label}</div>

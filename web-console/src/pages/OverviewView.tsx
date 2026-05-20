@@ -10,6 +10,7 @@ import {
 import {AlertTriangle, Copy, Layers, RefreshCcw, ServerCog, Settings, Zap} from 'lucide-react';
 import {useAppContext} from '../store';
 import {mapRequestStatus} from '../i18n';
+import {formatCompactNumber, formatGroupedNumber} from '../lib/numberFormat';
 
 function formatClock(value: string) {
   const date = new Date(value);
@@ -89,7 +90,7 @@ export function OverviewView() {
             </span>
             <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">{t('overview.requests')}</span>
           </div>
-          <h3 className="text-4xl font-bold text-slate-800">{recentLogs.length}</h3>
+          <h3 className="text-4xl font-bold text-slate-800">{formatCompactNumber(recentLogs.length, '0')}</h3>
           <p className="text-sm text-black/50 mt-1">{t('overview.requestSummary')}</p>
         </div>
 
@@ -100,7 +101,7 @@ export function OverviewView() {
             </span>
             <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">{t('overview.models')}</span>
           </div>
-          <h3 className="text-4xl font-bold text-slate-800">{modelRoutes.length}</h3>
+          <h3 className="text-4xl font-bold text-slate-800">{formatCompactNumber(modelRoutes.length, '0')}</h3>
           <p className="text-sm text-black/50 mt-1">{t('overview.modelSummary')}</p>
         </div>
 
@@ -112,8 +113,8 @@ export function OverviewView() {
             </span>
             <span className="text-[10px] uppercase tracking-widest font-bold text-black/30">{t('overview.queueNow')}</span>
           </div>
-          <h3 className="text-4xl font-bold text-slate-800 relative z-10">{snapshot?.queue_length ?? 0}</h3>
-          <p className="text-sm text-black/50 mt-1 relative z-10">{t('overview.queueLimit', {count: queueLimit})}</p>
+          <h3 className="text-4xl font-bold text-slate-800 relative z-10">{formatCompactNumber(snapshot?.queue_length ?? 0, '0')}</h3>
+          <p className="text-sm text-black/50 mt-1 relative z-10">{t('overview.queueLimit', {count: formatGroupedNumber(queueLimit, '0')})}</p>
         </div>
       </div>
 
@@ -122,7 +123,7 @@ export function OverviewView() {
           <h4 className="font-bold mb-6 flex flex-wrap justify-between items-center gap-3 text-slate-800">
             <span className="min-w-0">{t('overview.queueTrend')}</span>
             <span className="text-blue-600 text-sm font-normal shrink-0 text-right">
-              {t('overview.recentSamples', {count: snapshotHistory.length || 0})}
+              {t('overview.recentSamples', {count: formatGroupedNumber(snapshotHistory.length || 0, '0')})}
             </span>
           </h4>
           <div className="h-64 w-full">
@@ -280,13 +281,13 @@ export function OverviewView() {
             <p className="text-sm text-slate-500 mb-4">{t('overview.routeGovernanceHint')}</p>
             <div className="space-y-3">
               <div className="rounded-2xl border border-amber-100 bg-amber-50/60 px-4 py-3 text-sm text-amber-800">
-                {t('overview.staleRoutesPending', {count: staleRoutes.length})}
+                {t('overview.staleRoutesPending', {count: formatGroupedNumber(staleRoutes.length, '0')})}
               </div>
               <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 px-4 py-3 text-sm text-emerald-800">
-                {t('overview.manualRoutesManaged', {count: manualRoutes.length})}
+                {t('overview.manualRoutesManaged', {count: formatGroupedNumber(manualRoutes.length, '0')})}
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white/40 px-4 py-3 text-sm text-slate-700">
-                {t('overview.profileSeedRoutes', {count: profileSeedRoutes.length})}
+                {t('overview.profileSeedRoutes', {count: formatGroupedNumber(profileSeedRoutes.length, '0')})}
               </div>
             </div>
           </div>
