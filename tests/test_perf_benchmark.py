@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from llmnode.perf.benchmark import write_benchmark_outputs
+from llmnode.perf.benchmark import _summarize_attempts
 from llmnode.perf.models import BenchmarkRun
 
 
@@ -55,3 +56,21 @@ def test_benchmark_cli_defaults():
     args = parser.parse_args([])
     assert args.max_tokens == 64
     assert args.sample_interval == 1.0
+    assert args.warmup_runs == 1
+    assert args.measure_runs == 3
+
+
+def test_summarize_attempts_uses_measured_runs_only():
+    summary = _summarize_attempts([
+        {"kind": "warmup", "latency_ms": 1200.0, "completion_tokens": 64, "completion_tokens_per_second": 53.3, "http_status": 200, "result": "success"},
+        {"kind": "measure", "latency_ms": 800.0, "completion_tokens": 64, "completion_tokens_per_second": 80.0, "http_status": 200, "result": "success"},
+        {"kind": "measure", "latency_ms": 1000.0, "completion_tokens": 64, "completion_tokens_per_second": 64.0, "http_status": 200, "result": "success"},
+        {"kind": "measure", "latency_ms": 1200.0, "completion_tokens": 64, "completion_tokens_per_second": 53.3333333333, "http_status": 200, "result": "success"},
+    ])
+    assert summary["measured_runs"] == 3
+    assert summary["warmup_runs"] == 1
+    assert round(summary["latency_ms_avg"], 2) == 1000.00
+    assert round(summary["latency_ms_p50"], 2) == 1000.00
+    assert round(summary["completion_tokens_per_second_avg"], 2) == 65.78
+    assert summary["http_status"] == 200
+    assert summary["result"] == "success"

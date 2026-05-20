@@ -18,6 +18,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample-interval", type=float, default=1.0)
     parser.add_argument("--output-dir", type=str, default="")
     parser.add_argument("--profile", type=str, default="")
+    parser.add_argument("--warmup-runs", type=int, default=1)
+    parser.add_argument("--measure-runs", type=int, default=3)
     return parser
 
 
@@ -29,6 +31,8 @@ def main() -> int:
         sample_interval=args.sample_interval,
         output_dir=args.output_dir,
         profile=args.profile,
+        warmup_runs=args.warmup_runs,
+        measure_runs=args.measure_runs,
     )
     return 0
 

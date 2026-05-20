@@ -6,6 +6,16 @@ from typing import Any
 
 
 @dataclass
+class BenchmarkAttemptResult:
+    kind: str
+    latency_ms: float | None = None
+    completion_tokens: int | None = None
+    completion_tokens_per_second: float | None = None
+    http_status: int | None = None
+    result: str = "unknown"
+
+
+@dataclass
 class GpuProcessBreakdown:
     backend_processes: list[dict[str, Any]] = field(default_factory=list)
     backend_process_used_mb: int = 0
@@ -24,6 +34,17 @@ class BenchmarkStepResult:
     http_status: int | None = None
     result: str = "unknown"
     backend_metrics: dict[str, Any] = field(default_factory=dict)
+    warmup_runs: int = 0
+    measured_runs: int = 0
+    latency_ms_avg: float | None = None
+    latency_ms_p50: float | None = None
+    latency_ms_min: float | None = None
+    latency_ms_max: float | None = None
+    completion_tokens_per_second_avg: float | None = None
+    completion_tokens_per_second_p50: float | None = None
+    completion_tokens_per_second_min: float | None = None
+    completion_tokens_per_second_max: float | None = None
+    attempts: list[BenchmarkAttemptResult] = field(default_factory=list)
 
 
 @dataclass
