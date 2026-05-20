@@ -104,6 +104,8 @@
   - `runtime/data`
   - `runtime/logs`
   - `runtime/run`
+  - 默认情况下，SQLite 主库是 `runtime/data/gateway.db`
+  - 如果显式覆盖 `VLLM_CLAUDE_RUNTIME_DIR`，默认主库会随之移动到 `<runtime_dir>/data/gateway.db`
 
 这些内容的正式约束分别由下列文档解释：
 

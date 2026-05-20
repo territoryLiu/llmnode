@@ -56,6 +56,34 @@ python -m llmnode.control <action>
 - 同一类信息应尽量稳定出现在同一段落
 - 诊断输出应优先帮助定位“下一步该做什么”
 
+## 3.1 运行产物与数据库路径边界
+
+控制面当前默认运行时根目录是仓库下的 `runtime/`，至少包括：
+
+- `runtime/data`
+- `runtime/logs`
+- `runtime/run`
+
+控制面当前默认 SQLite 主库为：
+
+- `runtime/data/gateway.db`
+
+如果显式设置：
+
+```bash
+export VLLM_CLAUDE_RUNTIME_DIR=/path/to/custom-runtime
+```
+
+则默认主库应随之移动到：
+
+- `/path/to/custom-runtime/data/gateway.db`
+
+补充约束：
+
+- `VLLM_CLAUDE_DB_PATH` 优先级高于 `VLLM_CLAUDE_RUNTIME_DIR`
+- 如果显式设置 `VLLM_CLAUDE_DB_PATH`，则数据库路径以它为准
+- 测试环境不应再把临时测试库写入仓库 `runtime/data/`
+
 ## 4. `start`
 
 ### 职责

@@ -49,7 +49,7 @@ class ModelRoute:
                 "tool_policies": {
                     "openai_function_tools": True,
                     "anthropic_function_tools": True,
-                    "builtin_tools": False,
+                    "builtin_tools": True,
                 },
                 "protocol_features": {
                     "stream": self.capabilities.supports_stream,

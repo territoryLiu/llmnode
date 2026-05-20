@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from llmnode.control import RuntimeConfig, _build_backend_spec, _default_python_bin, _probe_process_state, _resolve_log_targets, _restart_without_backend, _tail_lines, build_parser
+from llmnode.agent.service import create_agent_app
+from llmnode.api.app import create_app
+from llmnode.control import RuntimeConfig, _build_backend_spec, _default_python_bin, _probe_process_state, _resolve_log_targets, _restart_without_backend, _stop_python_service, _tail_lines, build_parser
 
 
 def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
@@ -111,6 +113,34 @@ def test_default_python_bin_prefers_configured_env(monkeypatch):
     assert _default_python_bin() == "/tmp/custom-python"
 
 
+def test_apps_use_explicit_db_path_override(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "isolated.db"
+    monkeypatch.setenv("VLLM_CLAUDE_DB_PATH", str(db_path))
+
+    gateway_app = create_app()
+    agent_app = create_agent_app(enable_monitor=False)
+
+    gateway_row = gateway_app.state.db.execute("PRAGMA database_list").fetchone()
+    agent_row = agent_app.state.db.execute("PRAGMA database_list").fetchone()
+    assert gateway_row[2] == str(db_path)
+    assert agent_row[2] == str(db_path)
+
+
+def test_apps_default_db_path_follows_runtime_dir(monkeypatch, tmp_path: Path):
+    runtime_dir = tmp_path / "custom-runtime"
+    expected_db_path = runtime_dir / "data" / "gateway.db"
+    monkeypatch.delenv("VLLM_CLAUDE_DB_PATH", raising=False)
+    monkeypatch.setenv("VLLM_CLAUDE_RUNTIME_DIR", str(runtime_dir))
+
+    gateway_app = create_app()
+    agent_app = create_agent_app(enable_monitor=False)
+
+    gateway_row = gateway_app.state.db.execute("PRAGMA database_list").fetchone()
+    agent_row = agent_app.state.db.execute("PRAGMA database_list").fetchone()
+    assert gateway_row[2] == str(expected_db_path)
+    assert agent_row[2] == str(expected_db_path)
+
+
 def test_build_backend_spec_vllm_uses_runtime_config(tmp_path: Path):
     config = make_runtime_config(tmp_path)
     spec = _build_backend_spec(config)
@@ -206,3 +236,39 @@ def test_restart_without_backend_restarts_control_plane_only(tmp_path: Path, mon
         ("start_service", "Gateway"),
         ("start_service", "Web console"),
     ]
+
+
+def test_stop_python_service_does_not_kill_reused_pid_from_foreign_process(tmp_path: Path, monkeypatch):
+    pid_file = tmp_path / "gateway.pid"
+    pid_file.write_text("4321\n", encoding="utf-8")
+    stop_calls: list[str] = []
+
+    monkeypatch.setattr("llmnode.control._is_pid_running", lambda pid: pid == "4321")
+    monkeypatch.setattr("llmnode.control._pid_matches_pattern", lambda pid, pattern: False)
+    monkeypatch.setattr("llmnode.control._stop_pid", lambda pid: stop_calls.append(pid) or True)
+    monkeypatch.setattr("llmnode.control._find_process_by_pattern", lambda pattern: "")
+    monkeypatch.setattr("llmnode.control._print_success", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_info", lambda *args, **kwargs: None)
+
+    _stop_python_service(pid_file, "Gateway", r"python(3)? -m llmnode$")
+
+    assert stop_calls == []
+    assert not pid_file.exists()
+
+
+def test_stop_python_service_falls_back_to_pattern_after_removing_stale_pid(tmp_path: Path, monkeypatch):
+    pid_file = tmp_path / "gateway.pid"
+    pid_file.write_text("4321\n", encoding="utf-8")
+    stop_calls: list[str] = []
+
+    monkeypatch.setattr("llmnode.control._is_pid_running", lambda pid: pid in {"4321", "9876"})
+    monkeypatch.setattr("llmnode.control._pid_matches_pattern", lambda pid, pattern: pid == "9876")
+    monkeypatch.setattr("llmnode.control._stop_pid", lambda pid: stop_calls.append(pid) or True)
+    monkeypatch.setattr("llmnode.control._find_process_by_pattern", lambda pattern: "9876")
+    monkeypatch.setattr("llmnode.control._print_success", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_info", lambda *args, **kwargs: None)
+
+    _stop_python_service(pid_file, "Gateway", r"python(3)? -m llmnode$")
+
+    assert stop_calls == ["9876"]
+    assert not pid_file.exists()

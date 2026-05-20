@@ -85,6 +85,48 @@ def test_admin_can_patch_status_and_scopes():
     asyncio.run(run())
 
 
+def test_admin_keys_normalize_timestamp_fields_to_utc_iso():
+    async def run():
+        app = create_app()
+        admin_secret = "sk-admin-seed"
+        create_api_key(
+            app.state.db,
+            name="seed-admin",
+            key_hash=hash_api_key(admin_secret),
+            scopes=["admin"],
+        )
+        raw_key = create_api_key(
+            app.state.db,
+            name="worker",
+            key_hash=hash_api_key("sk-worker"),
+            scopes=["inference"],
+        )
+        app.state.db.execute(
+            """
+            UPDATE api_keys
+            SET created_at = ?, disabled_at = ?, last_used_at = ?
+            WHERE id = ?
+            """,
+            (
+                "2026-05-19 09:42:00",
+                "2026-05-19 10:00:00",
+                "2026-05-19 10:15:00",
+                raw_key["id"],
+            ),
+        )
+        app.state.db.commit()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            listed = await client.get("/admin/keys", headers={"Authorization": f"Bearer {admin_secret}"})
+            assert listed.status_code == 200
+            key_row = next(item for item in listed.json()["keys"] if item["id"] == raw_key["id"])
+            assert key_row["created_at"] == "2026-05-19T09:42:00Z"
+            assert key_row["disabled_at"] == "2026-05-19T10:00:00Z"
+            assert key_row["last_used_at"] == "2026-05-19T10:15:00Z"
+
+    asyncio.run(run())
+
+
 def test_admin_can_delete_api_key():
     async def run():
         app = create_app()

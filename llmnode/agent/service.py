@@ -18,6 +18,7 @@ from ..diagnostics import (
     inspect_container,
     parse_model_config,
 )
+from ..runtime_paths import resolve_gateway_db_path
 from ..storage.db import aggregate_request_metrics, init_db, list_agent_events, write_agent_event
 from .backend import LlamaCppBackendDriver, SGLangBackendDriver, VLLMBackendDriver
 from .docker_control import LlamaCppContainerSpec, SGLangContainerSpec, VLLMContainerSpec
@@ -274,7 +275,7 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
     app.state.recovery_lock = asyncio.Lock()
     app.state.monitor_task = None
     app.state.run_sync = asyncio.to_thread
-    app.state.db = init_db(PROJECT_ROOT / "runtime" / "data" / "gateway.db")
+    app.state.db = init_db(resolve_gateway_db_path())
 
     @app.get("/health/liveliness")
     async def liveliness():

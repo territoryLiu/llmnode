@@ -763,8 +763,7 @@ export function AppProvider({children}: {children: ReactNode}) {
 
   async function refreshDiagnostics() {
     try {
-      const agentBase = apiBase.replace(/\/+$/, '').replace(/:\d+$/, ':4010');
-      const payload = await fetch(`${agentBase}/admin/diagnostics/status`, {
+      const payload = await fetch(buildUrl(apiBase, '/admin/diagnostics/status'), {
         headers: authHeaders(),
       });
       if (payload.ok) {

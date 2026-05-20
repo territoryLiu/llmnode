@@ -28,6 +28,7 @@ from .diagnostics import (
     inspect_container,
     parse_model_config,
 )
+from .runtime_paths import resolve_gateway_db_path
 from .security import generate_api_key, hash_api_key
 from .storage.db import create_api_key, get_api_key_by_hash, get_api_key_by_name, init_db, update_api_key
 
@@ -181,7 +182,7 @@ def _runtime_config() -> RuntimeConfig:
 
 
 def _ensure_web_console_api_key(config: RuntimeConfig) -> str:
-    db_path = PROJECT_ROOT / "runtime" / "data" / "gateway.db"
+    db_path = resolve_gateway_db_path()
     secret_path = config.runtime_dir / "data" / "web-console-admin.key"
     conn = init_db(db_path)
     secret_path.parent.mkdir(parents=True, exist_ok=True)
@@ -605,6 +606,27 @@ def _find_process_by_pattern(pattern: str) -> str:
     return ""
 
 
+def _pid_matches_pattern(pid: str, pattern: str) -> bool:
+    if not pid or not _is_pid_running(pid):
+        return False
+    try:
+        proc = subprocess.run(
+            ["ps", "-fp", pid],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return False
+    if proc.returncode != 0:
+        return False
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    command = lines[-1]
+    return re.search(pattern, command) is not None
+
+
 def _build_backend_spec(config: RuntimeConfig):
     bt = config.backend_type
     if bt == "llama.cpp":
@@ -767,7 +789,7 @@ def _stop_pid_file(pid_file: Path, label: str) -> None:
 def _stop_python_service(pid_file: Path, label: str, legacy_pattern: str) -> None:
     pid = _pid_from_file(pid_file)
     if pid:
-        if _stop_pid(pid):
+        if _pid_matches_pattern(pid, legacy_pattern) and _stop_pid(pid):
             pid_file.unlink(missing_ok=True)
             _print_success(f"{label} stopped (pid={pid})")
             return
@@ -1591,7 +1613,7 @@ def _restart_without_backend(config: RuntimeConfig) -> int:
 
 
 def _create_api_key_action(args: argparse.Namespace) -> int:
-    db_path = PROJECT_ROOT / "runtime" / "data" / "gateway.db"
+    db_path = resolve_gateway_db_path()
     conn = init_db(db_path)
     secret = generate_api_key()
     try:

@@ -194,6 +194,46 @@ def test_admin_logs_alias_matches_request_logs():
     asyncio.run(run())
 
 
+def test_admin_diagnostics_status_proxies_agent_snapshot():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        admin_secret = seed_admin_key(app)
+
+        async def fake_fetch_agent_diagnostics():
+            return {
+                "backend_type": "vllm",
+                "readiness_state": "ready",
+                "http_ready": True,
+                "inference_ready": True,
+                "retry_after_seconds": None,
+                "last_transition_at": "2026-05-20T08:00:00Z",
+                "last_probe_error": "",
+                "last_probe_latency_ms": 12.5,
+                "gpu": {"gpus": [], "cuda_version": "12.4"},
+                "container": {"info": {}, "snapshot": {"exists": True}},
+                "model": {
+                    "model_dir": "/models/demo",
+                    "model_name": "demo",
+                    "model_format": "huggingface",
+                    "model_config": {},
+                },
+                "inference_params": {"tensor_parallel_size": 1},
+            }
+
+        app.state.fetch_agent_diagnostics = fake_fetch_agent_diagnostics
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.get("/admin/diagnostics/status", headers={"Authorization": f"Bearer {admin_secret}"})
+            assert resp.status_code == 200
+            payload = resp.json()
+            assert payload["readiness_state"] == "ready"
+            assert payload["http_ready"] is True
+            assert payload["gpu"]["cuda_version"] == "12.4"
+
+    asyncio.run(run())
+
+
 def test_admin_request_logs_support_pagination_and_time_filters():
     async def run():
         app = create_app()
@@ -233,6 +273,7 @@ def test_admin_request_logs_support_pagination_and_time_filters():
             assert payload["total"] == 1
             assert len(payload["logs"]) == 1
             assert payload["logs"][0]["request_id"] == "req-new"
+            assert payload["logs"][0]["created_at"] == "2026-05-15T09:00:00Z"
 
             paged = await client.get(
                 "/admin/request-logs?limit=1&offset=1",
@@ -240,6 +281,7 @@ def test_admin_request_logs_support_pagination_and_time_filters():
             )
             assert paged.status_code == 200
             assert paged.json()["logs"][0]["request_id"] == "req-old"
+            assert paged.json()["logs"][0]["created_at"] == "2026-05-14T09:00:00Z"
 
     asyncio.run(run())
 

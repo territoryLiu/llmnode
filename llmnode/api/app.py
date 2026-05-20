@@ -46,6 +46,7 @@ from ..proxy.router import (
 _VALID_BACKEND_TYPES = {"vllm", "llama.cpp", "sglang"}
 from ..runtime import QueueFullError, QueueTimeoutError, RequestGate
 from ..runtime import ApiKeyConcurrencyError, ApiKeyGate, ApiKeyRateLimitError
+from ..runtime_paths import resolve_gateway_db_path
 from ..security import generate_api_key, hash_api_key
 from ..storage.db import (
     aggregate_request_metrics,
@@ -1197,9 +1198,7 @@ def _validate_update_api_key_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def create_app() -> FastAPI:
     setup_logging()
     settings = load_settings()
-    db_path = PROJECT_ROOT / "runtime" / "data" / "gateway.db"
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        db_path = PROJECT_ROOT / "runtime" / "data" / f"gateway-test-{uuid.uuid4().hex}.db"
+    db_path = resolve_gateway_db_path()
     catalog = load_model_catalog()
     db = init_db(db_path)
     route_seed_events = seed_model_routes(db, model_routes_for_admin(catalog))
@@ -1270,6 +1269,23 @@ def create_app() -> FastAPI:
             return None
 
     app.state.fetch_agent_state = fetch_agent_state
+
+    async def fetch_agent_diagnostics() -> dict | None:
+        base_url = str(app.state.agent_base_url or "").rstrip("/")
+        if not base_url:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{base_url}/admin/diagnostics/status")
+                resp.raise_for_status()
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    return payload
+                return None
+        except httpx.HTTPError:
+            return None
+
+    app.state.fetch_agent_diagnostics = fetch_agent_diagnostics
 
     async def restart_agent_backend() -> dict[str, Any]:
         base_url = str(app.state.agent_base_url or "").rstrip("/")
@@ -1447,6 +1463,17 @@ def create_app() -> FastAPI:
         _resolve_auth(request, "admin")
         request_id = _request_id(request)
         response = JSONResponse(await build_admin_snapshot())
+        response.headers["x-request-id"] = request_id
+        return response
+
+    @app.get("/admin/diagnostics/status")
+    async def admin_diagnostics_status(request: Request):
+        _resolve_auth(request, "admin")
+        request_id = _request_id(request)
+        payload = await app.state.fetch_agent_diagnostics()
+        if payload is None:
+            raise HTTPException(status_code=503, detail="agent_diagnostics_unavailable")
+        response = JSONResponse(payload)
         response.headers["x-request-id"] = request_id
         return response
 

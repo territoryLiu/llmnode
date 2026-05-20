@@ -43,8 +43,37 @@ python -m llmnode.control create-api-key --name console-admin --scope admin
 python -m llmnode.control status
 python -m llmnode.control doctor
 python -m llmnode.control logs --target all --lines 20
+python -m llmnode.control restart --exclude-backend
 python -m llmnode.control stop
 ```
+
+## 3.1 运行时目录与数据库路径
+
+默认情况下，运行时产物根目录是仓库下的 `runtime/`，至少包括：
+
+- `runtime/data`
+- `runtime/logs`
+- `runtime/run`
+
+当前正式 SQLite 主库默认位于：
+
+- `runtime/data/gateway.db`
+
+如果通过环境变量覆盖运行时根目录：
+
+```bash
+export VLLM_CLAUDE_RUNTIME_DIR=/path/to/custom-runtime
+```
+
+则当前默认数据库路径也会跟着变为：
+
+- `/path/to/custom-runtime/data/gateway.db`
+
+补充边界：
+
+- `VLLM_CLAUDE_DB_PATH` 优先级高于 `VLLM_CLAUDE_RUNTIME_DIR`
+- 如果显式设置了 `VLLM_CLAUDE_DB_PATH`，则数据库以该路径为准
+- 测试环境不应再把临时测试库写入仓库 `runtime/data/`
 
 ## 4. 默认启动对象
 
@@ -160,6 +189,20 @@ python -m llmnode.control stop --service gateway
 python -m llmnode.control stop --service agent
 python -m llmnode.control stop --service vllm
 ```
+
+如果你想重启控制面但不碰当前推理后端，可以使用：
+
+```bash
+python -m llmnode.control restart --exclude-backend
+```
+
+这条命令当前会只重启：
+
+- `node-agent`
+- `gateway-api`
+- `web-console`
+
+不会主动停止或重新拉起当前推理后端容器。
 
 ## 8. API Key 初始化
 
