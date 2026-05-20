@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from llmnode.storage.db import (
+    create_api_key,
     aggregate_request_metrics,
     aggregate_usage_breakdown,
     aggregate_usage_chart,
@@ -11,6 +12,7 @@ from llmnode.storage.db import (
     write_request_metric,
     write_request_log,
 )
+from llmnode.security import hash_api_key
 
 
 def test_request_metrics_aggregation_counts_latency_and_throughput(tmp_path: Path):
@@ -110,6 +112,18 @@ def test_request_metrics_persist_usage_ledger_fields(tmp_path: Path):
 
 def test_usage_aggregation_exposes_summary_trend_breakdown_and_key_views(tmp_path: Path):
     conn = init_db(tmp_path / "metrics.db")
+    alpha_key = create_api_key(
+        conn,
+        name="alpha-key",
+        key_hash=hash_api_key("sk-alpha"),
+        scopes=["inference"],
+    )
+    beta_key = create_api_key(
+        conn,
+        name="beta-key",
+        key_hash=hash_api_key("sk-beta"),
+        scopes=["inference"],
+    )
 
     write_request_log(
         conn,
@@ -131,7 +145,7 @@ def test_usage_aggregation_exposes_summary_trend_breakdown_and_key_views(tmp_pat
         total_tokens=30,
         tokens_per_second=200.0,
         backend_type="vllm",
-        api_key_id=7,
+        api_key_id=alpha_key["id"],
         cache_creation_tokens=1,
         cache_read_tokens=2,
         cache_miss_tokens=3,
@@ -158,7 +172,7 @@ def test_usage_aggregation_exposes_summary_trend_breakdown_and_key_views(tmp_pat
         total_tokens=8,
         tokens_per_second=None,
         backend_type="sglang",
-        api_key_id=9,
+        api_key_id=beta_key["id"],
         cache_creation_tokens=None,
         cache_read_tokens=None,
         cache_miss_tokens=None,
@@ -190,8 +204,8 @@ def test_usage_aggregation_exposes_summary_trend_breakdown_and_key_views(tmp_pat
     assert backend_breakdown[1]["group"] == "sglang"
     assert backend_breakdown[1]["cache_read_tokens"] is None
 
-    key_summary = aggregate_usage_for_api_key(conn, api_key_id=7)
-    assert key_summary["summary"]["api_key_id"] == 7
+    key_summary = aggregate_usage_for_api_key(conn, api_key_id=alpha_key["id"])
+    assert key_summary["summary"]["api_key_id"] == alpha_key["id"]
     assert key_summary["summary"]["request_count"] == 1
     assert key_summary["summary"]["total_requests"] == 1
     assert key_summary["summary"]["total_tokens"] == 30
@@ -216,17 +230,17 @@ def test_usage_aggregation_exposes_summary_trend_breakdown_and_key_views(tmp_pat
         if point["bucket"] == "2026-05-14 10:00"
     ) == 30
 
-    device_chart = aggregate_usage_chart(
+    key_name_chart = aggregate_usage_chart(
         conn,
         window="day",
-        group_by="device_type",
+        group_by="api_key_name",
         now="2026-05-14T12:00:00+00:00",
     )
-    assert [group["group"] for group in device_chart["groups"]] == ["desktop", "mobile"]
-    assert device_chart["groups"][0]["label"] == "Desktop"
+    assert [group["group"] for group in key_name_chart["groups"]] == ["alpha-key", "beta-key"]
+    assert key_name_chart["groups"][0]["label"] == "alpha-key"
     assert next(
         point["prompt_tokens"]
-        for point in device_chart["groups"][1]["points"]
+        for point in key_name_chart["groups"][1]["points"]
         if point["bucket"] == "2026-05-14 11:00"
     ) == 8
 

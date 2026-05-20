@@ -11,7 +11,8 @@ from ..models import ModelCapabilities, ModelRoute
 
 _UNSET = object()
 _ALLOWED_CHART_WINDOWS = {"12h", "day", "month", "year"}
-_ALLOWED_CHART_GROUP_BY = {"backend_type", "model_name", "device_type"}
+_ALLOWED_CHART_GROUP_BY = {"backend_type", "model_name", "api_key_name"}
+_ALLOWED_GROUP_BY = {"backend_type", "model_name", "api_key_id", "api_key_name"}
 
 
 def _now_sql() -> str:
@@ -21,6 +22,23 @@ def _now_sql() -> str:
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {row[1] for row in rows}
+
+
+def _normalize_utc_timestamp(value: str | None) -> str | None:
+    if not value:
+        return value
+    try:
+        if value.endswith("Z") or "+" in value[10:]:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        elif "T" in value:
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return value
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _ensure_columns(conn: sqlite3.Connection, table_name: str, columns: dict[str, str]) -> None:
@@ -39,9 +57,9 @@ def _decode_api_key_row(row: Any) -> dict[str, Any]:
         "scopes": json.loads(row[4]),
         "rpm_limit": row[5],
         "concurrency_limit": row[6],
-        "created_at": row[7],
-        "disabled_at": row[8],
-        "last_used_at": row[9],
+        "created_at": _normalize_utc_timestamp(row[7]),
+        "disabled_at": _normalize_utc_timestamp(row[8]),
+        "last_used_at": _normalize_utc_timestamp(row[9]),
         "note": row[10],
         "plain_secret": row[11] if len(row) > 11 else None,
     }
@@ -496,8 +514,8 @@ def get_response_state(conn: sqlite3.Connection, response_id: str) -> dict[str, 
         "upstream_response_id": row[10],
         "request_payload": json.loads(row[11]) if row[11] else {},
         "output_payload": json.loads(row[12]) if row[12] else {},
-        "created_at": row[13],
-        "updated_at": row[14],
+        "created_at": _normalize_utc_timestamp(row[13]),
+        "updated_at": _normalize_utc_timestamp(row[14]),
     }
 
 
@@ -645,7 +663,7 @@ def list_request_logs(
                 "status": row[3],
                 "protocol": row[4],
                 "error_message": row[5],
-                "created_at": row[6],
+                "created_at": _normalize_utc_timestamp(row[6]),
                 "api_key_id": row[7],
                 "auth_source": row[8],
                 "client_ip": row[9],
@@ -682,7 +700,7 @@ def list_agent_events(conn: sqlite3.Connection, limit: int = 50) -> list[dict[st
             "http_ready": bool(row[5]) if row[5] is not None else None,
             "inference_ready": bool(row[6]) if row[6] is not None else None,
             "metadata": json.loads(row[7]) if row[7] else {},
-            "created_at": row[8],
+            "created_at": _normalize_utc_timestamp(row[8]),
         }
         for row in rows
     ]
@@ -721,7 +739,7 @@ def get_request_log_detail(conn: sqlite3.Connection, request_id: str) -> dict[st
             "status": log_row[3],
             "protocol": log_row[4],
             "error_message": log_row[5],
-            "created_at": log_row[6],
+            "created_at": _normalize_utc_timestamp(log_row[6]),
             "api_key_id": log_row[7],
             "auth_source": log_row[8],
             "client_ip": log_row[9],
@@ -739,8 +757,8 @@ def get_request_log_detail(conn: sqlite3.Connection, request_id: str) -> dict[st
             "completion_tokens": metrics_row[6],
             "total_tokens": metrics_row[7],
             "tokens_per_second": metrics_row[8],
-            "started_at": metrics_row[9],
-            "finished_at": metrics_row[10],
+            "started_at": _normalize_utc_timestamp(metrics_row[9]),
+            "finished_at": _normalize_utc_timestamp(metrics_row[10]),
             "backend_type": metrics_row[11],
             "api_key_id": metrics_row[12],
             "cache_creation_tokens": metrics_row[13],
@@ -1230,35 +1248,12 @@ def _format_bucket_label(value: datetime, *, window: str) -> str:
     raise ValueError(f"unsupported window: {window}")
 
 
-def _device_type_from_user_agent(user_agent: str | None) -> str:
-    if not user_agent:
-        return "unknown"
-    lowered = user_agent.lower()
-    if any(token in lowered for token in ("iphone", "android", "mobile", "ipad", "tablet")):
-        return "mobile"
-    if any(token in lowered for token in ("curl", "postman", "insomnia", "python", "httpie", "wget")):
-        return "tool"
-    if any(token in lowered for token in ("mozilla", "chrome", "safari", "firefox", "edge", "macintosh", "windows", "linux")):
-        return "desktop"
-    return "unknown"
-
-
 def _group_label(group_by: str, value: str | None) -> str:
     if group_by == "backend_type":
         mapping = {
             "vllm": "vLLM",
             "llama.cpp": "llama.cpp",
             "sglang": "SGLang",
-            None: "Unknown",
-            "": "Unknown",
-        }
-        return mapping.get(value, str(value))
-    if group_by == "device_type":
-        mapping = {
-            "desktop": "Desktop",
-            "mobile": "Mobile",
-            "tool": "Tool",
-            "unknown": "Unknown",
             None: "Unknown",
             "": "Unknown",
         }
@@ -1334,9 +1329,9 @@ def aggregate_usage_chart(
                m.cache_creation_tokens,
                m.cache_read_tokens,
                m.cache_miss_tokens,
-               l.user_agent
+               k.name
         FROM request_metrics AS m
-        LEFT JOIN request_logs AS l ON l.request_id = m.request_id
+        LEFT JOIN api_keys AS k ON k.id = m.api_key_id
         WHERE m.started_at >= ? AND m.started_at < ?
         ORDER BY m.started_at ASC
         """,
@@ -1373,7 +1368,7 @@ def aggregate_usage_chart(
         elif group_by == "model_name":
             group_value = row[2] or "unknown"
         else:
-            group_value = _device_type_from_user_agent(row[10])
+            group_value = row[10] or "unknown"
 
         if group_value not in grouped:
             grouped[group_value] = {
@@ -1447,14 +1442,17 @@ def aggregate_usage_trend(conn: sqlite3.Connection, *, granularity: str = "day")
 def aggregate_usage_breakdown(conn: sqlite3.Connection, *, group_by: str) -> list[dict[str, Any]]:
     if group_by not in _ALLOWED_GROUP_BY:
         raise ValueError(f"unsupported group_by: {group_by}")
+    select_expr = "k.name" if group_by == "api_key_name" else f"m.{group_by}"
+    join_clause = "LEFT JOIN api_keys AS k ON k.id = m.api_key_id" if group_by == "api_key_name" else ""
     rows = conn.execute(
         f"""
-        SELECT {group_by} AS grouping_value,
+        SELECT {select_expr} AS grouping_value,
                COUNT(*) AS request_count,
                COALESCE(SUM(total_tokens), 0) AS total_tokens,
                SUM(cache_read_tokens) AS cache_read_tokens,
                COUNT(cache_read_tokens) AS cache_read_observed
-        FROM request_metrics
+        FROM request_metrics AS m
+        {join_clause}
         GROUP BY 1
         ORDER BY total_tokens DESC
         """

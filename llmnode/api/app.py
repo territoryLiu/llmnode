@@ -306,6 +306,107 @@ def _responses_metric_payload_from_messages(payload: dict[str, Any]) -> dict[str
     }
 
 
+def _extract_text_segments(content: Any, *, allowed_types: set[str] | None = None) -> list[str]:
+    if isinstance(content, str):
+        return [content] if content else []
+    if not isinstance(content, list):
+        return []
+    valid_types = allowed_types or {"input_text", "output_text", "text", "summary_text"}
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") in valid_types and isinstance(block.get("text"), str) and block.get("text"):
+            texts.append(block["text"])
+    return texts
+
+
+def _summarize_message_block_types(messages: Any) -> list[dict[str, Any]]:
+    if not isinstance(messages, list):
+        return []
+    summary: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if not isinstance(role, str) or not role:
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            summary.append({"role": role, "types": ["text"]})
+            continue
+        if not isinstance(content, list):
+            continue
+        types: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if isinstance(block_type, str) and block_type:
+                types.append(block_type)
+        if types:
+            summary.append({"role": role, "types": types})
+    return summary
+
+
+def _flatten_content_for_vllm(content: Any) -> Any:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        all_blocks_are_text = True
+        text_parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                all_blocks_are_text = False
+                break
+            if block.get("type") in {"input_text", "output_text", "text"} and isinstance(block.get("text"), str):
+                text_parts.append(block["text"])
+                continue
+            all_blocks_are_text = False
+            break
+        if all_blocks_are_text and text_parts:
+            return "\n\n".join(text_parts)
+    return content
+
+
+def _merge_native_vllm_responses_input(raw_input: list[Any], existing_instructions: Any) -> tuple[list[Any], Any]:
+    instructions_parts: list[str] = []
+    if isinstance(existing_instructions, str) and existing_instructions.strip():
+        instructions_parts.append(existing_instructions.strip())
+
+    normalized_input: list[Any] = []
+    developer_parts: list[str] = []
+    reasoning_parts: list[str] = []
+
+    for item in raw_input:
+        if not isinstance(item, dict):
+            normalized_input.append(item)
+            continue
+
+        if item.get("type") == "reasoning":
+            reasoning_parts.extend(_extract_text_segments(item.get("summary")))
+            if not reasoning_parts:
+                reasoning_parts.extend(_extract_text_segments(item.get("content")))
+            continue
+
+        if item.get("role") == "developer":
+            developer_parts.extend(_extract_text_segments(item.get("content"), allowed_types={"input_text", "output_text", "text"}))
+            continue
+
+        normalized_item = dict(item)
+        if "content" in normalized_item:
+            normalized_item["content"] = _flatten_content_for_vllm(normalized_item.get("content"))
+        normalized_input.append(normalized_item)
+
+    if developer_parts:
+        instructions_parts.append("\n\n".join(developer_parts))
+    if reasoning_parts:
+        instructions_parts.append("[reasoning context]\n" + "\n\n".join(reasoning_parts))
+
+    merged_instructions = "\n\n".join(part for part in instructions_parts if part)
+    return normalized_input, (merged_instructions or existing_instructions)
+
+
 def _responses_output_and_messages_from_text_parts(
     text_parts: list[str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1836,6 +1937,7 @@ def create_app() -> FastAPI:
         response.headers["x-request-id"] = request_id
         return response
 
+    @app.post("/responses")
     @app.post("/v1/responses")
     async def responses(request: Request):
         auth = _resolve_auth(request, "inference")
@@ -1906,6 +2008,15 @@ def create_app() -> FastAPI:
         def build_native_upstream_payload() -> dict[str, Any]:
             upstream_payload = dict(raw)
             upstream_payload["model"] = route.resolved_upstream_model() or payload.model
+            # Merge developer-role input items into instructions before forwarding,
+            # because vLLM converts both `instructions` and `developer` items to system
+            # messages, leading to "System message must be at the beginning" errors on
+            # backends whose chat templates forbid multiple system messages.
+            if "input" in upstream_payload and isinstance(upstream_payload["input"], list):
+                upstream_payload["input"], upstream_payload["instructions"] = _merge_native_vllm_responses_input(
+                    upstream_payload["input"],
+                    upstream_payload.get("instructions"),
+                )
             if previous_state is not None and runtime_caps["protocol_features"].get("previous_response_id", False):
                 upstream_previous_id = previous_state.get("upstream_response_id")
                 if upstream_previous_id:
@@ -2457,6 +2568,7 @@ def create_app() -> FastAPI:
             "execution_mode": plan.execution_mode,
             "adapter_selected": plan.selected_adapter,
             "tool_classes_detected": tool_classes_detected,
+            "message_block_types": _summarize_message_block_types(sanitized_raw.get("messages")),
             "request_mutation": bool(sanitized_raw != raw) or plan.execution_mode == "adapter",
             "mutation_reason": "builtin_tool_metadata_filtered" if sanitized_raw != raw else (None if plan.execution_mode == "native" else (plan.selected_adapter or "adapter_path")),
         }

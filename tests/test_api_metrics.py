@@ -197,12 +197,12 @@ def test_admin_usage_overview_and_key_usage_endpoints():
             assert key_usage.json()["summary"]["api_key_id"] == created["id"]
             assert key_usage.json()["summary"]["request_count"] == 1
 
-            by_device = await client.get(
-                "/admin/overview/usage?window=day&group_by=device_type",
+            by_key_name = await client.get(
+                "/admin/overview/usage?window=day&group_by=api_key_name",
                 headers={"Authorization": f"Bearer {admin_secret}"},
             )
-            assert by_device.status_code == 200
-            assert by_device.json()["chart"]["group_by"] == "device_type"
+            assert by_key_name.status_code == 200
+            assert by_key_name.json()["chart"]["group_by"] == "api_key_name"
 
     asyncio.run(run())
 
