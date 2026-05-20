@@ -62,8 +62,13 @@ class OpenAIResponsesRequest(BaseModel):
     def _normalize_message(self, item: Any) -> dict[str, Any]:
         if not isinstance(item, dict):
             raise ValueError("input message items must be objects")
+        item_type = item.get("type")
+        # Non-message items (function_call_output, item_reference, etc.)
+        # pass through without role validation.
+        if item_type is not None and item_type != "message":
+            return dict(item)
         role = item.get("role")
-        if item.get("type") == "message" and role is None:
+        if item_type == "message" and role is None:
             role = "user"
         if not isinstance(role, str) or not role.strip():
             raise ValueError("input message role must be a non-empty string")
@@ -79,13 +84,20 @@ class OpenAIResponsesRequest(BaseModel):
             return content
         if isinstance(content, list):
             text_parts: list[str] = []
+            non_text_blocks: list[dict[str, Any]] = []
             for block in content:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") in {"input_text", "output_text", "text"} and isinstance(block.get("text"), str):
                     text_parts.append(block["text"])
+                else:
+                    non_text_blocks.append(dict(block))
+            if text_parts and not non_text_blocks:
+                return "\n\n".join(text_parts)
             if text_parts:
-                return "".join(text_parts)
+                normalized_blocks = [{"type": "input_text", "text": text} for text in text_parts]
+                normalized_blocks.extend(non_text_blocks)
+                return normalized_blocks
         return content
 
     def _to_chat_response_format(self) -> dict[str, Any] | None:

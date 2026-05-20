@@ -237,6 +237,28 @@ def test_anthropic_messages_managed_local_rejects_generic_builtin_tools():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = FakeClient()
+        app.state.ctx.models[TEST_MODEL] = ModelRoute(
+            name=TEST_MODEL,
+            display_name="Managed Local Messages Without Builtins",
+            backend_model=TEST_MODEL,
+            backend_type="vllm",
+            enabled=True,
+            lifecycle_mode="managed_local",
+            upstream_protocol="messages",
+            capabilities=ModelCapabilities(
+                supports_responses=False,
+                supports_chat=False,
+                supports_messages=True,
+                supports_stream=True,
+                supports_function_tools=True,
+                supports_builtin_tools=False,
+            ),
+            native_protocols_json=["messages"],
+            tool_policies_json={
+                "anthropic_function_tools": True,
+                "builtin_tools": False,
+            },
+        )
         admin_secret = seed_admin_key(app)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -252,6 +274,55 @@ def test_anthropic_messages_managed_local_rejects_generic_builtin_tools():
             )
             assert resp.status_code == 400
             assert resp.json()["detail"] == "builtin_tools_not_supported"
+
+    asyncio.run(run())
+
+
+def test_anthropic_messages_request_logs_message_block_types():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "max_tokens": 16,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "describe this image"},
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/png",
+                                        "data": "abc123",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            )
+            assert resp.status_code == 200
+            request_id = resp.headers["x-request-id"]
+
+        detail = app.state.db.execute(
+            "SELECT metadata_json FROM request_logs WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+        assert detail is not None
+        metadata = detail[0]
+        payload = {} if metadata is None else __import__("json").loads(metadata)
+        assert payload["client_protocol"] == "messages"
+        assert payload["message_block_types"] == [
+            {"role": "user", "types": ["text", "image"]}
+        ]
 
     asyncio.run(run())
 

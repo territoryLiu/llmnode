@@ -296,6 +296,107 @@ def test_responses_previous_response_id_replays_prior_context():
     asyncio.run(run())
 
 
+def test_responses_native_payload_preserves_content_boundaries_and_reasoning_context():
+    async def run():
+        app = create_app()
+        backend = ResponsesSyncFakeClient()
+        app.state.ctx.backend_client = backend
+        secret = seed_inference_key(app, "sk-responses-boundaries")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/responses",
+                headers={"Authorization": f"Bearer {secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "instructions": "base instructions",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "developer",
+                            "content": [
+                                {"type": "input_text", "text": "dev rules"},
+                            ],
+                        },
+                        {
+                            "type": "reasoning",
+                            "summary": [
+                                {"type": "summary_text", "text": "prior chain summary"},
+                            ],
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "AGENTS.md rules"},
+                                {"type": "input_text", "text": "<environment_context>"},
+                            ],
+                        },
+                    ],
+                },
+            )
+            assert resp.status_code == 200
+            _, forwarded = backend.calls[-1]
+            assert forwarded["instructions"] == (
+                "base instructions\n\n"
+                "dev rules\n\n"
+                "[reasoning context]\n"
+                "prior chain summary"
+            )
+            assert forwarded["input"] == [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "AGENTS.md rules\n\n<environment_context>",
+                }
+            ]
+
+    asyncio.run(run())
+
+
+def test_responses_native_payload_preserves_multimodal_content_blocks():
+    async def run():
+        app = create_app()
+        backend = ResponsesSyncFakeClient()
+        app.state.ctx.backend_client = backend
+        secret = seed_inference_key(app, "sk-responses-multimodal")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/responses",
+                headers={"Authorization": f"Bearer {secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "先看这张图"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                                {"type": "input_text", "text": "再描述图里的内容"},
+                            ],
+                        },
+                    ],
+                },
+            )
+            assert resp.status_code == 200
+            _, forwarded = backend.calls[-1]
+            assert forwarded["input"] == [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "先看这张图"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                        {"type": "input_text", "text": "再描述图里的内容"},
+                    ],
+                }
+            ]
+
+    asyncio.run(run())
+
+
 def test_chat_route_previous_response_id_replays_local_messages_not_upstream_id():
     async def run():
         app = create_app()
@@ -468,7 +569,7 @@ def test_responses_maps_tool_calls_into_output_items():
     asyncio.run(run())
 
 
-def test_chat_route_rejects_builtin_tools():
+def test_chat_route_allows_builtin_tools_for_managed_vllm():
     async def run():
         app = create_app()
         app.state.ctx.backend_client = ResponsesSyncFakeClient()
@@ -484,8 +585,7 @@ def test_chat_route_rejects_builtin_tools():
                     "tools": [{"type": "web_search"}],
                 },
             )
-            assert resp.status_code == 400
-            assert resp.json()["detail"] == "builtin_tools_not_supported"
+            assert resp.status_code == 200
 
     asyncio.run(run())
 
