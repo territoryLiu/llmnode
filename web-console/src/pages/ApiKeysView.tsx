@@ -14,6 +14,18 @@ function formatDate(value: string | null) {
   return date.toLocaleString();
 }
 
+function nextDefaultKeyName(apiKeys: ApiKeyRow[]) {
+  const usedNames = new Set(apiKeys.map((item) => item.name));
+  if (!usedNames.has('Worker')) {
+    return 'Worker';
+  }
+  let index = 2;
+  while (usedNames.has(`Worker ${index}`)) {
+    index += 1;
+  }
+  return `Worker ${index}`;
+}
+
 function ToggleButton({
   onClick,
   disabled,
@@ -34,15 +46,23 @@ function ToggleButton({
   );
 }
 
+function pulseHighlight(setter: React.Dispatch<React.SetStateAction<number | null>>, keyId: number) {
+  setter(keyId);
+  window.setTimeout(() => {
+    setter((current) => (current === keyId ? null : current));
+  }, 1800);
+}
+
 export function ApiKeysView() {
   const {apiKeys, createApiKey, updateApiKey, deleteApiKey, loading, t, readinessOverview, copyToClipboard} = useAppContext();
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [busyAction, setBusyAction] = useState<'toggle' | 'delete' | null>(null);
+  const [highlightedKeyId, setHighlightedKeyId] = useState<number | null>(null);
+  const [exitingKeyId, setExitingKeyId] = useState<number | null>(null);
   const [visibleSecrets, setVisibleSecrets] = useState<Record<number, boolean>>({});
 
-  const [name, setName] = useState('Web Console');
-  const [scopeAdmin, setScopeAdmin] = useState(true);
-  const [scopeInference, setScopeInference] = useState(true);
+  const [name, setName] = useState(() => nextDefaultKeyName(apiKeys));
   const [rpmLimit, setRpmLimit] = useState('');
   const [concurrencyLimit, setConcurrencyLimit] = useState('');
   const [note, setNote] = useState('');
@@ -51,27 +71,26 @@ export function ApiKeysView() {
     const total = apiKeys.length;
     const active = apiKeys.filter((item) => item.status === 'active').length;
     const inference = apiKeys.filter((item) => item.scopes.includes('inference')).length;
-    const admin = apiKeys.filter((item) => item.scopes.includes('admin')).length;
-    return {total, active, inference, admin};
+    const disabled = apiKeys.filter((item) => item.status === 'disabled').length;
+    return {total, active, inference, disabled};
   }, [apiKeys]);
 
   async function handleCreate() {
-    const scopes = [scopeAdmin ? 'admin' : null, scopeInference ? 'inference' : null].filter(Boolean) as string[];
-    if (!name.trim() || scopes.length === 0) {
+    if (!name.trim()) {
       return;
     }
     setCreating(true);
     try {
-      await createApiKey({
+      const response = await createApiKey({
         name: name.trim(),
-        scopes,
+        scopes: ['inference'],
         rpm_limit: rpmLimit.trim() ? Number(rpmLimit) : null,
         concurrency_limit: concurrencyLimit.trim() ? Number(concurrencyLimit) : null,
         note: note.trim() || null,
       });
-      setName('Web Console');
-      setScopeAdmin(true);
-      setScopeInference(true);
+      pulseHighlight(setHighlightedKeyId, response.key.id);
+      await copyToClipboard('created', t('keys.createSuccess'));
+      setName(nextDefaultKeyName(apiKeys));
       setRpmLimit('');
       setConcurrencyLimit('');
       setNote('');
@@ -82,19 +101,35 @@ export function ApiKeysView() {
 
   async function handleToggle(key: ApiKeyRow) {
     setBusyId(key.id);
+    setBusyAction('toggle');
     try {
-      await updateApiKey(key.id, {status: key.status === 'active' ? 'disabled' : 'active'});
+      const updated = await updateApiKey(key.id, {status: key.status === 'active' ? 'disabled' : 'active'});
+      pulseHighlight(setHighlightedKeyId, updated.id);
+      await copyToClipboard(
+        `toggle-${key.id}-${key.status}`,
+        key.status === 'active' ? t('keys.disabledSuccess') : t('keys.enabledSuccess'),
+      );
     } finally {
       setBusyId(null);
+      setBusyAction(null);
     }
   }
 
   async function handleDelete(key: ApiKeyRow) {
+    if (!window.confirm(t('keys.deleteConfirm', {name: key.name}))) {
+      return;
+    }
     setBusyId(key.id);
+    setBusyAction('delete');
+    setExitingKeyId(key.id);
     try {
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
       await deleteApiKey(key.id);
+      await copyToClipboard(`delete-${key.id}`, t('keys.deletedSuccess'));
     } finally {
       setBusyId(null);
+      setBusyAction(null);
+      setExitingKeyId(null);
     }
   }
 
@@ -116,7 +151,7 @@ export function ApiKeysView() {
               <code className="flex-1 bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm font-mono text-blue-700">
                 {readinessOverview.base_urls.local}
               </code>
-              <button onClick={() => void copyToClipboard(readinessOverview.base_urls.local)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')}>
+              <button onClick={() => void copyToClipboard(readinessOverview.base_urls.local, t('keys.copiedBase'))} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')} aria-label={t('keys.copyBase')}>
                 <Copy className="w-4 h-4" />
               </button>
             </div>
@@ -125,13 +160,17 @@ export function ApiKeysView() {
               <code className="flex-1 bg-white/60 border border-white/80 rounded-lg px-3 py-2 text-sm font-mono text-blue-700">
                 {readinessOverview.base_urls.lan}
               </code>
-              <button onClick={() => void copyToClipboard(readinessOverview.base_urls.lan)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')}>
+              <button onClick={() => void copyToClipboard(readinessOverview.base_urls.lan, t('keys.copiedBase'))} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title={t('keys.copyBase')} aria-label={t('keys.copyBase')}>
                 <Copy className="w-4 h-4" />
               </button>
             </div>
           </div>
         </div>
       )}
+
+      <div className="rounded-2xl border border-blue-200/80 bg-blue-50/80 px-4 py-3 text-sm text-blue-900">
+        {t('keys.pageHint')}
+      </div>
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
         <div className="glass-panel p-6 flex flex-col justify-between">
@@ -147,8 +186,8 @@ export function ApiKeysView() {
           <div className="text-4xl font-bold text-blue-600">{formatCompactNumber(stats.inference, '0')}</div>
         </div>
         <div className="glass-panel p-6 flex flex-col justify-between">
-          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.adminScopes')}</div>
-          <div className="text-4xl font-bold text-purple-600">{formatCompactNumber(stats.admin, '0')}</div>
+          <div className="text-[10px] uppercase font-bold text-black/30 tracking-widest mb-4">{t('keys.disabled')}</div>
+          <div className="text-4xl font-bold text-amber-600">{formatCompactNumber(stats.disabled, '0')}</div>
         </div>
       </div>
 
@@ -184,23 +223,12 @@ export function ApiKeysView() {
           />
           <button
             onClick={handleCreate}
-            disabled={creating || !name.trim() || (!scopeAdmin && !scopeInference)}
-            className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-colors shadow-md shadow-slate-900/20 disabled:opacity-60"
+            disabled={creating || !name.trim()}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 transition-all shadow-md shadow-slate-900/20 disabled:opacity-60 active:scale-[0.98]"
           >
-            <Plus className="w-4 h-4" />
+            <Plus className={`w-4 h-4 ${creating ? 'animate-pulse' : ''}`} />
             {creating ? t('keys.creating') : t('keys.createKey')}
           </button>
-        </div>
-
-        <div className="flex flex-wrap gap-3 mt-4">
-          <label className="flex items-center gap-2 text-sm text-slate-700">
-            <input type="checkbox" checked={scopeAdmin} onChange={() => setScopeAdmin((value) => !value)} />
-            {t('keys.scopeAdmin')}
-          </label>
-          <label className="flex items-center gap-2 text-sm text-slate-700">
-            <input type="checkbox" checked={scopeInference} onChange={() => setScopeInference((value) => !value)} />
-            {t('keys.scopeInference')}
-          </label>
         </div>
       </div>
 
@@ -235,7 +263,11 @@ export function ApiKeysView() {
                 </tr>
               ) : (
                 apiKeys.map((key) => (
-                  <tr key={key.id} className="hover:bg-white/40 transition-colors">
+                  <tr
+                    key={key.id}
+                    data-testid={`api-key-row-${key.id}`}
+                    className={`transition-all duration-200 ${highlightedKeyId === key.id ? 'bg-emerald-50/80' : 'hover:bg-white/40'} ${exitingKeyId === key.id ? 'scale-[0.98] opacity-0 -translate-x-1' : ''}`}
+                  >
                     <td className="px-5 py-4">
                       <div className="font-medium text-slate-800">{key.name}</div>
                       {key.note && <div className="text-xs text-slate-500 mt-1">{key.note}</div>}
@@ -250,16 +282,20 @@ export function ApiKeysView() {
                             {key.plain_secret && visibleSecrets[key.id] ? key.plain_secret : key.masked_key}
                           </div>
                           <button
-                            onClick={() => void copyToClipboard(key.plain_secret || key.masked_key)}
-                            className="p-0.5 text-slate-400 hover:text-blue-600 transition-colors"
+                            onClick={() => void copyToClipboard(
+                              key.plain_secret || key.masked_key,
+                              key.plain_secret ? t('keys.copiedFullKey') : t('keys.copiedMaskedKey'),
+                            )}
+                            className="rounded p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors active:scale-95"
                             title={key.plain_secret ? t('keys.copySecret') : t('keys.copyMasked')}
+                            aria-label={key.plain_secret ? t('keys.copySecret') : t('keys.copyMasked')}
                           >
                             <Copy className="w-3.5 h-3.5" />
                           </button>
                           {key.plain_secret && (
                             <button
                               onClick={() => toggleSecretVisibility(key.id)}
-                              className="w-10 px-1.5 py-0.5 text-[10px] border border-slate-200 rounded text-slate-500 hover:text-slate-700 hover:bg-slate-50 transition-colors"
+                              className="w-10 px-1.5 py-0.5 text-[10px] border border-slate-200 rounded text-slate-500 hover:text-slate-700 hover:bg-slate-50 transition-colors active:scale-95"
                             >
                               {visibleSecrets[key.id] ? t('keys.hide') : t('keys.show')}
                             </button>
@@ -310,14 +346,18 @@ export function ApiKeysView() {
                     <td className="px-5 py-4 text-right">
                       <div className="flex justify-end gap-2">
                         <ToggleButton onClick={() => void handleToggle(key)} disabled={busyId === key.id}>
-                          {key.status === 'active' ? t('keys.disable') : t('keys.enable')}
+                          {busyId === key.id && busyAction === 'toggle'
+                            ? (key.status === 'active' ? t('keys.disabling') : t('keys.enabling'))
+                            : (key.status === 'active' ? t('keys.disable') : t('keys.enable'))}
                         </ToggleButton>
                         <button
                           onClick={() => void handleDelete(key)}
                           disabled={busyId === key.id}
-                          className="p-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+                          className="p-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50 active:scale-95"
+                          title={busyId === key.id && busyAction === 'delete' ? t('keys.deleting') : t('common.delete')}
+                          aria-label={busyId === key.id && busyAction === 'delete' ? t('keys.deleting') : t('common.delete')}
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Trash2 className={`w-4 h-4 ${busyId === key.id && busyAction === 'delete' ? 'animate-pulse' : ''}`} />
                         </button>
                       </div>
                     </td>

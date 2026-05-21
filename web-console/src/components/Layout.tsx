@@ -23,11 +23,19 @@ export function Layout({children}: {children: React.ReactNode}) {
     toggleLocale,
     pageTitle,
     t,
+    adminApiKey,
+    setAdminApiKey,
     sseConnected,
     globalError,
     copyFeedback,
     lastUpdated,
   } = useAppContext();
+  const [draftApiKey, setDraftApiKey] = React.useState(adminApiKey);
+  const [showAdminPanel, setShowAdminPanel] = React.useState(false);
+
+  React.useEffect(() => {
+    setDraftApiKey(adminApiKey);
+  }, [adminApiKey]);
 
   const navItems = [
     {id: 'overview', label: t('layout.nav.overview'), icon: LayoutDashboard},
@@ -86,6 +94,11 @@ export function Layout({children}: {children: React.ReactNode}) {
                 </span>
               )}
             </div>
+            {!adminApiKey && (
+              <div className="mt-4 max-w-2xl rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3">
+                <div className="text-sm font-medium text-amber-900">{t('layout.apiKeyMissingBanner')}</div>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-4">
@@ -115,9 +128,56 @@ export function Layout({children}: {children: React.ReactNode}) {
               {sseConnected ? t('layout.snapshotLive') : t('layout.snapshotReconnecting')}
             </div>
 
-            <div className="px-4 py-2 rounded-full border border-white/60 bg-white/40 backdrop-blur-md flex items-center gap-3 cursor-pointer">
-              <div className="w-6 h-6 rounded-full bg-slate-400"></div>
-              <span className="text-sm font-medium">{t('layout.admin')}</span>
+            <div className="relative">
+              <button
+                type="button"
+                aria-label={t('layout.admin')}
+                onClick={() => setShowAdminPanel((value) => !value)}
+                className="px-4 py-2 rounded-full border border-white/60 bg-white/40 backdrop-blur-md flex items-center gap-3 cursor-pointer"
+              >
+                <div className="w-6 h-6 rounded-full bg-slate-400"></div>
+                <span className="text-sm font-medium">{t('layout.admin')}</span>
+              </button>
+              {showAdminPanel && (
+                <div className="absolute right-0 top-[calc(100%+0.75rem)] z-30 w-[26rem] rounded-2xl border border-amber-200 bg-amber-50/95 p-4 shadow-lg shadow-amber-200/40 backdrop-blur-md">
+                  <div className="text-sm font-medium text-amber-900">
+                    {adminApiKey ? t('layout.admin') : t('layout.apiKeyMissingBanner')}
+                  </div>
+                  <div className="mt-3 flex flex-col gap-3">
+                    <input
+                      aria-label={t('layout.apiKeyPlaceholder')}
+                      type="password"
+                      value={draftApiKey}
+                      onChange={(event) => setDraftApiKey(event.target.value)}
+                      placeholder={t('layout.apiKeyPlaceholder')}
+                      className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400/40"
+                    />
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraftApiKey(adminApiKey);
+                          setShowAdminPanel(false);
+                        }}
+                        className="rounded-full border border-amber-300 bg-white px-3.5 py-2 text-sm text-amber-900 transition-colors hover:bg-amber-100"
+                      >
+                        {t('layout.closeAdminPanel')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdminApiKey(draftApiKey);
+                          setShowAdminPanel(false);
+                        }}
+                        disabled={!draftApiKey.trim()}
+                        className="rounded-full border border-amber-900 bg-amber-900 px-3.5 py-2 text-sm text-white transition-colors hover:bg-amber-800 disabled:opacity-50"
+                      >
+                        {t('layout.saveApiKey')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </header>

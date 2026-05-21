@@ -417,6 +417,8 @@ interface AppState {
   pageTitle: string;
   apiBase: string;
   setApiBase: (url: string) => void;
+  adminApiKey: string;
+  setAdminApiKey: (value: string) => void;
   sseConnected: boolean;
   globalError: string | null;
   setGlobalError: (error: string | null) => void;
@@ -486,6 +488,7 @@ function inferDefaultApiBase(): string {
 }
 
 const defaultApiBase = localStorage.getItem('vllm-console-api-base') || inferDefaultApiBase();
+const storedApiKey = localStorage.getItem('vllm-console-api-key') || '';
 
 const AppContext = createContext<AppState | undefined>(undefined);
 
@@ -513,10 +516,25 @@ function toUtcIsoParam(value: string | null | undefined): string | null {
 }
 
 function authHeaders(headers?: HeadersInit): HeadersInit {
-  return {
+  const apiKey = localStorage.getItem('vllm-console-api-key') || storedApiKey;
+  const merged: Record<string, string> = {
     Accept: 'application/json',
-    ...headers,
   };
+  if (apiKey.trim()) {
+    merged['x-api-key'] = apiKey.trim();
+  }
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      merged[key] = value;
+    });
+  } else if (Array.isArray(headers)) {
+    for (const [key, value] of headers) {
+      merged[key] = value;
+    }
+  } else if (headers) {
+    Object.assign(merged, headers);
+  }
+  return merged;
 }
 
 function toErrorMessage(error: unknown, fallback = '请求失败'): string {
@@ -543,6 +561,7 @@ export function AppProvider({children}: {children: ReactNode}) {
   const [currentPage, setCurrentPage] = useState<Page>('overview');
   const [locale, setLocaleState] = useState<Locale>(readStoredLocale());
   const [apiBase, setApiBase] = useState(defaultApiBase);
+  const [adminApiKey, setAdminApiKeyState] = useState(storedApiKey);
   const [sseConnected, setSseConnected] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<{message: string; visible: boolean} | null>(null);
@@ -576,6 +595,12 @@ export function AppProvider({children}: {children: ReactNode}) {
   useEffect(() => {
     localStorage.setItem('vllm-console-api-base', apiBase);
   }, [apiBase]);
+
+  function setAdminApiKey(value: string) {
+    const normalized = value.trim();
+    setAdminApiKeyState(normalized);
+    localStorage.setItem('vllm-console-api-key', normalized);
+  }
 
   useEffect(() => {
     writeStoredLocale(locale);
@@ -823,18 +848,24 @@ export function AppProvider({children}: {children: ReactNode}) {
   }
 
   async function createApiKey(payload: CreateApiKeyPayload) {
-    const response = await requestJson<{key: ApiKeyRow; secret: string}>('/admin/keys', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
-    });
-    setApiKeys((previous) => {
-      const nextKey = {...response.key, plain_secret: response.secret};
-      return [nextKey, ...previous.filter((item) => item.id !== nextKey.id)];
-    });
-    setLastUpdated(new Date());
-    setGlobalError(null);
-    return response;
+    try {
+      const response = await requestJson<{key: ApiKeyRow; secret: string}>('/admin/keys', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      setApiKeys((previous) => {
+        const nextKey = {...response.key, plain_secret: response.secret};
+        return [nextKey, ...previous.filter((item) => item.id !== nextKey.id)];
+      });
+      setLastUpdated(new Date());
+      setGlobalError(null);
+      return response;
+    } catch (error) {
+      const message = toErrorMessage(error, '无法创建推理密钥');
+      setGlobalError(message);
+      throw error;
+    }
   }
 
   async function updateApiKey(id: number, payload: UpdateApiKeyPayload) {
@@ -1084,6 +1115,8 @@ export function AppProvider({children}: {children: ReactNode}) {
         pageTitle,
         apiBase,
         setApiBase,
+        adminApiKey,
+        setAdminApiKey,
         sseConnected,
         globalError,
         setGlobalError,

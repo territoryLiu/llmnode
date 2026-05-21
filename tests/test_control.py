@@ -4,7 +4,8 @@ from pathlib import Path
 
 from llmnode.agent.service import create_agent_app
 from llmnode.api.app import create_app
-from llmnode.control import RuntimeConfig, _build_backend_spec, _default_python_bin, _probe_process_state, _resolve_log_targets, _restart_without_backend, _stop_python_service, _tail_lines, build_parser
+from llmnode.control import RuntimeConfig, _build_backend_spec, _create_inference_key, _default_python_bin, _probe_process_state, _resolve_log_targets, _restart_without_backend, _start_stack, _stop_python_service, _tail_lines, build_parser
+from llmnode.storage.db import init_db
 
 
 def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
@@ -24,6 +25,8 @@ def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
         web_console_dir=tmp_path / "web-console",
         web_console_port=5173,
         web_console_url="http://127.0.0.1:5173",
+        web_console_static_url="http://127.0.0.1:4000/console/",
+        web_console_dist_dir=tmp_path / "web-console" / "dist",
         web_console_log_file=log_dir / "web-console.log",
         web_console_system_key_name="Web Console",
         model_dir=str(tmp_path / "models"),
@@ -78,6 +81,19 @@ def test_control_parser_supports_restart_exclude_backend():
     args = parser.parse_args(["restart", "--exclude-backend"])
     assert args.action == "restart"
     assert args.exclude_backend is True
+
+
+def test_control_parser_defaults_to_static_web_console_mode():
+    parser = build_parser()
+    args = parser.parse_args(["start"])
+    assert args.web_console_mode == "static"
+    assert args.rebuild_web_console is False
+
+
+def test_control_parser_supports_dev_web_console_mode():
+    parser = build_parser()
+    args = parser.parse_args(["start", "--web-console-mode", "dev"])
+    assert args.web_console_mode == "dev"
 
 
 def test_control_parser_supports_doctor_action():
@@ -141,6 +157,22 @@ def test_apps_default_db_path_follows_runtime_dir(monkeypatch, tmp_path: Path):
     assert agent_row[2] == str(expected_db_path)
 
 
+def test_gateway_mounts_web_console_static_dist(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "gateway.db"
+    dist_dir = tmp_path / "web-console" / "dist"
+    dist_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<html><title>Console</title></html>", encoding="utf-8")
+    (dist_dir / "assets").mkdir()
+    monkeypatch.setenv("VLLM_CLAUDE_DB_PATH", str(db_path))
+    monkeypatch.setattr("llmnode.api.app.PROJECT_ROOT", tmp_path)
+
+    app = create_app()
+
+    paths = {getattr(route, "path", "") for route in app.routes}
+    assert "/console/assets" in paths
+    assert "/console/" in paths
+
+
 def test_build_backend_spec_vllm_uses_runtime_config(tmp_path: Path):
     config = make_runtime_config(tmp_path)
     spec = _build_backend_spec(config)
@@ -189,10 +221,46 @@ def test_control_parser_supports_env_action():
 
 def test_control_parser_supports_create_api_key_action():
     parser = build_parser()
-    args = parser.parse_args(["create-api-key", "--name", "console-admin", "--scope", "admin", "--scope", "inference"])
+    args = parser.parse_args(["create-api-key", "--name", "worker", "--scope", "inference"])
     assert args.action == "create-api-key"
-    assert args.name == "console-admin"
-    assert args.scope == ["admin", "inference"]
+    assert args.name == "worker"
+    assert args.scope == ["inference"]
+
+
+def test_control_parser_supports_create_inference_key_action():
+    parser = build_parser()
+    args = parser.parse_args(["create-inference-key", "--name", "worker"])
+    assert args.action == "create-inference-key"
+    assert args.name == "worker"
+
+
+def test_control_parser_supports_admin_key_actions():
+    parser = build_parser()
+    assert parser.parse_args(["create-admin-key"]).action == "create-admin-key"
+    assert parser.parse_args(["rotate-admin-key"]).action == "rotate-admin-key"
+    assert parser.parse_args(["admin-key-status"]).action == "admin-key-status"
+
+
+def test_control_parser_supports_inference_key_actions():
+    parser = build_parser()
+    assert parser.parse_args(["rotate-inference-key", "--name", "worker"]).action == "rotate-inference-key"
+    assert parser.parse_args(["inference-key-status"]).action == "inference-key-status"
+
+
+def test_create_inference_key_creates_or_rotates_named_inference_key(tmp_path: Path):
+    conn = init_db(tmp_path / "gateway.db")
+
+    first_row, first_secret = _create_inference_key(conn, name="worker", rotate=False)
+    assert first_row["name"] == "worker"
+    assert first_row["scopes"] == ["inference"]
+    assert first_secret.startswith("sk-")
+
+    rotated_row, rotated_secret = _create_inference_key(conn, name="worker", rotate=True)
+    assert rotated_row["id"] == first_row["id"]
+    assert rotated_row["name"] == "worker"
+    assert rotated_row["scopes"] == ["inference"]
+    assert rotated_secret.startswith("sk-")
+    assert rotated_secret != first_secret
 
 
 def test_restart_without_backend_restarts_control_plane_only(tmp_path: Path, monkeypatch):
@@ -221,6 +289,10 @@ def test_restart_without_backend_restarts_control_plane_only(tmp_path: Path, mon
         lambda _config, module, pid_file, log_file, label: calls.append(("start_service", label)),
     )
     monkeypatch.setattr(
+        "llmnode.control._ensure_web_console_static_dist",
+        lambda _config, rebuild=False: calls.append(("ensure_static", str(rebuild))),
+    )
+    monkeypatch.setattr(
         "llmnode.control._start_web_console",
         lambda _config: calls.append(("start_service", "Web console")),
     )
@@ -233,9 +305,77 @@ def test_restart_without_backend_restarts_control_plane_only(tmp_path: Path, mon
         ("stop_service", "Gateway"),
         ("stop_service", "Node agent"),
         ("start_service", "Node agent"),
+        ("ensure_static", "False"),
         ("start_service", "Gateway"),
-        ("start_service", "Web console"),
     ]
+
+
+def test_restart_without_backend_dev_mode_starts_vite_console(tmp_path: Path, monkeypatch):
+    config = make_runtime_config(tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr("llmnode.control._print_header", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_step", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_kv", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._wait_for_http", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._adopt_web_console_pid_if_needed", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("llmnode.control._stop_pid_file", lambda pid_file, label: calls.append(("stop_pid", label)))
+    monkeypatch.setattr("llmnode.control._stop_python_service", lambda pid_file, label, legacy_pattern: calls.append(("stop_service", label)))
+    monkeypatch.setattr("llmnode.control._spawn_python_module", lambda _config, module, pid_file, log_file, label: calls.append(("start_service", label)))
+    monkeypatch.setattr("llmnode.control._ensure_web_console_static_dist", lambda _config, rebuild=False: calls.append(("ensure_static", str(rebuild))))
+    monkeypatch.setattr("llmnode.control._start_web_console", lambda _config: calls.append(("start_service", "Web console")))
+
+    result = _restart_without_backend(config, web_console_mode="dev")
+
+    assert result == 0
+    assert ("ensure_static", "False") not in calls
+    assert ("start_service", "Web console") in calls
+
+
+def test_restart_without_backend_static_mode_stops_adopted_vite(tmp_path: Path, monkeypatch):
+    config = make_runtime_config(tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr("llmnode.control._print_header", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_step", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_kv", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._wait_for_http", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._adopt_web_console_pid_if_needed", lambda *_args, **_kwargs: "12345")
+    monkeypatch.setattr("llmnode.control._stop_pid", lambda pid: calls.append(("stop_adopted", pid)) or True)
+    monkeypatch.setattr("llmnode.control._stop_pid_file", lambda pid_file, label: calls.append(("stop_pid", label)))
+    monkeypatch.setattr("llmnode.control._stop_python_service", lambda pid_file, label, legacy_pattern: calls.append(("stop_service", label)))
+    monkeypatch.setattr("llmnode.control._spawn_python_module", lambda _config, module, pid_file, log_file, label: calls.append(("start_service", label)))
+    monkeypatch.setattr("llmnode.control._ensure_web_console_static_dist", lambda _config, rebuild=False: calls.append(("ensure_static", str(rebuild))))
+
+    result = _restart_without_backend(config)
+
+    assert result == 0
+    assert ("stop_adopted", "12345") in calls
+
+
+def test_start_stack_static_mode_stops_adopted_vite(tmp_path: Path, monkeypatch):
+    config = make_runtime_config(tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr("llmnode.control._print_header", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_step", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._print_kv", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._wait_for_http", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._http_post", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._wait_for_backend_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr("llmnode.control._adopt_web_console_pid_if_needed", lambda *_args, **_kwargs: "12345")
+    monkeypatch.setattr("llmnode.control._stop_pid", lambda pid: calls.append(("stop_adopted", pid)) or True)
+    monkeypatch.setattr("llmnode.control._spawn_python_module", lambda _config, module, pid_file, log_file, label: calls.append(("start_service", label)))
+    monkeypatch.setattr("llmnode.control._ensure_web_console_static_dist", lambda _config, rebuild=False: calls.append(("ensure_static", str(rebuild))))
+    monkeypatch.setattr("llmnode.control._stop_python_service", lambda *args, **kwargs: None)
+
+    result = _start_stack(config)
+
+    assert result == 0
+    assert ("stop_adopted", "12345") in calls
 
 
 def test_stop_python_service_does_not_kill_reused_pid_from_foreign_process(tmp_path: Path, monkeypatch):

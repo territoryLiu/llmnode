@@ -24,6 +24,15 @@ const TOKEN_LINES = [
   {key: 'total_tokens', color: '#111827'},
 ] as const;
 
+const GROUP_LINE_COLORS = [
+  '#2563eb',
+  '#0f766e',
+  '#d97706',
+  '#dc2626',
+  '#7c3aed',
+  '#0891b2',
+] as const;
+
 function formatDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -94,6 +103,23 @@ function metricLabel(t: (key: string) => string, metric: string) {
     total_tokens: t('usage.metricTotal'),
   };
   return mapping[metric] || metric;
+}
+
+function buildMultiGroupChartData(groups: UsageChartGroup[]) {
+  const bucketMap = new Map<string, Record<string, number | string>>();
+
+  groups.forEach((group) => {
+    group.points.forEach((point) => {
+      const current = bucketMap.get(point.bucket) ?? {
+        bucket: point.bucket,
+        label: point.label,
+      };
+      current[group.group] = point.total_tokens;
+      bucketMap.set(point.bucket, current);
+    });
+  });
+
+  return Array.from(bucketMap.values()).sort((left, right) => String(left.bucket).localeCompare(String(right.bucket)));
 }
 
 function groupButtonLabel(t: (key: string) => string, groupBy: GroupBy) {
@@ -180,6 +206,8 @@ export function UsageRecordsView() {
     : chartGroups.find((group) => group.group === activeGroup) ?? null;
   const chartPoints = selectedGroup?.points ?? chart?.points ?? [];
   const groupTotals = selectedGroup?.totals ?? chart?.totals ?? null;
+  const showGroupedTrend = activeGroup === 'all' && chartGroups.length > 0;
+  const groupedTrendData = useMemo(() => buildMultiGroupChartData(chartGroups), [chartGroups]);
 
   const topGroups = useMemo(() => {
     return chartGroups.slice(0, 6);
@@ -293,13 +321,13 @@ export function UsageRecordsView() {
 
           <div className="p-6">
             <div className="h-80">
-              {chartPoints.length === 0 ? (
+              {(showGroupedTrend ? groupedTrendData : chartPoints).length === 0 ? (
                 <div className="h-full flex items-center justify-center text-sm text-slate-500">
                   {loading.usageOverview ? t('usage.loadingLogs') : t('usage.noChartData')}
                 </div>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartPoints} margin={{top: 12, right: 12, left: 4, bottom: 8}}>
+                  <LineChart data={showGroupedTrend ? groupedTrendData : chartPoints} margin={{top: 12, right: 12, left: 4, bottom: 8}}>
                     <CartesianGrid stroke="rgba(148,163,184,0.22)" strokeDasharray="3 3" />
                     <XAxis
                       dataKey="bucket"
@@ -311,7 +339,7 @@ export function UsageRecordsView() {
                     />
                     <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
                     <RechartsTooltip
-                      formatter={(value: number, name: string) => [formatMetricValue(value, '0'), metricLabel(t, name)]}
+                      formatter={(value: number, name: string) => [formatMetricValue(value, '0'), showGroupedTrend ? name : metricLabel(t, name)]}
                       labelFormatter={(bucket) => formatUsageChartBucketLabel(String(bucket), window, locale)}
                       contentStyle={{
                         borderRadius: '18px',
@@ -320,18 +348,32 @@ export function UsageRecordsView() {
                         boxShadow: '0 16px 32px rgba(24,22,17,0.08)',
                       }}
                     />
-                    <Legend formatter={(value) => metricLabel(t, String(value))} />
-                    {TOKEN_LINES.map((line) => (
-                      <Line
-                        key={line.key}
-                        type="monotone"
-                        dataKey={line.key}
-                        stroke={line.color}
-                        strokeWidth={2.5}
-                        dot={false}
-                        activeDot={{r: 4}}
-                      />
-                    ))}
+                    <Legend formatter={(value) => showGroupedTrend ? String(value) : metricLabel(t, String(value))} />
+                    {showGroupedTrend
+                      ? chartGroups.map((group, index) => (
+                        <Line
+                          key={group.group}
+                          type="monotone"
+                          name={group.label}
+                          dataKey={group.group}
+                          stroke={GROUP_LINE_COLORS[index % GROUP_LINE_COLORS.length]}
+                          strokeWidth={2.5}
+                          dot={false}
+                          activeDot={{r: 4}}
+                          connectNulls
+                        />
+                      ))
+                      : TOKEN_LINES.map((line) => (
+                        <Line
+                          key={line.key}
+                          type="monotone"
+                          dataKey={line.key}
+                          stroke={line.color}
+                          strokeWidth={2.5}
+                          dot={false}
+                          activeDot={{r: 4}}
+                        />
+                      ))}
                   </LineChart>
                 </ResponsiveContainer>
               )}

@@ -111,6 +111,8 @@
   **Usage Ledger 与聚合视图落地**：`request_metrics` 已扩展 `backend_type`、`api_key_id` 与 cache token 字段；后端聚合查询支持 summary / trend / breakdown / key usage；管理面新增 `/admin/overview/usage` 和 `/admin/keys/{id}/usage`；流式请求在 stream 结束后写入 metric；管理台总览和请求记录页已接入总 Token、缓存 Token、趋势图和后端分布；SQLite 迁移兼容与索引已补齐。
 - 补充里程碑（2026-05-15）：
   **默认密钥后门已移除，API Key 初始化路径正式化**：网关已移除默认 `dev-key` / bootstrap key 放行，正式鉴权统一收敛到数据库 API key；真实密钥格式改为 `sk-<64hex>`，历史列表脱敏展示改为 `sk-****` 风格；控制面新增 `python -m llmnode.control create-api-key` 作为首把管理员密钥初始化路径；管理台顶部新增轻量 API key 输入入口，不再依赖默认预置密钥。
+- 补充里程碑（2026-05-21）：
+  **admin key 与推理 key 已正式分离**：控制面新增 `create-admin-key / rotate-admin-key / admin-key-status` 作为唯一 admin key 管理路径；数据库内只允许一把 `name=admin`、`scope=admin` 的控制面密钥；普通 `/admin/keys` 列表不再展示这把 admin key；`web-console` 不再依赖 `runtime/data/web-console-admin.key`，改为通过右上角“管理员”入口录入或更新本地保存的 admin key；static 模式若发现被接管的 Vite 进程会主动停止，不再保留 dev server。
 - 补充里程碑（2026-05-15）：
   **Readiness 热身语义与结构化事件已正式化**：`node-agent` 已拆分 `http_ready / inference_ready` 双阶段就绪语义；网关在热身窗口返回 `503 + Retry-After`，并使用固定 `detail` 枚举；`agent_events` 已扩展 `event_type / readiness_state / http_ready / inference_ready / metadata_json`，其中热身失败和恢复路径会记录 `stream_not_ready`、`backend_recovered` 等结构化事件，管理台与排障接口可直接消费。
 - 补充里程碑（2026-05-15）：

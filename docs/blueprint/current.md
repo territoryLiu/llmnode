@@ -58,7 +58,7 @@
 当前正式主链路按执行顺序可以理解为：
 
 1. `python -m llmnode.control start`
-   拉起 `node-agent`、`vLLM`、`gateway-api`、`web-console`
+   拉起 `node-agent`、`vLLM`、`gateway-api`，并在产品态通过 `gateway-api` 提供 `/console/` 静态管理台
 2. `python -m llmnode.control status`
    查看控制面摘要、HTTP 健康和当前栈状态
 3. `python -m llmnode.control doctor`
@@ -93,7 +93,13 @@
   - `env`
   - `doctor`
   - `logs`
-  - `create-api-key`
+  - `create-inference-key`
+  - `rotate-inference-key`
+  - `inference-key-status`
+  - `create-api-key`（兼容旧入口）
+  - `create-admin-key`
+  - `rotate-admin-key`
+  - `admin-key-status`
 - 管理台：
   - 总览状态卡片
   - 实时 SSE 面板
@@ -139,6 +145,7 @@
   - 管理台入口
   - 控制面可视化
   - 配置与观察界面
+  - 产品态默认由 `gateway-api` 挂载静态构建产物；Vite 只作为显式 dev 模式入口
 
 这意味着当前系统已经不是几个独立命令拼装，而是形成了：
 
@@ -173,7 +180,7 @@
   - `llama.cpp`：须使用 `full-cuda` 镜像，约 68 token/s，显存占用约 26GB，`reasoning_content` 正常
   - `SGLang`：需 `--reasoning-parser qwen3` 参数（`distro` 模块补丁已合入），`reasoning_content` 正常分离
 - 三后端统一由 Python 控制面通过 Docker 编排，`control.py` 已完整感知三后端
-- `web-console` 当前主要承担状态查看和日常配置入口
+- `web-console` 当前主要承担状态查看和日常配置入口，正式默认入口为 `http://127.0.0.1:4000/console/`
 - 控制面诊断能力已增强（2026-05-12）：
   - `doctor` 命令支持三后端特定检查、GPU 信息、模型格式检测、智能建议
   - `status` 命令支持容器详细信息、推理参数展示、6 种栈状态
@@ -207,8 +214,14 @@
   - 正式鉴权只接受数据库中的 API key，默认必须先创建密钥才能使用
   - 新建真实密钥统一使用 `sk-<64hex>` 格式
   - 历史列表展示的 `masked_key` 已改为 `sk-****` 风格，不再使用 `ln_saved_n`
-  - 控制面新增 `python -m llmnode.control create-api-key --name <name> --scope admin` 用于首把管理员密钥初始化
-  - 管理台顶部提供轻量 API key 输入入口，不再依赖默认内置密钥
+  - admin key 已从普通推理 key 语义中拆出：
+    - 数据库内只允许存在一把
+    - 名字固定为 `admin`
+    - scope 固定为 `admin`
+    - 不再通过 `runtime/data/web-console-admin.key` 落地
+  - 控制面新增 `create-admin-key / rotate-admin-key / admin-key-status` 作为正式 admin key 管理路径
+  - 通用 `create-api-key` 当前只承担 inference-only 推理 key 创建，不再用于创建 admin key
+  - 管理台改为通过右上角“管理员”入口录入或更新本地保存的 admin key
 - 多协议路由管理面已打通（2026-05-15）：
   - `/admin/models` 与管理台模型页已支持编辑 `lifecycle_mode / upstream_protocol / upstream_base_url / upstream_model / upstream_auth_kind / upstream_auth_ref / capabilities_json`
   - 本地受控 route 与外部上游 route 已有明确校验边界：
@@ -290,7 +303,7 @@
 当前安全边界补充：
 
 - `config/defaults.yaml` 中 `gateway.api_key` 已默认置空，不再作为正式 bootstrap 鉴权入口
-- 首把管理员密钥的正式创建路径是本地控制命令 `python -m llmnode.control create-api-key`
+- 首把管理员密钥的正式创建路径是本地控制命令 `python -m llmnode.control create-admin-key`
 - 浏览器端仅保存用户手工输入的 `sk-...` 密钥，不再默认预填 `dev-key`
 
 这意味着如果出现“README 说法、旧蓝图说法、代码行为不一致”的情况，优先应对照：

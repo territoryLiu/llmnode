@@ -30,7 +30,9 @@ from .diagnostics import (
 )
 from .runtime_paths import resolve_gateway_db_path
 from .security import generate_api_key, hash_api_key
-from .storage.db import create_api_key, get_api_key_by_hash, get_api_key_by_name, init_db, update_api_key
+from .storage.db import create_api_key, get_api_key_by_hash, get_api_key_by_name, init_db, list_api_keys, update_api_key
+
+_ADMIN_KEY_NAME = "admin"
 
 
 def _load_dotenv() -> None:
@@ -64,6 +66,8 @@ class RuntimeConfig:
     web_console_dir: Path
     web_console_port: int
     web_console_url: str
+    web_console_static_url: str
+    web_console_dist_dir: Path
     web_console_log_file: Path
     web_console_system_key_name: str
     model_dir: str
@@ -133,6 +137,10 @@ def _runtime_config() -> RuntimeConfig:
         os.getenv("VLLM_CLAUDE_WEB_CONSOLE_DIR", str(PROJECT_ROOT / "web-console"))
     ).resolve()
     web_console_system_key_name = os.getenv("VLLM_CLAUDE_WEB_CONSOLE_KEY_NAME", "Web Console")
+    web_console_static_url = os.getenv(
+        "VLLM_CLAUDE_WEB_CONSOLE_STATIC_URL",
+        f"{gateway_url.rstrip('/')}/console/",
+    )
     python_bin = _default_python_bin()
 
     return RuntimeConfig(
@@ -146,6 +154,8 @@ def _runtime_config() -> RuntimeConfig:
         web_console_dir=web_console_dir,
         web_console_port=web_console_port,
         web_console_url=web_console_url,
+        web_console_static_url=web_console_static_url,
+        web_console_dist_dir=web_console_dir / "dist",
         web_console_log_file=log_dir / "web-console.log",
         web_console_system_key_name=web_console_system_key_name,
         model_dir=settings.vllm.model_dir,
@@ -181,47 +191,206 @@ def _runtime_config() -> RuntimeConfig:
     )
 
 
+def _admin_key_row(conn) -> dict | None:
+    return next(
+        (
+            row for row in list_api_keys(conn)
+            if row["name"] == _ADMIN_KEY_NAME and set(row["scopes"]) == {"admin"}
+        ),
+        None,
+    )
+
+
+def _inference_key_row(conn, name: str) -> dict | None:
+    return next(
+        (
+            row for row in list_api_keys(conn)
+            if row["name"] == name and set(row["scopes"]) == {"inference"}
+        ),
+        None,
+    )
+
+
 def _ensure_web_console_api_key(config: RuntimeConfig) -> str:
     db_path = resolve_gateway_db_path()
-    secret_path = config.runtime_dir / "data" / "web-console-admin.key"
     conn = init_db(db_path)
-    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    row = _admin_key_row(conn)
+    if row is None or not row.get("plain_secret"):
+        raise RuntimeError("admin key is missing. Run 'python -m llmnode.control create-admin-key' first")
+    if row["status"] != "active":
+        updated = update_api_key(conn, row["id"], status="active")
+        if updated is not None:
+            row = updated
+    return str(row["plain_secret"])
 
-    secret = secret_path.read_text(encoding="utf-8").strip() if secret_path.exists() else ""
-    row = get_api_key_by_hash(conn, hash_api_key(secret)) if secret else None
-    if row is None:
-        existing_named = get_api_key_by_name(conn, config.web_console_system_key_name)
-        secret = generate_api_key()
-        if existing_named is None:
-            create_api_key(
-                conn,
-                name=config.web_console_system_key_name,
-                key_hash=hash_api_key(secret),
-                plain_secret=secret,
-                scopes=["admin", "inference"],
-                note="system-managed local web console key",
-            )
-        else:
-            update_api_key(
-                conn,
-                existing_named["id"],
-                key_hash=hash_api_key(secret),
-                plain_secret=secret,
-                status="active",
-                scopes=["admin", "inference"],
-                note="system-managed local web console key",
-            )
-        secret_path.write_text(f"{secret}\n", encoding="utf-8")
-    elif row["status"] != "active" or set(row["scopes"]) != {"admin", "inference"}:
-        update_api_key(
+
+def _create_admin_key(conn, *, rotate: bool = False) -> tuple[dict, str]:
+    existing = _admin_key_row(conn)
+    if existing is not None and not rotate:
+        raise RuntimeError("admin key already exists")
+    secret = generate_api_key()
+    if existing is None:
+        row = create_api_key(
             conn,
-            row["id"],
+            name=_ADMIN_KEY_NAME,
+            key_hash=hash_api_key(secret),
             plain_secret=secret,
-            status="active",
-            scopes=["admin", "inference"],
-            note="system-managed local web console key",
+            scopes=["admin"],
+            note="control-plane admin key",
         )
-    return secret
+    else:
+        row = update_api_key(
+            conn,
+            existing["id"],
+            key_hash=hash_api_key(secret),
+            plain_secret=secret,
+            name=_ADMIN_KEY_NAME,
+            status="active",
+            scopes=["admin"],
+            note="control-plane admin key",
+        )
+        assert row is not None
+    return row, secret
+
+
+def _create_inference_key(
+    conn,
+    *,
+    name: str,
+    rotate: bool = False,
+    rpm_limit: int | None = None,
+    concurrency_limit: int | None = None,
+    note: str | None = None,
+    disabled: bool = False,
+) -> tuple[dict, str]:
+    existing = _inference_key_row(conn, name)
+    if existing is not None and not rotate:
+        raise RuntimeError(f"inference key already exists: {name}")
+    secret = generate_api_key()
+    if existing is None:
+        row = create_api_key(
+            conn,
+            name=name,
+            key_hash=hash_api_key(secret),
+            plain_secret=secret,
+            scopes=["inference"],
+            rpm_limit=rpm_limit,
+            concurrency_limit=concurrency_limit,
+            note=note,
+            status="disabled" if disabled else "active",
+        )
+    else:
+        row = update_api_key(
+            conn,
+            existing["id"],
+            key_hash=hash_api_key(secret),
+            plain_secret=secret,
+            name=name,
+            status="disabled" if disabled else "active",
+            scopes=["inference"],
+            rpm_limit=rpm_limit if rpm_limit is not None else existing["rpm_limit"],
+            concurrency_limit=concurrency_limit if concurrency_limit is not None else existing["concurrency_limit"],
+            note=note if note is not None else existing["note"],
+        )
+        assert row is not None
+    return row, secret
+
+
+def _create_admin_key_action(rotate: bool = False) -> int:
+    db_path = resolve_gateway_db_path()
+    conn = init_db(db_path)
+    try:
+        row, secret = _create_admin_key(conn, rotate=rotate)
+    except Exception as exc:
+        _print_error(str(exc))
+        return 1
+
+    _print_header("admin key ready")
+    _print_kv("id", str(row["id"]))
+    _print_kv("name", row["name"])
+    _print_kv("status", row["status"])
+    _print_kv("scopes", ",".join(row["scopes"]))
+    _print_kv("db", str(db_path))
+    _print_info("secret", secret)
+    return 0
+
+
+def _admin_key_status_action() -> int:
+    db_path = resolve_gateway_db_path()
+    conn = init_db(db_path)
+    row = _admin_key_row(conn)
+    _print_header("admin key status")
+    _print_kv("db", str(db_path))
+    if row is None:
+        _print_kv("exists", "no")
+        return 0
+    _print_kv("exists", "yes")
+    _print_kv("id", str(row["id"]))
+    _print_kv("name", row["name"])
+    _print_kv("status", row["status"])
+    _print_kv("created_at", str(row["created_at"]))
+    _print_kv("last_used_at", str(row["last_used_at"]))
+    return 0
+
+
+def _create_inference_key_action(args: argparse.Namespace, *, rotate: bool = False, legacy_label: bool = False) -> int:
+    db_path = resolve_gateway_db_path()
+    conn = init_db(db_path)
+    try:
+        row, secret = _create_inference_key(
+            conn,
+            name=args.name,
+            rotate=rotate,
+            rpm_limit=args.rpm_limit,
+            concurrency_limit=args.concurrency_limit,
+            note=args.note,
+            disabled=args.disabled,
+        )
+    except Exception as exc:
+        _print_error(str(exc))
+        return 1
+
+    _print_header("api key created" if legacy_label else "inference key ready")
+    _print_kv("id", str(row["id"]))
+    _print_kv("name", row["name"])
+    _print_kv("status", row["status"])
+    _print_kv("scopes", ",".join(row["scopes"]))
+    _print_kv("db", str(db_path))
+    _print_info("secret", secret)
+    if legacy_label:
+        _print_info("note", "prefer 'create-inference-key' for new usage")
+    return 0
+
+
+def _inference_key_status_action(name: str | None = None) -> int:
+    db_path = resolve_gateway_db_path()
+    conn = init_db(db_path)
+    rows = [
+        row for row in list_api_keys(conn)
+        if set(row["scopes"]) == {"inference"} and (name is None or row["name"] == name)
+    ]
+    _print_header("inference key status")
+    _print_kv("db", str(db_path))
+    if not rows:
+        _print_kv("exists", "no")
+        if name:
+            _print_kv("name", name)
+        return 0
+    if name is None:
+        _print_kv("exists", "yes")
+        _print_kv("count", str(len(rows)))
+        _print_kv("names", ", ".join(row["name"] for row in rows))
+        return 0
+    row = rows[0]
+    _print_kv("exists", "yes")
+    _print_kv("id", str(row["id"]))
+    _print_kv("name", row["name"])
+    _print_kv("status", row["status"])
+    _print_kv("created_at", str(row["created_at"]))
+    _print_kv("last_used_at", str(row["last_used_at"]))
+    _print_kv("rpm_limit", "" if row["rpm_limit"] is None else str(row["rpm_limit"]))
+    _print_kv("concurrency_limit", "" if row["concurrency_limit"] is None else str(row["concurrency_limit"]))
+    return 0
 
 
 def _print_header(title: str) -> None:
@@ -333,8 +502,15 @@ def _run_command(command: list[str], stdout=None, stderr=None, cwd: Path | None 
     )
 
 
-def _run_command_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=False, capture_output=True, text=True)
+def _run_command_capture(command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _command_exists(command: str) -> bool:
@@ -851,6 +1027,17 @@ def _adopt_web_console_pid_if_needed(config: RuntimeConfig) -> str:
     return ""
 
 
+def _stop_adopted_web_console_for_static_mode(config: RuntimeConfig) -> None:
+    adopted_pid = _adopt_web_console_pid_if_needed(config)
+    if not adopted_pid:
+        return
+    _print_warn(
+        f"static web-console mode does not keep Vite dev server alive; stopping adopted process pid={adopted_pid}"
+    )
+    _stop_pid(adopted_pid)
+    config.web_pid_file.unlink(missing_ok=True)
+
+
 def _start_web_console(config: RuntimeConfig) -> None:
     if not config.web_console_dir.exists():
         raise RuntimeError(f"Web console directory not found: {config.web_console_dir}")
@@ -903,6 +1090,29 @@ def _start_web_console(config: RuntimeConfig) -> None:
     config.web_pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
     _print_success(f"Web console started (pid={process.pid})")
     _print_info("log", str(config.web_console_log_file))
+
+
+def _ensure_web_console_static_dist(config: RuntimeConfig, rebuild: bool = False) -> None:
+    if not config.web_console_dir.exists():
+        raise RuntimeError(f"Web console directory not found: {config.web_console_dir}")
+    index_file = config.web_console_dist_dir / "index.html"
+    if index_file.exists() and not rebuild:
+        _print_info("web-console", f"static dist already exists: {config.web_console_dist_dir}")
+        return
+    if not shutil.which("npm"):
+        raise RuntimeError("npm is not installed; cannot build web console")
+    if not (config.web_console_dir / "node_modules").exists():
+        raise RuntimeError("web-console/node_modules is missing. Run 'cd web-console && npm install' first")
+    _print_step("building web-console static assets")
+    env = os.environ.copy()
+    env.setdefault("VITE_API_PROXY_TARGET", config.gateway_url)
+    result = _run_command_capture(["npm", "run", "build"], cwd=config.web_console_dir, env=env)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "npm run build failed").strip()
+        raise RuntimeError(detail)
+    if not index_file.exists():
+        raise RuntimeError(f"web-console build completed but {index_file} was not created")
+    _print_success(f"Web console static assets ready at {config.web_console_dist_dir}")
 
 
 def _start_single_service(config: RuntimeConfig, service: str, daemon: bool) -> int:
@@ -997,7 +1207,8 @@ def _status_stack(config: RuntimeConfig) -> int:
     _print_kv("backend", config.backend_type)
     _print_kv("python", config.python_bin)
     _print_kv("model_dir", config.model_dir)
-    _print_kv("web_console", config.web_console_url)
+    _print_kv("web_console_static", config.web_console_static_url)
+    _print_kv("web_console_dev", config.web_console_url)
 
     if _web_console_matches_project(config):
         adopted_pid = _adopt_web_console_pid_if_needed(config)
@@ -1009,7 +1220,7 @@ def _status_stack(config: RuntimeConfig) -> int:
     _print_header("processes")
     _print_process_status("gateway", config.gateway_pid_file, settings.gateway.port, f"{config.gateway_url}/health/liveliness")
     _print_process_status("agent", config.agent_pid_file, settings.agent.port, f"{config.agent_url}/state")
-    _print_process_status("web_console", config.web_pid_file, config.web_console_port, config.web_console_url)
+    _print_process_status("web_console_dev", config.web_pid_file, config.web_console_port, config.web_console_url)
 
     # 容器详细信息和推理参数展示
     _print_header(f"backend ({config.backend_type})")
@@ -1063,6 +1274,7 @@ def _status_stack(config: RuntimeConfig) -> int:
     agent_http_state = "ok" if _http_ok(f"{config.agent_url}/state") else "unreachable"
     backend_http_state = "ok" if _http_ok(config.backend_url) else "unreachable"
     web_console_http_state = "ok" if _http_ok(config.web_console_url) else "unreachable"
+    web_console_static_state = "ok" if _http_ok(config.web_console_static_url) else "unreachable"
 
     # 从 agent /state 获取推理探针结果
     agent_inference_ready = False
@@ -1080,7 +1292,7 @@ def _status_stack(config: RuntimeConfig) -> int:
     stack_state = "partial"
     stack_detail = "Some services are available, but the stack is not fully ready yet."
 
-    if all(state == "unreachable" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_http_state)):
+    if all(state == "unreachable" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_static_state)):
         stack_state = "stopped"
         stack_detail = "No managed services are currently reachable."
     elif agent_http_state == "ok" and not backend_container_exists:
@@ -1094,7 +1306,7 @@ def _status_stack(config: RuntimeConfig) -> int:
         stack_detail = f"Backend HTTP reachable but inference not ready"
         if agent_probe_error:
             stack_detail += f": {agent_probe_error}"
-    elif all(state == "ok" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_http_state)):
+    elif all(state == "ok" for state in (gateway_http_state, agent_http_state, backend_http_state, web_console_static_state)):
         # 检查是否有警告（容器重启次数 > 0）
         if backend_container_exists:
             container_info = _inspect_container(config.backend_container_name)
@@ -1103,10 +1315,10 @@ def _status_stack(config: RuntimeConfig) -> int:
                 stack_detail = f"All services are reachable, but {config.backend_type} container has restarted {container_info['restart_count']} time(s)."
             else:
                 stack_state = "ready"
-                stack_detail = f"Gateway, agent, {config.backend_type}, and web-console are all reachable."
+                stack_detail = f"Gateway, agent, {config.backend_type}, and static web-console are all reachable."
         else:
             stack_state = "ready"
-            stack_detail = f"Gateway, agent, {config.backend_type}, and web-console are all reachable."
+            stack_detail = f"Gateway, agent, {config.backend_type}, and static web-console are all reachable."
 
     _print_header("summary")
     _print_kv("stack_state", stack_state)
@@ -1117,7 +1329,8 @@ def _status_stack(config: RuntimeConfig) -> int:
     _print_kv("agent_http", f"{agent_http_state} ({config.agent_url}/state)")
     _print_kv("backend_http", f"{backend_http_state} ({config.backend_url})")
     _print_kv("backend_inference", f"{'ready' if agent_inference_ready else 'not ready'}" + (f" ({agent_probe_error})" if agent_probe_error else ""))
-    _print_kv("web_console_http", f"{web_console_http_state} ({config.web_console_url})")
+    _print_kv("web_console_static_http", f"{web_console_static_state} ({config.web_console_static_url})")
+    _print_kv("web_console_dev_http", f"{web_console_http_state} ({config.web_console_url})")
     return 0
 
 
@@ -1133,8 +1346,10 @@ def _env_report(config: RuntimeConfig) -> int:
     _print_kv("gateway_url", config.gateway_url)
     _print_kv("agent_url", config.agent_url)
     _print_kv("backend_url", config.backend_url)
-    _print_kv("web_console_url", config.web_console_url)
+    _print_kv("web_console_static_url", config.web_console_static_url)
+    _print_kv("web_console_dev_url", config.web_console_url)
     _print_kv("web_console_dir", str(config.web_console_dir))
+    _print_kv("web_console_dist_dir", str(config.web_console_dist_dir))
     return 0
 
 
@@ -1144,7 +1359,8 @@ def _doctor(config: RuntimeConfig) -> int:
     _print_kv("python", config.python_bin)
     _print_kv("backend_type", config.backend_type)
     _print_kv("model_dir", config.model_dir)
-    _print_kv("web_console", config.web_console_url)
+    _print_kv("web_console_static", config.web_console_static_url)
+    _print_kv("web_console_dev", config.web_console_url)
 
     _print_header("environment")
     python_status = "ok" if Path(config.python_bin).exists() else "missing"
@@ -1163,6 +1379,11 @@ def _doctor(config: RuntimeConfig) -> int:
         "node_modules",
         "ok" if (config.web_console_dir / "node_modules").is_dir() else "missing",
         str(config.web_console_dir / "node_modules"),
+    )
+    _print_check(
+        "web_console_dist",
+        "ok" if (config.web_console_dist_dir / "index.html").is_file() else "missing",
+        str(config.web_console_dist_dir),
     )
 
     # GPU 信息检查
@@ -1210,17 +1431,14 @@ def _doctor(config: RuntimeConfig) -> int:
     _print_check("gateway_port", "in_use" if _port_in_use(4000) else "free", "4000")
     _print_check("agent_port", "in_use" if _port_in_use(4010) else "free", "4010")
     _print_check("backend_port", "in_use" if _port_in_use(config.backend_host_port) else "free", str(config.backend_host_port))
-    _print_check(
-        "web_console_port",
-        "in_use" if _port_in_use(config.web_console_port) else "free",
-        str(config.web_console_port),
-    )
+    _print_check("web_console_dev_port", "in_use" if _port_in_use(config.web_console_port) else "free", str(config.web_console_port))
 
     _print_header("http")
     _print_check("gateway_http", "ok" if _http_ok(f"{config.gateway_url}/health/liveliness") else "down", f"{config.gateway_url}/health/liveliness")
     _print_check("agent_http", "ok" if _http_ok(f"{config.agent_url}/state") else "down", f"{config.agent_url}/state")
     _print_check("backend_http", "ok" if _http_ok(config.backend_url) else "down", config.backend_url)
-    _print_check("web_console_http", "ok" if _http_ok(config.web_console_url) else "down", config.web_console_url)
+    _print_check("web_console_static_http", "ok" if _http_ok(config.web_console_static_url) else "down", config.web_console_static_url)
+    _print_check("web_console_dev_http", "ok" if _http_ok(config.web_console_url) else "down", config.web_console_url)
 
     _print_header("artifacts")
     _print_check("gateway_pid", "present" if config.gateway_pid_file.exists() else "missing", str(config.gateway_pid_file))
@@ -1275,8 +1493,10 @@ def _doctor(config: RuntimeConfig) -> int:
     suggestions: list[str] = []
 
     # 基础环境建议
-    if not (config.web_console_dir / "node_modules").is_dir():
-        suggestions.append("安装前端依赖：cd web-console && npm install")
+    if not (config.web_console_dist_dir / "index.html").is_file() and not (config.web_console_dir / "node_modules").is_dir():
+        suggestions.append("安装前端依赖后构建静态管理台：cd web-console && npm install && npm run build")
+    elif not (config.web_console_dist_dir / "index.html").is_file():
+        suggestions.append("构建静态管理台：cd web-console && npm run build")
     if not _command_exists("docker"):
         suggestions.append("安装并启动 Docker，确认 `docker --version` 可用")
     elif backend_image_state == "missing":
@@ -1295,8 +1515,8 @@ def _doctor(config: RuntimeConfig) -> int:
         suggestions.append("尝试启动整栈：python -m llmnode.control start")
     elif not _http_ok(config.backend_url):
         suggestions.append(f"查看后端日志：python -m llmnode.control logs --target vllm --lines 50")
-    if not _http_ok(config.web_console_url) and (config.web_console_dir / "node_modules").is_dir():
-        suggestions.append("单独查看前端日志：python -m llmnode.control logs --target web-console --lines 50")
+    if not _http_ok(config.web_console_static_url) and _http_ok(f"{config.gateway_url}/health/liveliness"):
+        suggestions.append("检查静态管理台构建产物：python -m llmnode.control start --rebuild-web-console")
 
     # 模型格式不匹配建议
     if config.backend_type == "vllm" and model_format == "gguf":
@@ -1526,7 +1746,7 @@ def _stop_stack(config: RuntimeConfig) -> int:
     return 0
 
 
-def _start_stack(config: RuntimeConfig) -> int:
+def _start_stack(config: RuntimeConfig, web_console_mode: str = "static", rebuild_web_console: bool = False) -> int:
     started_agent = False
     try:
         _print_header("llmnode start")
@@ -1535,7 +1755,13 @@ def _start_stack(config: RuntimeConfig) -> int:
         _print_kv("model_dir", config.model_dir)
         _print_kv("gateway", config.gateway_url)
         _print_kv("agent", config.agent_url)
-        _print_kv("web_console", config.web_console_url)
+        _print_kv("web_console_mode", web_console_mode)
+        _print_kv("web_console_static", config.web_console_static_url)
+        _print_kv("web_console_dev", config.web_console_url)
+
+        if web_console_mode == "static":
+            _stop_adopted_web_console_for_static_mode(config)
+            _ensure_web_console_static_dist(config, rebuild=rebuild_web_console)
 
         _print_step("starting node-agent")
         _spawn_python_module(config, "llmnode.agent", config.agent_pid_file, config.agent_log_file, "Node agent")
@@ -1550,9 +1776,13 @@ def _start_stack(config: RuntimeConfig) -> int:
         _spawn_python_module(config, "llmnode", config.gateway_pid_file, config.gateway_log_file, "Gateway")
         _wait_for_http(f"{config.gateway_url}/health/liveliness", "Gateway")
 
-        _print_step("starting web-console")
-        _start_web_console(config)
-        _wait_for_http(config.web_console_url, "Web console")
+        if web_console_mode == "dev":
+            _print_step("starting web-console dev server")
+            _start_web_console(config)
+            _wait_for_http(config.web_console_url, "Web console")
+        else:
+            _print_step("checking static web-console")
+            _wait_for_http(config.web_console_static_url, "Web console")
 
         _print_step(f"waiting for {config.backend_type} inference readiness")
         _wait_for_backend_ready(config)
@@ -1560,7 +1790,7 @@ def _start_stack(config: RuntimeConfig) -> int:
         _print_header("stack ready")
         _print_kv("gateway", config.gateway_url)
         _print_kv("agent", config.agent_url)
-        _print_kv("web_console", config.web_console_url)
+        _print_kv("web_console", config.web_console_url if web_console_mode == "dev" else config.web_console_static_url)
         _print_kv("next", "Run 'python -m llmnode.control status' for a full health summary")
         return 0
     except Exception as exc:
@@ -1571,14 +1801,14 @@ def _start_stack(config: RuntimeConfig) -> int:
         return 1
 
 
-def _restart_stack(config: RuntimeConfig) -> int:
+def _restart_stack(config: RuntimeConfig, web_console_mode: str = "static", rebuild_web_console: bool = False) -> int:
     _print_header("llmnode restart")
     _print_info("action", "stop current stack, then start again")
     _stop_stack(config)
-    return _start_stack(config)
+    return _start_stack(config, web_console_mode=web_console_mode, rebuild_web_console=rebuild_web_console)
 
 
-def _restart_without_backend(config: RuntimeConfig) -> int:
+def _restart_without_backend(config: RuntimeConfig, web_console_mode: str = "static", rebuild_web_console: bool = False) -> int:
     _print_header("llmnode restart")
     _print_info("action", "restart control-plane services without touching backend container")
 
@@ -1596,56 +1826,47 @@ def _restart_without_backend(config: RuntimeConfig) -> int:
     _spawn_python_module(config, "llmnode.agent", config.agent_pid_file, config.agent_log_file, "Node agent")
     _wait_for_http(f"{config.agent_url}/health/liveliness", "Agent")
 
+    if web_console_mode == "static":
+        _stop_adopted_web_console_for_static_mode(config)
+        _ensure_web_console_static_dist(config, rebuild=rebuild_web_console)
+
     _print_step("starting gateway-api")
     _spawn_python_module(config, "llmnode", config.gateway_pid_file, config.gateway_log_file, "Gateway")
     _wait_for_http(f"{config.gateway_url}/health/liveliness", "Gateway")
 
-    _print_step("starting web-console")
-    _start_web_console(config)
-    _wait_for_http(config.web_console_url, "Web console")
+    if web_console_mode == "dev":
+        _print_step("starting web-console dev server")
+        _start_web_console(config)
+        _wait_for_http(config.web_console_url, "Web console")
+    else:
+        _print_step("checking static web-console")
+        _wait_for_http(config.web_console_static_url, "Web console")
 
     _print_header("control-plane ready")
     _print_kv("agent", config.agent_url)
     _print_kv("gateway", config.gateway_url)
-    _print_kv("web_console", config.web_console_url)
+    _print_kv("web_console", config.web_console_url if web_console_mode == "dev" else config.web_console_static_url)
     _print_kv("backend", f"left untouched ({config.backend_type})")
     return 0
 
 
 def _create_api_key_action(args: argparse.Namespace) -> int:
-    db_path = resolve_gateway_db_path()
-    conn = init_db(db_path)
-    secret = generate_api_key()
-    try:
-        row = create_api_key(
-            conn,
-            name=args.name,
-            key_hash=hash_api_key(secret),
-            scopes=list(args.scope),
-            rpm_limit=args.rpm_limit,
-            concurrency_limit=args.concurrency_limit,
-            note=args.note,
-            status="disabled" if args.disabled else "active",
-        )
-    except Exception as exc:
-        _print_error(str(exc))
+    if "admin" in args.scope:
+        _print_error("admin scope must use 'create-admin-key' or 'rotate-admin-key'")
         return 1
-
-    _print_header("api key created")
-    _print_kv("id", str(row["id"]))
-    _print_kv("name", row["name"])
-    _print_kv("status", row["status"])
-    _print_kv("scopes", ",".join(row["scopes"]))
-    _print_kv("db", str(db_path))
-    _print_info("secret", secret)
-    return 0
+    if list(args.scope) != ["inference"]:
+        _print_error("create-api-key only supports '--scope inference'")
+        return 1
+    return _create_inference_key_action(args, rotate=False, legacy_label=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m llmnode.control")
-    parser.add_argument("action", choices=["start", "stop", "restart", "status", "doctor", "env", "logs", "create-api-key"], nargs="?", default="status")
+    parser.add_argument("action", choices=["start", "stop", "restart", "status", "doctor", "env", "logs", "create-api-key", "create-inference-key", "rotate-inference-key", "inference-key-status", "create-admin-key", "rotate-admin-key", "admin-key-status"], nargs="?", default="status")
     parser.add_argument("--service", choices=["agent", "gateway", "vllm"])
     parser.add_argument("--exclude-backend", action="store_true")
+    parser.add_argument("--web-console-mode", choices=["static", "dev"], default="static")
+    parser.add_argument("--rebuild-web-console", action="store_true")
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--foreground", action="store_true")
     parser.add_argument("--target", choices=["agent", "gateway", "web-console", "vllm", "backend", "all"], default="all")
@@ -1679,13 +1900,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             return _stop_single_service(config, args.service)
         parser.error("--service only supports 'start' and 'stop'")
     if args.action == "start":
-        return _start_stack(config)
+        return _start_stack(config, web_console_mode=args.web_console_mode, rebuild_web_console=args.rebuild_web_console)
     if args.action == "stop":
         return _stop_stack(config)
     if args.action == "restart":
         if args.exclude_backend:
-            return _restart_without_backend(config)
-        return _restart_stack(config)
+            return _restart_without_backend(config, web_console_mode=args.web_console_mode, rebuild_web_console=args.rebuild_web_console)
+        return _restart_stack(config, web_console_mode=args.web_console_mode, rebuild_web_console=args.rebuild_web_console)
     if args.action == "doctor":
         return _doctor(config)
     if args.action == "env":
@@ -1706,6 +1927,22 @@ def main(argv: Iterable[str] | None = None) -> int:
         if not args.scope:
             parser.error("at least one --scope is required for 'create-api-key'")
         return _create_api_key_action(args)
+    if args.action == "create-inference-key":
+        if not args.name.strip():
+            parser.error("--name is required for 'create-inference-key'")
+        return _create_inference_key_action(args, rotate=False)
+    if args.action == "rotate-inference-key":
+        if not args.name.strip():
+            parser.error("--name is required for 'rotate-inference-key'")
+        return _create_inference_key_action(args, rotate=True)
+    if args.action == "inference-key-status":
+        return _inference_key_status_action(args.name.strip() or None)
+    if args.action == "create-admin-key":
+        return _create_admin_key_action(rotate=False)
+    if args.action == "rotate-admin-key":
+        return _create_admin_key_action(rotate=True)
+    if args.action == "admin-key-status":
+        return _admin_key_status_action()
     return _status_stack(config)
 
 

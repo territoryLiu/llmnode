@@ -31,7 +31,7 @@
 - 已准备好的模型目录
 - `config/defaults.yaml`
 - `config/backends/*.yaml`
-- 如果需要整栈前端界面，则还需要 `web-console` 前端依赖
+- 如果需要首次自动构建管理台静态资源，则还需要 `web-console` 前端依赖
 
 ## 2. 当前正式支持的部署模板
 
@@ -48,7 +48,7 @@
 - 已激活 `paper2any` 环境
 - Docker 可用
 - 当前激活 profile 所需的目标模型目录已准备好
-- `web-console` 依赖已安装
+- `web-console` 依赖已安装，或已经存在 `web-console/dist`
 
 最小启动方式：
 
@@ -60,11 +60,19 @@ python -m llmnode.control start
 
 - `http://127.0.0.1:15673/v1/models` 正常，表示当前激活后端 ready
 - `http://127.0.0.1:4000/v1/models` 正常，表示对外主链路 ready
-- `http://127.0.0.1:5173` 可访问，表示前端入口 ready
+- `http://127.0.0.1:4000/console/` 可访问，表示产品态管理台入口 ready
+- 首次进入管理台前，应先通过 `python -m llmnode.control create-admin-key` 初始化唯一 admin key
+- 管理台产品态通过右上角“管理员”入口录入或更新本地保存的 admin key
 - `python -m llmnode.control status` 能看到整栈摘要
 - 后端热身窗口期内，推理请求会返回 `503 + Retry-After`，表示 Agent 已就绪但后端模型仍在加载中
 - readiness 相关事件可通过 agent 事件流读取，至少包括 `stream_not_ready` 和恢复后的 `backend_recovered`
 - 管理台密钥页面通过 `/admin/overview/readiness` 获取 Base URL（本地地址 / 局域网地址），供客户端复制使用
+
+补充：
+
+- `python -m llmnode.control start` 默认是产品态，不启动 Vite
+- 如果 `web-console/dist` 不存在，控制面会自动执行 `npm run build`
+- 如需开发态热更新，可使用 `python -m llmnode.control start --web-console-mode dev`，此时管理台入口为 `http://127.0.0.1:5173`
 
 它不适用于：
 

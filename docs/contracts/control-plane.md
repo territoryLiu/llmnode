@@ -38,6 +38,9 @@ python -m llmnode.control <action>
 - `doctor`
 - `logs`
 - `create-api-key`
+- `create-admin-key`
+- `rotate-admin-key`
+- `admin-key-status`
 
 如果后续新增命令，应同步更新：
 
@@ -93,13 +96,30 @@ export VLLM_CLAUDE_RUNTIME_DIR=/path/to/custom-runtime
 - `node-agent`
 - 推理后端
 - `gateway-api`
-- `web-console`
+- 产品态 `web-console` 静态管理台
 
 ### 输出要求
 - 显示启动阶段
 - 显示关键地址
 - 显示关键日志路径
 - 启动失败时应能给出错误信息和清理行为
+
+### 当前扩展参数
+
+```bash
+python -m llmnode.control start --web-console-mode dev
+python -m llmnode.control start --web-console-mode static
+python -m llmnode.control start --rebuild-web-console
+```
+
+语义：
+
+- 默认 `--web-console-mode static`
+- static 模式下不启动 Vite，管理台由 `gateway-api` 挂载到 `/console/`
+- 如果 `web-console/dist` 不存在，static 模式会自动执行 `npm run build`
+- `--rebuild-web-console` 会强制重新构建静态管理台
+- dev 模式保留 Vite 开发服务器，入口仍为 `5173`
+- static 模式如果发现已存在被接管的 Vite 进程，会主动提示并停止该进程
 
 ## 5. `stop`
 
@@ -132,6 +152,7 @@ python -m llmnode.control restart --exclude-backend
 - 只重启 `node-agent`、`gateway-api`、`web-console`
 - 不主动停止当前推理后端容器
 - 适用于“刷新控制面 / 网关 / 前端状态，但尽量不打断已加载模型”的场景
+- 默认按 static 管理台入口检查；如需重启 Vite 开发服务器，应显式加 `--web-console-mode dev`
 
 ## 7. `status`
 
@@ -267,17 +288,19 @@ python -m llmnode.control stop --service vllm
 - `gateway / agent` 支持前台与后台运行
 - `vllm` 当前更偏 daemon 风格
 
-## 12. `create-api-key`
+## 12. `create-inference-key` / `rotate-inference-key` / `inference-key-status`
 
 ### 职责
-- 在本地 SQLite 账本中创建正式 API key
-- 为首把管理员密钥初始化提供无 bootstrap 后门的正式入口
+- `create-inference-key`：创建一把推理调用侧 key
+- `rotate-inference-key`：按名称轮换一把已有推理 key，并输出新的明文 secret
+- `inference-key-status`：查看全部推理 key，或按名称查看单把推理 key 的状态
 
 ### 典型用法
 
 ```bash
-python -m llmnode.control create-api-key --name console-admin --scope admin
-python -m llmnode.control create-api-key --name hybrid --scope admin --scope inference
+python -m llmnode.control create-inference-key --name worker
+python -m llmnode.control rotate-inference-key --name worker
+python -m llmnode.control inference-key-status --name worker
 ```
 
 ### 输出要求
@@ -289,9 +312,34 @@ python -m llmnode.control create-api-key --name hybrid --scope admin --scope inf
 ### 当前边界
 - 真实密钥格式统一为 `sk-<64hex>`
 - 未创建数据库密钥前，网关不应再接受默认 `dev-key` 或其他 bootstrap key
-- 该命令是首把管理员密钥的正式初始化路径
+- 推理 key 固定为 `scope=inference`
+- 管理台 `/admin/keys` 页面也只管理 inference-only key
+- 兼容旧入口 `create-api-key` 仍保留，但只允许 `--scope inference`
 
-## 13. 命令变更后的回流要求
+## 13. `create-admin-key` / `rotate-admin-key` / `admin-key-status`
+
+### 职责
+- `create-admin-key`：初始化唯一的控制面 admin key
+- `rotate-admin-key`：轮换唯一 admin key，并输出新的明文 secret
+- `admin-key-status`：查看 admin key 是否存在及其元数据状态
+
+### 典型用法
+
+```bash
+python -m llmnode.control create-admin-key
+python -m llmnode.control rotate-admin-key
+python -m llmnode.control admin-key-status
+```
+
+### 当前边界
+- 数据库内只允许存在一把 admin key
+- admin key 名字固定为 `admin`
+- admin key scope 固定为 `admin`
+- admin key 不再落地为 `runtime/data/web-console-admin.key`
+- admin key 不出现在普通 `/admin/keys` 列表中
+- `web-console` 通过右上角“管理员”入口录入或更新本地保存的 admin key，再以 `x-api-key` 访问 `/admin/*`
+
+## 14. 命令变更后的回流要求
 
 如果控制面发生变化，至少要检查是否同步更新：
 

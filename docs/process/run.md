@@ -26,24 +26,34 @@ cd /proj02/liuheshan/llmnode
 ## 2. 最小启动
 
 ```bash
-python -m llmnode.control create-api-key --name console-admin --scope admin
+python -m llmnode.control create-admin-key
 python -m llmnode.control start
 ```
 
 说明：
 
 - 当前网关不再内置默认 `dev-key`
-- 首次使用前，需要先通过本地控制命令创建至少一把数据库管理员密钥
+- 首次使用前，需要先通过本地控制命令创建唯一的数据库管理员密钥
 - 创建后请保存输出的明文 `sk-...` 密钥；管理台与 API 调用都依赖它
+- `start` 默认使用产品态管理台：如果 `web-console/dist` 不存在，会自动执行 `npm run build`，并由 `gateway-api` 在 `/console/` 提供静态管理台
+- 如果需要忽略已有 `web-console/dist` 并强制重新构建静态管理台，使用 `python -m llmnode.control start --rebuild-web-console`
+- 如需 Vite 开发服务器，显式使用 `python -m llmnode.control start --web-console-mode dev`
+- 产品态管理台通过右上角“管理员”入口录入或更新本地保存的 admin key，不再依赖 `runtime/data/web-console-admin.key`
 
 ## 3. 常用命令
 
 ```bash
-python -m llmnode.control create-api-key --name console-admin --scope admin
+python -m llmnode.control create-admin-key
+python -m llmnode.control create-inference-key --name worker
+python -m llmnode.control rotate-admin-key
+python -m llmnode.control admin-key-status
+python -m llmnode.control rotate-inference-key --name worker
+python -m llmnode.control inference-key-status --name worker
 python -m llmnode.control status
 python -m llmnode.control doctor
 python -m llmnode.control logs --target all --lines 20
 python -m llmnode.control restart --exclude-backend
+python -m llmnode.control start --rebuild-web-console
 python -m llmnode.control stop
 ```
 
@@ -80,7 +90,7 @@ export VLLM_CLAUDE_RUNTIME_DIR=/path/to/custom-runtime
 - `node-agent`
 - 推理后端（默认 `vLLM`，可通过 `config/defaults.yaml` 的 `active_backend_profile` 切换到其他后端或模型）
 - `gateway-api`
-- `web-console`
+- `web-console` 静态管理台（产品态默认由 `gateway-api` 挂载到 `/console/`）
 
 补充运行时 route 语义：
 
@@ -153,19 +163,20 @@ export VLLM_CLAUDE_RUNTIME_DIR=/path/to/custom-runtime
 
 如果本次是整栈启动，还应额外确认：
 
-- `web-console` 可访问
+- `http://127.0.0.1:4000/console/` 可访问
 
 因此更稳妥的理解是：
 
 - `<host_port>` 正常（按当前后端类型确认）：后端 ready
 - `4000` 正常：对外主链路 ready
-- `5173` 也正常：整栈入口基本齐备
+- `4000/console/` 也正常：产品态整栈入口基本齐备
+- `5173` 只表示显式 dev 模式下的 Vite 管理台入口正常
 
 在此之前，即使：
 
 - `agent` 已经存活
 - `gateway` 已经监听
-- `web-console` 已经打开
+- `web-console` 页面已经打开
 
 系统仍可能处于 warmup 或 partial。
 
@@ -200,7 +211,7 @@ python -m llmnode.control restart --exclude-backend
 
 - `node-agent`
 - `gateway-api`
-- `web-console`
+- `web-console` 静态入口检查或显式 dev 模式下的 Vite 进程
 
 不会主动停止或重新拉起当前推理后端容器。
 
@@ -209,17 +220,18 @@ python -m llmnode.control restart --exclude-backend
 推荐初始化命令：
 
 ```bash
-python -m llmnode.control create-api-key --name console-admin --scope admin
-```
-
-如果同时需要让这把 key 调用推理接口，可以加上：
-
-```bash
-python -m llmnode.control create-api-key --name console-admin --scope admin --scope inference
+python -m llmnode.control create-admin-key
 ```
 
 初始化后的使用边界：
 
 - 对外 API 和管理台都只认数据库中的 API key
 - 真实密钥统一为 `sk-<64hex>`
-- `web-console` 顶部可手工输入并保存这把 `sk-...` 密钥
+- admin key 现在是独立受控凭证：
+  - 数据库内只允许存在一把
+  - 名字固定为 `admin`
+  - scope 固定为 `admin`
+  - 不出现在普通 `/admin/keys` 列表中
+- 推荐使用 `create-inference-key / rotate-inference-key / inference-key-status` 管理推理 key
+- 旧 `create-api-key` 仅作为兼容入口保留，且只允许 `--scope inference`
+- `web-console` 产品态通过浏览器本地保存的 `vllm-console-api-key` 向管理接口发送 `x-api-key`

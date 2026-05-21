@@ -7,7 +7,7 @@ from llmnode.security import hash_api_key
 from llmnode.storage.db import create_api_key
 
 
-def test_admin_can_create_and_list_api_keys():
+def test_admin_can_create_and_list_inference_api_keys():
     async def run():
         app = create_app()
         admin_secret = "sk-admin-seed"
@@ -23,8 +23,8 @@ def test_admin_can_create_and_list_api_keys():
                 "/admin/keys",
                 headers={"Authorization": f"Bearer {admin_secret}"},
                 json={
-                    "name": "console-admin",
-                    "scopes": ["admin"],
+                    "name": "worker",
+                    "scopes": ["inference"],
                     "rpm_limit": None,
                     "concurrency_limit": None,
                 },
@@ -32,7 +32,7 @@ def test_admin_can_create_and_list_api_keys():
             assert created.status_code == 200
             body = created.json()
             assert body["secret"].startswith("sk-")
-            assert body["key"]["name"] == "console-admin"
+            assert body["key"]["name"] == "worker"
             # Created key returns masked_key
             assert "masked_key" in body["key"]
             assert body["key"]["masked_key"].startswith("sk-")
@@ -41,7 +41,7 @@ def test_admin_can_create_and_list_api_keys():
             listed = await client.get("/admin/keys", headers={"Authorization": f"Bearer {admin_secret}"})
             assert listed.status_code == 200
             key_row = listed.json()["keys"][0]
-            assert key_row["name"] == "console-admin"
+            assert key_row["name"] == "worker"
             assert "secret" not in key_row
             assert "key_hash" not in key_row
             assert key_row["plain_secret"] == body["secret"]
@@ -55,7 +55,63 @@ def test_admin_can_create_and_list_api_keys():
     asyncio.run(run())
 
 
-def test_admin_can_patch_status_and_scopes():
+def test_admin_keys_endpoint_rejects_admin_or_mixed_scopes():
+    async def run():
+        app = create_app()
+        admin_secret = "sk-admin-seed"
+        create_api_key(
+            app.state.db,
+            name="admin",
+            key_hash=hash_api_key(admin_secret),
+            scopes=["admin"],
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            duplicate = await client.post(
+                "/admin/keys",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={"name": "another-admin", "scopes": ["admin"]},
+            )
+            assert duplicate.status_code == 400
+
+            mixed = await client.post(
+                "/admin/keys",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={"name": "worker-admin", "scopes": ["admin", "inference"]},
+            )
+            assert mixed.status_code == 400
+
+    asyncio.run(run())
+
+
+def test_admin_list_hides_admin_key_from_regular_key_table():
+    async def run():
+        app = create_app()
+        admin_secret = "sk-admin-seed"
+        create_api_key(
+            app.state.db,
+            name="admin",
+            key_hash=hash_api_key(admin_secret),
+            scopes=["admin"],
+        )
+        create_api_key(
+            app.state.db,
+            name="worker",
+            key_hash=hash_api_key("sk-worker"),
+            scopes=["inference"],
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            listed = await client.get("/admin/keys", headers={"Authorization": f"Bearer {admin_secret}"})
+            assert listed.status_code == 200
+            names = [item["name"] for item in listed.json()["keys"]]
+            assert "admin" not in names
+            assert "worker" in names
+
+    asyncio.run(run())
+
+
+def test_admin_can_patch_status_but_cannot_change_scopes_away_from_inference():
     async def run():
         app = create_app()
         admin_secret = "sk-admin-seed"
@@ -76,11 +132,18 @@ def test_admin_can_patch_status_and_scopes():
             patched = await client.patch(
                 f"/admin/keys/{key_id}",
                 headers={"Authorization": f"Bearer {admin_secret}"},
-                json={"status": "disabled", "scopes": ["admin", "inference"]},
+                json={"status": "disabled"},
             )
             assert patched.status_code == 200
             assert patched.json()["key"]["status"] == "disabled"
-            assert patched.json()["key"]["scopes"] == ["admin", "inference"]
+            assert patched.json()["key"]["scopes"] == ["inference"]
+
+            invalid = await client.patch(
+                f"/admin/keys/{key_id}",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={"scopes": ["admin", "inference"]},
+            )
+            assert invalid.status_code == 400
 
     asyncio.run(run())
 

@@ -15,7 +15,8 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from ..config import PROJECT_ROOT, load_settings
 from ..logging import setup_logging
@@ -81,6 +82,7 @@ from ..storage.db import (
 _MISSING = object()
 _ALLOWED_SCOPES = {"admin", "inference"}
 _ALLOWED_STATUSES = {"active", "disabled"}
+_ADMIN_KEY_NAME = "admin"
 _VALID_LIFECYCLE_MODES = {"managed_local", "external"}
 _VALID_UPSTREAM_PROTOCOLS = {"responses", "chat", "messages"}
 _VALID_UPSTREAM_AUTH_KINDS = {"none", "bearer", "x_api_key"}
@@ -769,6 +771,10 @@ def _sanitize_api_key_row(row: dict[str, Any], *, masked_key: str | None = None)
     }
 
 
+def _is_admin_only_key(row: dict[str, Any]) -> bool:
+    return row["name"] == _ADMIN_KEY_NAME and set(row["scopes"]) == {"admin"}
+
+
 def _normalize_name(value: Any, field_name: str = "name") -> str:
     if not isinstance(value, str):
         raise HTTPException(status_code=400, detail=f"{field_name} must be a string")
@@ -1169,9 +1175,13 @@ def _validate_create_api_key_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="name is required")
     if "scopes" not in payload:
         raise HTTPException(status_code=400, detail="scopes are required")
+    name = _normalize_name(payload["name"])
+    scopes = _normalize_scopes(payload["scopes"])
+    if scopes != ["inference"]:
+        raise HTTPException(status_code=400, detail="admin/keys only supports inference-only keys")
     return {
-        "name": _normalize_name(payload["name"]),
-        "scopes": _normalize_scopes(payload["scopes"]),
+        "name": name,
+        "scopes": scopes,
         "rpm_limit": _normalize_optional_limit(payload.get("rpm_limit"), "rpm_limit"),
         "concurrency_limit": _normalize_optional_limit(payload.get("concurrency_limit"), "concurrency_limit"),
         "note": _normalize_optional_note(payload.get("note")),
@@ -1185,7 +1195,10 @@ def _validate_update_api_key_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if "status" in payload:
         updates["status"] = _normalize_status(payload["status"])
     if "scopes" in payload:
-        updates["scopes"] = _normalize_scopes(payload["scopes"])
+        scopes = _normalize_scopes(payload["scopes"])
+        if scopes != ["inference"]:
+            raise HTTPException(status_code=400, detail="admin/keys only supports inference-only keys")
+        updates["scopes"] = scopes
     if "rpm_limit" in payload:
         updates["rpm_limit"] = _normalize_optional_limit(payload["rpm_limit"], "rpm_limit")
     if "concurrency_limit" in payload:
@@ -1253,6 +1266,23 @@ def create_app() -> FastAPI:
     app.state.schedule = schedule_state
     app.state.post_json_to = post_json_to
     app.state.stream_bytes_from = stream_bytes_from
+
+    web_console_dist = PROJECT_ROOT / "web-console" / "dist"
+    if (web_console_dist / "index.html").is_file():
+        web_console_assets = web_console_dist / "assets"
+        if web_console_assets.is_dir():
+            app.mount("/console/assets", StaticFiles(directory=web_console_assets), name="console-assets")
+
+        @app.get("/console/")
+        async def web_console_index():
+            return FileResponse(web_console_dist / "index.html")
+
+        @app.get("/console/{path:path}")
+        async def web_console_spa(path: str):
+            target = (web_console_dist / path).resolve()
+            if target.is_file() and web_console_dist.resolve() in target.parents:
+                return FileResponse(target)
+            return FileResponse(web_console_dist / "index.html")
 
     async def fetch_agent_state() -> dict | None:
         if not app.state.agent_status_url:
@@ -1624,6 +1654,7 @@ def create_app() -> FastAPI:
                 "usage_summary": aggregate_usage_for_api_key(request.app.state.db, api_key_id=row["id"])["summary"],
             }
             for row in raw_keys
+            if not _is_admin_only_key(row)
         ]
         response = JSONResponse({"keys": keys})
         response.headers["x-request-id"] = request_id
@@ -1633,6 +1664,10 @@ def create_app() -> FastAPI:
     async def admin_create_key(request: Request):
         _resolve_auth(request, "admin")
         payload = _validate_create_api_key_payload(await _read_json_body(request))
+        if payload["scopes"] == ["admin"]:
+            existing_admin = next((row for row in list_api_keys(request.app.state.db) if _is_admin_only_key(row)), None)
+            if existing_admin is not None:
+                raise HTTPException(status_code=409, detail="admin key already exists")
         secret = generate_api_key()
         try:
             row = create_api_key(

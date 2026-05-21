@@ -12,7 +12,9 @@ vi.mock('recharts', async () => {
     ...actual,
     ResponsiveContainer: passthrough,
     LineChart: chartShell,
-    Line: () => null,
+    Line: ({name, dataKey}: {name?: string; dataKey?: string}) => (
+      <div data-testid="chart-line">{name ?? dataKey}</div>
+    ),
     CartesianGrid: () => null,
     XAxis: () => null,
     YAxis: () => null,
@@ -329,6 +331,60 @@ const usageOverview = {
           },
         ],
       },
+      {
+        group: 'sglang',
+        label: 'SGLang',
+        totals: {
+          prompt_tokens: 321,
+          completion_tokens: 654,
+          cache_creation_tokens: 1,
+          cache_read_tokens: 2,
+          cache_miss_tokens: 0,
+          cache_tokens: 3,
+          total_tokens: 975,
+        },
+        points: [
+          {
+            bucket: '2026-05-15 08:00',
+            label: '08:00',
+            prompt_tokens: 4,
+            completion_tokens: 5,
+            cache_creation_tokens: 1,
+            cache_read_tokens: 2,
+            cache_miss_tokens: 0,
+            cache_tokens: 3,
+            total_tokens: 9,
+            request_count: 1,
+          },
+        ],
+      },
+      {
+        group: 'llama.cpp',
+        label: 'llama.cpp',
+        totals: {
+          prompt_tokens: 222,
+          completion_tokens: 333,
+          cache_creation_tokens: 0,
+          cache_read_tokens: 1,
+          cache_miss_tokens: 0,
+          cache_tokens: 1,
+          total_tokens: 555,
+        },
+        points: [
+          {
+            bucket: '2026-05-15 08:00',
+            label: '08:00',
+            prompt_tokens: 2,
+            completion_tokens: 3,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 1,
+            cache_miss_tokens: 0,
+            cache_tokens: 1,
+            total_tokens: 5,
+            request_count: 1,
+          },
+        ],
+      },
     ],
   },
 };
@@ -523,11 +579,23 @@ beforeEach(() => {
         key: {
           ...keyListResponse.keys[0],
           id: 3,
-          name: 'Web Console',
+          name: 'Worker',
           masked_key: 'sk-************************************0003',
+          scopes: ['inference'],
         },
         secret: 'sk-abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd',
       });
+    }
+    if (url.includes('/admin/keys/1') && init?.method === 'PATCH') {
+      return jsonResponse({
+        key: {
+          ...keyListResponse.keys[0],
+          status: 'disabled',
+        },
+      });
+    }
+    if (url.includes('/admin/keys/1') && init?.method === 'DELETE') {
+      return jsonResponse({deleted: true, id: 1});
     }
     if (url.includes('/admin/keys')) {
       return jsonResponse(keyListResponse);
@@ -681,20 +749,259 @@ describe('Console views', () => {
     });
 
     await userEvent.click(screen.getAllByText('密钥管理')[0]);
-    await userEvent.click(screen.getByRole('button', {name: '创建密钥'}));
+    expect(screen.queryByLabelText('管理权限')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('推理权限')).not.toBeInTheDocument();
+    expect(screen.getByText('推理密钥列表')).toBeInTheDocument();
+    expect(screen.getByText('这里只管理推理调用密钥；管理员密钥请从右上角“管理员”入口录入或更新。')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', {name: '创建推理密钥'}));
 
     await waitFor(() => {
       expect(screen.queryByText('密钥生成成功')).not.toBeInTheDocument();
       expect(screen.queryByText('请立刻保存这个密钥。关闭后将无法再次查看。')).not.toBeInTheDocument();
       expect(screen.getByText('sk-************************************0002')).toBeInTheDocument();
+      expect(screen.getByText('推理密钥已创建')).toBeInTheDocument();
     });
 
-    const createdRow = screen.getByText('Web Console').closest('tr');
+    const createdRow = screen.getByText('Worker').closest('tr');
     expect(createdRow).toBeTruthy();
     const createdScope = within(createdRow as HTMLElement);
 
     await userEvent.click(createdScope.getByRole('button', {name: '显示'}));
     expect(createdScope.getByText('sk-abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd')).toBeInTheDocument();
+  });
+
+  it('shows loading state while creating a key', async () => {
+    let resolveCreate: (() => void) | null = null;
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/admin/status')) {
+        return jsonResponse(emptySnapshot);
+      }
+      if (url.includes('/admin/request-logs')) {
+        return jsonResponse(requestLogsResponse);
+      }
+      if (url.includes('/admin/overview/usage')) {
+        return jsonResponse(usageOverview);
+      }
+      if (url.includes('/admin/keys') && init?.method === 'POST') {
+        return new Promise<Response>((resolve) => {
+          resolveCreate = () => resolve(jsonResponse({
+            key: {
+              id: 3,
+              name: 'Worker',
+              masked_key: 'sk-************************************0003',
+              status: 'active',
+              scopes: ['inference'],
+              rpm_limit: null,
+              concurrency_limit: null,
+              created_at: '2026-05-15T10:00:00Z',
+              disabled_at: null,
+              last_used_at: null,
+              note: null,
+              usage_summary: {total_requests: 0, total_tokens: null},
+            },
+            secret: 'sk-worker-real',
+          }) as unknown as Response);
+        });
+      }
+      if (url.includes('/admin/keys')) {
+        return jsonResponse(keyListResponse);
+      }
+      if (url.includes('/admin/models')) {
+        return jsonResponse({models: []});
+      }
+      if (url.includes('/admin/schedule')) {
+        return jsonResponse({schedule: emptySnapshot.runtime.schedule});
+      }
+      if (url.includes('/admin/overview/readiness')) {
+        return jsonResponse({
+          readiness: {status: 'ready'},
+          base_urls: {
+            local: 'http://127.0.0.1:4000',
+            lan: 'http://10.18.90.100:4000',
+          },
+        });
+      }
+      if (url.includes('/admin/stream')) {
+        return Promise.resolve(new Response(null, {status: 503}));
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('密钥管理')[0]);
+    await userEvent.click(screen.getByRole('button', {name: '创建推理密钥'}));
+
+    expect(screen.getByRole('button', {name: '创建中...'})).toBeDisabled();
+
+    resolveCreate?.();
+
+    await waitFor(() => {
+      expect(screen.getByText('推理密钥已创建')).toBeInTheDocument();
+    });
+  });
+
+  it('uses the next available worker key name when Worker already exists', async () => {
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/admin/status')) {
+        return jsonResponse(emptySnapshot);
+      }
+      if (url.includes('/admin/request-logs')) {
+        return jsonResponse(requestLogsResponse);
+      }
+      if (url.includes('/admin/overview/usage')) {
+        return jsonResponse(usageOverview);
+      }
+      if (url.includes('/admin/keys') && init?.method === 'POST') {
+        const payload = JSON.parse(String(init.body));
+        expect(payload.name).toBe('Worker 2');
+        return jsonResponse({
+          key: {
+            id: 3,
+            name: 'Worker 2',
+            masked_key: 'sk-************************************0003',
+            status: 'active',
+            scopes: ['inference'],
+            rpm_limit: null,
+            concurrency_limit: null,
+            created_at: '2026-05-15T10:00:00Z',
+            disabled_at: null,
+            last_used_at: null,
+            note: null,
+            usage_summary: {total_requests: 0, total_tokens: null},
+          },
+          secret: 'sk-worker-2-real',
+        });
+      }
+      if (url.includes('/admin/keys')) {
+        return jsonResponse({
+          keys: [
+            {
+              id: 1,
+              name: 'Worker',
+              masked_key: 'sk-************************************0001',
+              plain_secret: 'sk-worker-1-real',
+              status: 'active',
+              scopes: ['inference'],
+              rpm_limit: null,
+              concurrency_limit: null,
+              created_at: '2026-05-15T08:00:00Z',
+              disabled_at: null,
+              last_used_at: null,
+              note: null,
+              usage_summary: {total_requests: 0, total_tokens: null},
+            },
+          ],
+        });
+      }
+      if (url.includes('/admin/models')) {
+        return jsonResponse({models: []});
+      }
+      if (url.includes('/admin/schedule')) {
+        return jsonResponse({schedule: emptySnapshot.runtime.schedule});
+      }
+      if (url.includes('/admin/overview/readiness')) {
+        return jsonResponse({
+          readiness: {status: 'ready'},
+          base_urls: {
+            local: 'http://127.0.0.1:4000',
+            lan: 'http://10.18.90.100:4000',
+          },
+        });
+      }
+      if (url.includes('/admin/stream')) {
+        return Promise.resolve(new Response(null, {status: 503}));
+      }
+      return jsonResponse({});
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('密钥管理')[0]);
+    expect(await screen.findByDisplayValue('Worker 2')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', {name: '创建推理密钥'}));
+    expect(await screen.findByText('Worker 2')).toBeInTheDocument();
+  });
+
+  it('highlights newly created inference key row for quick confirmation', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('密钥管理')[0]);
+    await userEvent.click(screen.getByRole('button', {name: '创建推理密钥'}));
+
+    const createdRow = (await screen.findByText('Worker')).closest('tr');
+    expect(createdRow).toHaveClass('bg-emerald-50/80');
+  });
+
+  it('asks for confirmation before deleting an inference key', async () => {
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    const confirmMock = vi.fn().mockReturnValue(false);
+    vi.stubGlobal('confirm', confirmMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('密钥管理')[0]);
+    const consoleRow = (await screen.findByText('Console')).closest('tr');
+    expect(consoleRow).toBeTruthy();
+
+    const deleteButton = within(consoleRow as HTMLElement).getByRole('button', {name: '删除'});
+    await userEvent.click(deleteButton);
+
+    expect(confirmMock).toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/admin/keys/1') && call[1]?.method === 'DELETE')).toBe(false);
+  });
+
+  it('shows success toast after disabling an inference key', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('密钥管理')[0]);
+    const consoleRow = (await screen.findByText('Console')).closest('tr');
+    expect(consoleRow).toBeTruthy();
+
+    await userEvent.click(within(consoleRow as HTMLElement).getByRole('button', {name: '禁用'}));
+    expect(await screen.findByText('推理密钥已禁用')).toBeInTheDocument();
+    expect(consoleRow).toHaveClass('bg-emerald-50/80');
+  });
+
+  it('shows success toast after deleting an inference key', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('密钥管理')[0]);
+    const consoleRow = (await screen.findByText('Console')).closest('tr');
+    expect(consoleRow).toBeTruthy();
+
+    await userEvent.click(within(consoleRow as HTMLElement).getByRole('button', {name: '删除'}));
+    expect(screen.getByTestId('api-key-row-1')).toHaveClass('opacity-0');
+    expect(await screen.findByText('推理密钥已删除')).toBeInTheDocument();
   });
 
   it('renders usage trend controls and records table headings', async () => {
@@ -710,6 +1017,50 @@ describe('Console views', () => {
     expect(screen.getByRole('button', {name: '12 小时'})).toBeInTheDocument();
     expect(screen.getByRole('button', {name: '按后端'})).toBeInTheDocument();
     expect(screen.getByText('调用记录')).toBeInTheDocument();
+  });
+
+  it('renders one trend line per backend when grouped by backend', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('请求记录')[0]);
+
+    expect(await screen.findByText('vLLM')).toBeInTheDocument();
+    expect(screen.getByText('SGLang')).toBeInTheDocument();
+    expect(screen.getByText('llama.cpp')).toBeInTheDocument();
+  });
+
+  it('renders one trend line per model when grouped by model', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('请求记录')[0]);
+    await userEvent.click(screen.getByRole('button', {name: '按模型'}));
+
+    expect(await screen.findByText('vLLM')).toBeInTheDocument();
+    expect(screen.getByText('SGLang')).toBeInTheDocument();
+    expect(screen.getByText('llama.cpp')).toBeInTheDocument();
+  });
+
+  it('renders one trend line per api key when grouped by api key', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('请求记录')[0]);
+    await userEvent.click(screen.getByRole('button', {name: '按密钥名称'}));
+
+    expect(await screen.findByText('vLLM')).toBeInTheDocument();
+    expect(screen.getByText('SGLang')).toBeInTheDocument();
+    expect(screen.getByText('llama.cpp')).toBeInTheDocument();
   });
 
   it('formats large numeric values with grouping and compact suffixes', async () => {
@@ -1171,7 +1522,7 @@ describe('Console views', () => {
     await userEvent.click(secretCopyButton);
 
     expect(writeText).toHaveBeenCalledWith('sk-console-real-0001');
-    expect(await screen.findByText('已复制到剪贴板')).toBeInTheDocument();
+    expect(await screen.findByText('完整密钥已复制')).toBeInTheDocument();
     expect(screen.getByTestId('copy-toast')).toHaveClass('opacity-100');
 
     await userEvent.click(consoleScope.getByRole('button', {name: '隐藏'}));
