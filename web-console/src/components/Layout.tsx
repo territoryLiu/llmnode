@@ -11,11 +11,11 @@ import {
   WifiOff,
 } from 'lucide-react';
 import logoImage from '../../logo.png';
-import {useAppContext} from '../store';
-import {cn} from '../lib/utils';
-import {Background} from './Background';
+import { useAppContext } from '../store';
+import { cn } from '../lib/utils';
+import { Background } from './Background';
 
-export function Layout({children}: {children: React.ReactNode}) {
+export function Layout({ children }: { children: React.ReactNode }) {
   const {
     currentPage,
     setCurrentPage,
@@ -38,11 +38,11 @@ export function Layout({children}: {children: React.ReactNode}) {
   }, [adminApiKey]);
 
   const navItems = [
-    {id: 'overview', label: t('layout.nav.overview'), icon: LayoutDashboard},
-    {id: 'usage', label: t('layout.nav.usage'), icon: Activity},
-    {id: 'keys', label: t('layout.nav.keys'), icon: Key},
-    {id: 'models', label: t('layout.nav.models'), icon: Network},
-    {id: 'schedule', label: t('layout.nav.schedule'), icon: CalendarClock},
+    { id: 'overview', label: t('layout.nav.overview'), icon: LayoutDashboard },
+    { id: 'usage', label: t('layout.nav.usage'), icon: Activity },
+    { id: 'keys', label: t('layout.nav.keys'), icon: Key },
+    { id: 'models', label: t('layout.nav.models'), icon: Network },
+    { id: 'schedule', label: t('layout.nav.schedule'), icon: CalendarClock },
   ] as const;
 
   return (
@@ -80,7 +80,7 @@ export function Layout({children}: {children: React.ReactNode}) {
       {/* Main Content Area */}
       <main className="flex-1 ml-72 p-6 flex flex-col min-h-screen">
         {/* Top Bar */}
-        <header className="mb-8 flex items-center justify-between z-10">
+        <header className="mb-8 flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-light text-[#1a1a1a]">
               <span className="font-bold">LlmNode</span> {pageTitle}
@@ -183,7 +183,7 @@ export function Layout({children}: {children: React.ReactNode}) {
         </header>
 
         {/* Page Content View */}
-        <div className="flex-1 z-10 relative">
+        <div className="flex-1 relative">
           {children}
         </div>
       </main>
