@@ -18,6 +18,22 @@
 - 未来规划：[docs/blueprint/roadmap.md](/proj02/liuheshan/llmnode/docs/blueprint/roadmap.md:1)
 - 协作规则：[AGENTS.md](/proj02/liuheshan/llmnode/AGENTS.md:1)
 
+## 界面预览
+
+当前前端已覆盖节点总览、请求记录与用量、密钥管理等核心界面，截图见下：
+
+### 总览
+
+![总览](docs/asserts/总览.png)
+
+### 请求记录和用量
+
+![请求记录和用量](docs/asserts/请求记录和用量.png)
+
+### 密钥管理
+
+![密钥管理](docs/asserts/密钥管理.png)
+
 ## 正式入口
 
 - 正式控制入口：`python -m llmnode.control`
