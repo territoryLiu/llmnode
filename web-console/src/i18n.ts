@@ -9,6 +9,7 @@ export const pageLabels = {
   keys: {zh: '密钥管理', en: 'API Keys'},
   models: {zh: '模型路由', en: 'Models'},
   schedule: {zh: '调度策略', en: 'Schedule'},
+  performance: {zh: '性能实验室', en: 'Performance'},
 } as const;
 
 export const translations = {
@@ -30,6 +31,7 @@ export const translations = {
       keys: {zh: '密钥管理', en: 'API Keys'},
       models: {zh: '模型路由', en: 'Models'},
       schedule: {zh: '调度策略', en: 'Schedule'},
+      performance: {zh: '性能实验室', en: 'Performance'},
     },
     subtitle: {
       zh: '控制台已接入当前 llmnode 控制面。',
@@ -48,6 +50,20 @@ export const translations = {
     apiKeyMissingBanner: {
       zh: '当前未配置 API 密钥。请先用控制命令创建一把 sk- 管理员密钥，然后在这里输入。',
       en: 'No API key configured. Create an sk- admin key first, then enter it here.',
+    },
+  },
+  performance: {
+    title: {zh: '性能实验室', en: 'Performance Lab'},
+    start: {zh: '开始测试', en: 'Start'},
+    cancel: {zh: '取消任务', en: 'Cancel'},
+    currentRun: {zh: '当前任务', en: 'Current Run'},
+    noRun: {zh: '当前没有运行中的性能任务', en: 'No active performance run'},
+    history: {zh: '历史任务', en: 'History'},
+    profile: {zh: 'Profile', en: 'Profile'},
+    targets: {zh: '上下文长度', en: 'Context Targets'},
+    hint: {
+      zh: '会通过管理 API 创建后台任务。启用自动重启时会中断当前本地后端。',
+      en: 'Creates a background run through the admin API. Auto-restart interrupts the local backend.',
     },
   },
   overview: {
