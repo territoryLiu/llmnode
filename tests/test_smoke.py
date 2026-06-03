@@ -67,9 +67,10 @@ def test_settings_missing_defaults_file_falls_back_to_repo_active_profile(tmp_pa
     assert settings.vllm.host_port == backend["host_port"]
 
 
-def test_settings_default_gpu_memory_utilization_is_065():
+def test_settings_default_gpu_memory_utilization_matches_active_profile():
+    _, backend = _repo_active_profile_payload()
     settings = load_settings()
-    assert settings.vllm.gpu_memory_utilization == 0.65
+    assert settings.vllm.gpu_memory_utilization == backend["gpu_memory_utilization"]
 
 
 def test_settings_load_active_profile_from_local_backends_directory(tmp_path: Path):
