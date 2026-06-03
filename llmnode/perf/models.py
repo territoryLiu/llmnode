@@ -9,9 +9,15 @@ from typing import Any
 class BenchmarkAttemptResult:
     kind: str
     latency_ms: float | None = None
+    prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    total_tokens: int | None = None
     completion_tokens_per_second: float | None = None
     http_status: int | None = None
+    finish_reason: str | None = None
+    error_message: str | None = None
+    prompt_token_mismatch: bool | None = None
+    concurrency_index: int | None = None
     result: str = "unknown"
 
 
@@ -28,14 +34,22 @@ class BenchmarkStepResult:
     label: str
     target_prompt_tokens: int
     actual_prompt_tokens: int | None = None
+    prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    total_tokens: int | None = None
     latency_ms: float | None = None
     completion_tokens_per_second: float | None = None
     http_status: int | None = None
+    finish_reason: str | None = None
+    error_message: str | None = None
+    prompt_token_mismatch: bool | None = None
     result: str = "unknown"
     backend_metrics: dict[str, Any] = field(default_factory=dict)
     warmup_runs: int = 0
     measured_runs: int = 0
+    success_count: int = 0
+    error_count: int = 0
+    success_rate: float | None = None
     latency_ms_avg: float | None = None
     latency_ms_p50: float | None = None
     latency_ms_min: float | None = None
@@ -72,6 +86,7 @@ class BenchmarkRun:
     model_dir: str = ""
     container_name: str = ""
     max_tokens: int = 64
+    concurrency: int = 1
     status: str = "running"
     errors: list[str] = field(default_factory=list)
     started_at: str = ""
