@@ -60,6 +60,16 @@ def test_benchmark_cli_defaults():
     assert args.sample_interval == 1.0
     assert args.warmup_runs == 1
     assert args.measure_runs == 3
+    assert args.concurrency == 1
+
+
+def test_benchmark_cli_accepts_concurrency():
+    from scripts.benchmark_backend import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["--concurrency", "2"])
+
+    assert args.concurrency == 2
 
 
 def test_summarize_attempts_uses_measured_runs_only():
@@ -76,6 +86,16 @@ def test_summarize_attempts_uses_measured_runs_only():
     assert round(summary["completion_tokens_per_second_avg"], 2) == 65.78
     assert summary["http_status"] == 200
     assert summary["result"] == "success"
+
+def test_summarize_attempts_records_success_rate():
+    summary = _summarize_attempts([
+        {"kind": "measure", "result": "success", "latency_ms": 100.0, "completion_tokens_per_second": 10.0},
+        {"kind": "measure", "result": "timeout"},
+    ])
+
+    assert summary["success_count"] == 1
+    assert summary["error_count"] == 1
+    assert summary["success_rate"] == 0.5
 
 
 def test_summarize_attempts_records_service_token_fields():
@@ -112,7 +132,6 @@ def test_summarize_attempts_records_service_token_fields():
     assert summary["finish_reason"] == "stop"
     assert summary["prompt_token_mismatch"] is True
 
-
 def test_summarize_attempts_records_error_message():
     summary = _summarize_attempts([
         {
@@ -145,7 +164,11 @@ def test_load_tokenizer_falls_back_when_tokenizer_class_is_unknown(tmp_path: Pat
                 raise ValueError("Tokenizer class TokenizersBackend does not exist or is not currently imported.")
             return {"ok": True}
 
-    monkeypatch.setitem(__import__("sys").modules, "transformers", type("FakeTransformers", (), {"AutoTokenizer": FakeAutoTokenizer}))
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "transformers",
+        type("FakeTransformers", (), {"AutoTokenizer": FakeAutoTokenizer}),
+    )
 
     tokenizer = benchmark_module._load_tokenizer(str(model_dir))
 

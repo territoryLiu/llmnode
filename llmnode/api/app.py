@@ -18,9 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..config import PROJECT_ROOT, load_settings
+from ..config import BENCHMARK_DIR, PROJECT_ROOT, load_settings
 from ..logging import setup_logging
 from ..models import ModelCapabilities, ModelRoute, load_model_catalog, logical_models_for_api, model_route_from_row, model_routes_for_admin
+from .perf_lab import register_perf_lab_routes
+from ..perf.lab_runner import NoopPerfPointExecutor, PerfLabRunner
+from ..perf.lab_store import PerfRunStore
 from ..protocols import AnthropicMessagesRequest, OpenAIChatCompletionsRequest, OpenAIResponsesRequest
 from ..proxy.backend import VLLMBackendClient, post_json_to, stream_bytes_from
 from ..proxy.adapters import build_responses_chat_payload, build_responses_messages_payload
@@ -1266,6 +1269,12 @@ def create_app() -> FastAPI:
     app.state.schedule = schedule_state
     app.state.post_json_to = post_json_to
     app.state.stream_bytes_from = stream_bytes_from
+    app.state.perf_lab_runner = PerfLabRunner(
+        store=PerfRunStore(BENCHMARK_DIR),
+        executor=NoopPerfPointExecutor(),
+    )
+
+    register_perf_lab_routes(app, lambda request: _resolve_auth(request, "admin"))
 
     web_console_dist = PROJECT_ROOT / "web-console" / "dist"
     if (web_console_dist / "index.html").is_file():

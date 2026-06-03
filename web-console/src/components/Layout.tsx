@@ -4,6 +4,7 @@ import {
   AlertCircle,
   CalendarClock,
   CheckCircle2,
+  Gauge,
   Key,
   LayoutDashboard,
   Network,
@@ -43,6 +44,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     { id: 'keys', label: t('layout.nav.keys'), icon: Key },
     { id: 'models', label: t('layout.nav.models'), icon: Network },
     { id: 'schedule', label: t('layout.nav.schedule'), icon: CalendarClock },
+    { id: 'performance', label: t('layout.nav.performance'), icon: Gauge },
   ] as const;
 
   return (

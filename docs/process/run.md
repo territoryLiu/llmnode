@@ -235,3 +235,15 @@ python -m llmnode.control create-admin-key
 - 推荐使用 `create-inference-key / rotate-inference-key / inference-key-status` 管理推理 key
 - 旧 `create-api-key` 仅作为兼容入口保留，且只允许 `--scope inference`
 - `web-console` 产品态通过浏览器本地保存的 `vllm-console-api-key` 向管理接口发送 `x-api-key`
+
+## 9. 性能实验室
+
+性能实验室用于在当前单机节点上自动执行模型上下文长度与显存参数矩阵测试。
+
+使用边界：
+
+- 性能实验室会通过控制面自动重启本地后端，运行前应确认没有生产推理请求正在使用该节点。
+- 默认同一时间只允许一个性能任务，避免多个任务抢占同一张 GPU。
+- 长上下文测试可能持续数分钟，结果写入 `runtime/data/benchmarks/<run_id>/`。
+- GPU 实测结果只代表当前机器、当前镜像、当前 profile 和当前模型文件。
+- 如果只想做临时排障，可以继续直接运行 `scripts/benchmark_backend.py`；正式记录优先引用性能实验室生成的结果目录。

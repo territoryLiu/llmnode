@@ -191,6 +191,11 @@
   - 网关会为成功、拒绝和无 `usage` 的请求落库 `request_metrics`
   - Agent 暴露 `GET /admin/diagnostics/metrics`
   - 当前聚合指标包括请求数、成功率、平均/分位延迟、吞吐和稳定回退 `queue_length`
+- 性能实验室自动化矩阵已形成最小闭环（2026-06-03）：
+  - 管理 API 可创建、查询、取消性能测试任务：`/admin/perf/runs`
+  - 任务结果落盘到 `runtime/data/benchmarks/<run_id>/`
+  - 每个矩阵点保存启动解析、benchmark summary、连续采样和错误信息
+  - 管理台提供“性能实验室”入口，用于发起测试、查看当前任务和历史任务
 - API Key 管理台能力已补齐（2026-05-14）：
   - 后端 API key 列表和创建接口返回 `masked_key` 脱敏字段
   - key 列表接口附带 `usage_summary`（总请求数、总 Token 数）

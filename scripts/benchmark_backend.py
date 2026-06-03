@@ -20,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", type=str, default="")
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--measure-runs", type=int, default=3)
+    parser.add_argument("--concurrency", type=int, default=1)
     return parser
 
 
@@ -33,6 +34,7 @@ def main() -> int:
         profile=args.profile,
         warmup_runs=args.warmup_runs,
         measure_runs=args.measure_runs,
+        concurrency=args.concurrency,
     )
     return 0
 

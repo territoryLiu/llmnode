@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import statistics
 import os
+import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 from dataclasses import asdict
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 from typing import Any
-import tempfile
 
 import httpx
 
@@ -168,9 +170,14 @@ def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
     measured = [item for item in attempts if item.get("kind") == "measure"]
     latencies = [float(item["latency_ms"]) for item in measured if item.get("latency_ms") is not None]
     speeds = [float(item["completion_tokens_per_second"]) for item in measured if item.get("completion_tokens_per_second") is not None]
+    success_count = sum(1 for item in measured if item.get("result") == "success")
+    error_count = len(measured) - success_count
     summary: dict[str, Any] = {
         "warmup_runs": sum(1 for item in attempts if item.get("kind") == "warmup"),
         "measured_runs": len(measured),
+        "success_count": success_count,
+        "error_count": error_count,
+        "success_rate": success_count / len(measured) if measured else None,
         "http_status": measured[-1].get("http_status") if measured else None,
         "result": "success" if measured and all(item.get("result") == "success" for item in measured) else (measured[-1].get("result") if measured else "unknown"),
     }
@@ -247,6 +254,7 @@ def run_benchmark(
     profile: str = "",
     warmup_runs: int = 1,
     measure_runs: int = 3,
+    concurrency: int = 1,
 ) -> Path:
     if profile:
         os.environ["VLLM_CLAUDE_ACTIVE_BACKEND_PROFILE"] = profile
@@ -264,6 +272,7 @@ def run_benchmark(
         model_dir=settings.vllm.model_dir,
         container_name=settings.vllm.container_name,
         max_tokens=max_tokens,
+        concurrency=concurrency,
         started_at=_iso_now(),
     )
 
@@ -271,104 +280,129 @@ def run_benchmark(
     samples: list[SamplePoint] = []
     backend_metrics = _collect_backend_metrics(settings.vllm.backend_type, settings.vllm.container_name)
 
-    with httpx.Client(base_url=settings.gateway.backend_url, timeout=settings.gateway.backend_request_timeout_seconds) as client:
-        for target in targets:
-            label = f"{target // 1024}K" if target >= 1024 else str(target)
-            prompt, actual_prompt_tokens = build_prompt_for_target(
-                tokenizer=tokenizer,
-                target_prompt_tokens=target,
-                base_fragment="hello",
-            )
-            started_at = _utc_now()
-            step = BenchmarkStepResult(
-                label=label,
-                target_prompt_tokens=target,
-                actual_prompt_tokens=actual_prompt_tokens,
-                backend_metrics=backend_metrics,
-            )
-            attempts: list[dict[str, Any]] = []
-            total_runs = [("warmup", warmup_runs), ("measure", measure_runs)]
-            for kind, count in total_runs:
-                for index in range(count):
-                    active_label = f"{label}-{kind}-{index + 1}"
-                    attempt_started_at = _utc_now()
-                    attempt: dict[str, Any] = {"kind": kind, "result": "unknown"}
-                    try:
-                        response = _run_with_sampling(
-                            samples,
-                            active_label,
-                            settings.vllm.backend_type,
-                            settings.vllm.container_name,
-                            sample_interval,
-                            lambda: client.post(
-                                "/v1/chat/completions",
-                                json={
-                                    "model": settings.vllm.model_name,
-                                    "messages": [{"role": "user", "content": prompt}],
-                                    "max_tokens": max_tokens,
-                                },
-                            ),
+    for target in targets:
+        label = f"{target // 1024}K" if target >= 1024 else str(target)
+        prompt, actual_prompt_tokens = build_prompt_for_target(
+            tokenizer=tokenizer,
+            target_prompt_tokens=target,
+            base_fragment="hello",
+        )
+        step = BenchmarkStepResult(
+            label=label,
+            target_prompt_tokens=target,
+            actual_prompt_tokens=actual_prompt_tokens,
+            backend_metrics=backend_metrics,
+        )
+        attempts: list[dict[str, Any]] = []
+        total_runs = [("warmup", warmup_runs), ("measure", measure_runs)]
+
+        def execute_attempt(active_label: str, kind: str, concurrency_index: int) -> dict[str, Any]:
+            attempt_started_at = _utc_now()
+            attempt: dict[str, Any] = {
+                "kind": kind,
+                "concurrency_index": concurrency_index,
+                "result": "unknown",
+            }
+            try:
+                def post_request():
+                    with httpx.Client(
+                        base_url=settings.gateway.backend_url,
+                        timeout=settings.gateway.backend_request_timeout_seconds,
+                    ) as client:
+                        return client.post(
+                            "/v1/chat/completions",
+                            json={
+                                "model": settings.vllm.model_name,
+                                "messages": [{"role": "user", "content": prompt}],
+                                "max_tokens": max_tokens,
+                            },
                         )
-                        finished_at = _utc_now()
-                        attempt["http_status"] = response.status_code
-                        try:
-                            payload = response.json()
-                        except ValueError:
-                            payload = {}
-                            attempt["error_message"] = response.text[:500]
-                        usage = payload.get("usage") if isinstance(payload, dict) else {}
-                        latency_ms = (finished_at - attempt_started_at).total_seconds() * 1000.0
-                        prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
-                        completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
-                        total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
-                        attempt["prompt_tokens"] = prompt_tokens
-                        attempt["completion_tokens"] = completion_tokens
-                        attempt["total_tokens"] = total_tokens
-                        attempt["finish_reason"] = _extract_finish_reason(payload)
-                        attempt["error_message"] = attempt.get("error_message") or _extract_error_message(payload)
-                        attempt["prompt_token_mismatch"] = (
-                            prompt_tokens != actual_prompt_tokens
-                            if prompt_tokens is not None and actual_prompt_tokens is not None
-                            else None
-                        )
-                        attempt["latency_ms"] = latency_ms
-                        attempt["completion_tokens_per_second"] = (
-                            completion_tokens / (latency_ms / 1000.0)
-                            if completion_tokens is not None and latency_ms > 0
-                            else None
-                        )
-                        attempt["result"] = "success" if response.is_success else "error"
-                    except httpx.ReadTimeout:
-                        attempt["result"] = "timeout"
-                        attempt["error_message"] = "read timeout"
-                    except Exception as exc:
-                        run.errors.append(str(exc))
-                        attempt["result"] = "error"
-                        attempt["error_message"] = str(exc)
-                    attempts.append(attempt)
-            summary = _summarize_attempts(attempts)
-            step.attempts = [BenchmarkAttemptResult(**attempt) for attempt in attempts]
-            step.warmup_runs = summary["warmup_runs"]
-            step.measured_runs = summary["measured_runs"]
-            step.http_status = summary["http_status"]
-            step.result = summary["result"]
-            step.prompt_tokens = summary["prompt_tokens"]
-            step.completion_tokens = summary["completion_tokens"]
-            step.total_tokens = summary["total_tokens"]
-            step.finish_reason = summary["finish_reason"]
-            step.error_message = summary["error_message"]
-            step.prompt_token_mismatch = summary["prompt_token_mismatch"]
-            step.latency_ms = summary["latency_ms"]
-            step.completion_tokens_per_second = summary["completion_tokens_per_second"]
-            step.latency_ms_avg = summary["latency_ms_avg"]
-            step.latency_ms_p50 = summary["latency_ms_p50"]
-            step.latency_ms_min = summary["latency_ms_min"]
-            step.latency_ms_max = summary["latency_ms_max"]
-            step.completion_tokens_per_second_avg = summary["completion_tokens_per_second_avg"]
-            step.completion_tokens_per_second_p50 = summary["completion_tokens_per_second_p50"]
-            step.completion_tokens_per_second_min = summary["completion_tokens_per_second_min"]
-            step.completion_tokens_per_second_max = summary["completion_tokens_per_second_max"]
-            steps.append(step)
+
+                response = _run_with_sampling(
+                    samples,
+                    active_label,
+                    settings.vllm.backend_type,
+                    settings.vllm.container_name,
+                    sample_interval,
+                    post_request,
+                )
+                finished_at = _utc_now()
+                attempt["http_status"] = response.status_code
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                    attempt["error_message"] = response.text[:500]
+                usage = payload.get("usage") if isinstance(payload, dict) else {}
+                latency_ms = (finished_at - attempt_started_at).total_seconds() * 1000.0
+                prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+                completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+                total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+                attempt["prompt_tokens"] = prompt_tokens
+                attempt["completion_tokens"] = completion_tokens
+                attempt["total_tokens"] = total_tokens
+                attempt["finish_reason"] = _extract_finish_reason(payload)
+                attempt["error_message"] = attempt.get("error_message") or _extract_error_message(payload)
+                attempt["prompt_token_mismatch"] = (
+                    prompt_tokens != actual_prompt_tokens
+                    if prompt_tokens is not None and actual_prompt_tokens is not None
+                    else None
+                )
+                attempt["latency_ms"] = latency_ms
+                attempt["completion_tokens_per_second"] = (
+                    completion_tokens / (latency_ms / 1000.0)
+                    if completion_tokens is not None and latency_ms > 0
+                    else None
+                )
+                attempt["result"] = "success" if response.is_success else "error"
+            except httpx.ReadTimeout:
+                attempt["result"] = "timeout"
+                attempt["error_message"] = "read timeout"
+            except Exception as exc:
+                run.errors.append(str(exc))
+                attempt["result"] = "error"
+                attempt["error_message"] = str(exc)
+            return attempt
+
+        for kind, count in total_runs:
+            for index in range(count):
+                active_label = f"{label}-{kind}-{index + 1}"
+                if concurrency == 1:
+                    attempts.append(execute_attempt(active_label, kind, 1))
+                else:
+                    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                        futures = [
+                            pool.submit(execute_attempt, f"{active_label}-c{idx}", kind, idx)
+                            for idx in range(1, concurrency + 1)
+                        ]
+                        for future in as_completed(futures):
+                            attempts.append(future.result())
+        summary = _summarize_attempts(attempts)
+        step.attempts = [BenchmarkAttemptResult(**attempt) for attempt in attempts]
+        step.warmup_runs = summary["warmup_runs"]
+        step.measured_runs = summary["measured_runs"]
+        step.success_count = summary["success_count"]
+        step.error_count = summary["error_count"]
+        step.success_rate = summary["success_rate"]
+        step.http_status = summary["http_status"]
+        step.result = summary["result"]
+        step.prompt_tokens = summary["prompt_tokens"]
+        step.completion_tokens = summary["completion_tokens"]
+        step.total_tokens = summary["total_tokens"]
+        step.finish_reason = summary["finish_reason"]
+        step.error_message = summary["error_message"]
+        step.prompt_token_mismatch = summary["prompt_token_mismatch"]
+        step.latency_ms = summary["latency_ms"]
+        step.completion_tokens_per_second = summary["completion_tokens_per_second"]
+        step.latency_ms_avg = summary["latency_ms_avg"]
+        step.latency_ms_p50 = summary["latency_ms_p50"]
+        step.latency_ms_min = summary["latency_ms_min"]
+        step.latency_ms_max = summary["latency_ms_max"]
+        step.completion_tokens_per_second_avg = summary["completion_tokens_per_second_avg"]
+        step.completion_tokens_per_second_p50 = summary["completion_tokens_per_second_p50"]
+        step.completion_tokens_per_second_min = summary["completion_tokens_per_second_min"]
+        step.completion_tokens_per_second_max = summary["completion_tokens_per_second_max"]
+        steps.append(step)
 
     run.status = "completed" if not run.errors else "completed_with_errors"
     run.finished_at = _iso_now()

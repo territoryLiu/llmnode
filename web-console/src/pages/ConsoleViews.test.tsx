@@ -530,6 +530,25 @@ const requestLogDetailResponse = {
   },
 };
 
+const perfRunResponse = {
+  run_id: 'run-1',
+  status: 'queued',
+  created_at: '2026-06-02T00:00:00Z',
+  started_at: null,
+  finished_at: null,
+  request: {
+    profile: 'vllm_qwen36-27b-nvfp4',
+    targets: [4096],
+    max_tokens: 64,
+    warmup_runs: 1,
+    measure_runs: 3,
+    sample_interval: 1,
+    concurrency: 1,
+    restart_backend: true,
+    matrix: {},
+  },
+};
+
 function jsonResponse(body: unknown) {
   return Promise.resolve(
     new Response(JSON.stringify(body), {
@@ -599,6 +618,12 @@ beforeEach(() => {
     }
     if (url.includes('/admin/keys')) {
       return jsonResponse(keyListResponse);
+    }
+    if (url.includes('/admin/perf/runs') && init?.method === 'POST') {
+      return jsonResponse({run: perfRunResponse});
+    }
+    if (url.includes('/admin/perf/runs')) {
+      return jsonResponse({runs: []});
     }
     if (url.includes('/admin/models')) {
       return jsonResponse({models: []});
@@ -1675,5 +1700,27 @@ describe('Console views', () => {
     expect(routeScope.getByRole('checkbox', {name: 'anthropic-claude-native-protocol-messages'})).toBeChecked();
     expect(routeScope.getByRole('checkbox', {name: 'anthropic-claude-native-protocol-chat'})).not.toBeChecked();
     expect(routeScope.queryByRole('button', {name: '恢复推荐默认'})).not.toBeInTheDocument();
+  });
+
+  it('creates a performance lab run from the console', async () => {
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('LlmNode').length).toBeGreaterThan(0);
+    });
+
+    await userEvent.click(screen.getAllByText('性能实验室')[0]);
+    await userEvent.clear(await screen.findByLabelText('profile'));
+    await userEvent.type(screen.getByLabelText('profile'), 'vllm_qwen36-27b-nvfp4');
+    await userEvent.click(screen.getByRole('button', {name: '开始测试'}));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          (call) => String(call[0]).includes('/admin/perf/runs') && call[1]?.method === 'POST',
+        ),
+      ).toBe(true);
+    });
   });
 });

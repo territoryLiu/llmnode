@@ -619,3 +619,20 @@
   - `GET /admin/perf/runs/{id}` 查询 summary
   - `GET /admin/perf/runs/{id}/samples` 查询采样曲线
   - `GET /admin/perf/runs` 查询历史列表
+
+## 12. 性能实验室自动化口径
+
+性能实验室已作为后续正式补数据的优先入口：
+
+- 通过管理 API `/admin/perf/runs` 创建、查询和取消测试任务。
+- 每个任务结果写入 `runtime/data/benchmarks/<run_id>/`。
+- 每个矩阵点独立保存：
+  - 启动日志解析结果
+  - benchmark summary
+  - 请求期间连续 `samples.jsonl`
+  - 失败或超时错误信息
+- 正式 token 口径以服务端返回的 `usage.prompt_tokens / usage.completion_tokens / usage.total_tokens` 为准。
+- 本地 tokenizer 只用于构造目标 prompt；如果本地估算和服务端 usage 不一致，结果中会记录 `prompt_token_mismatch`。
+- 不再用 `GPU KV cache size tokens` 线性外推最大上下文或 256K 显存需求；结论以 vLLM 启动日志和服务端实测通过/失败为准。
+
+手工 benchmark 仍可用于临时排障，但长期性能记录应优先引用性能实验室生成的 `summary.json` 与 `samples.jsonl`。

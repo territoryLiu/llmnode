@@ -7,7 +7,7 @@ import {
   writeStoredLocale,
 } from './i18n';
 
-export type Page = 'overview' | 'usage' | 'keys' | 'models' | 'schedule';
+export type Page = 'overview' | 'usage' | 'keys' | 'models' | 'schedule' | 'performance';
 
 export interface RequestLog {
   id: number;
@@ -231,6 +231,29 @@ export interface UsageOverview {
   chart: UsageChart;
 }
 
+export interface PerfRunRequest {
+  profile: string;
+  targets: number[];
+  max_tokens: number;
+  warmup_runs: number;
+  measure_runs: number;
+  sample_interval: number;
+  concurrency: number;
+  restart_backend: boolean;
+  matrix: Record<string, Array<number>>;
+}
+
+export interface PerfRunSummary {
+  run_id: string;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  request: PerfRunRequest;
+  matrix?: Array<Record<string, unknown>>;
+  errors?: Array<Record<string, unknown>>;
+}
+
 export interface SnapshotHistoryPoint {
   label: string;
   queueLength: number;
@@ -441,6 +464,8 @@ interface AppState {
   diagnostics: DiagnosticsStatus | null;
   readinessOverview: ReadinessOverview | null;
   usageOverview: UsageOverview | null;
+  perfRuns: PerfRunSummary[];
+  activePerfRun: PerfRunSummary | null;
   loading: LoadingState;
   refreshAll: () => Promise<void>;
   refreshSnapshot: () => Promise<void>;
@@ -478,6 +503,9 @@ interface AppState {
   updateModelRoute: (name: string, payload: UpdateModelRoutePayload) => Promise<ModelRouteRow>;
   updateSchedule: (payload: Partial<ScheduleConfig>) => Promise<ScheduleConfig>;
   restartBackend: () => Promise<void>;
+  refreshPerfRuns: () => Promise<PerfRunSummary[]>;
+  createPerfRun: (payload: PerfRunRequest) => Promise<PerfRunSummary>;
+  cancelPerfRun: (runId: string) => Promise<PerfRunSummary>;
 }
 
 function inferDefaultApiBase(): string {
@@ -579,6 +607,8 @@ export function AppProvider({children}: {children: ReactNode}) {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [readinessOverview, setReadinessOverview] = useState<ReadinessOverview | null>(null);
   const [usageOverview, setUsageOverview] = useState<UsageOverview | null>(null);
+  const [perfRuns, setPerfRuns] = useState<PerfRunSummary[]>([]);
+  const [activePerfRun, setActivePerfRun] = useState<PerfRunSummary | null>(null);
   const [loading, setLoading] = useState<LoadingState>({
     snapshot: true,
     requestLogs: true,
@@ -834,6 +864,36 @@ export function AppProvider({children}: {children: ReactNode}) {
     }
   }
 
+  async function refreshPerfRuns() {
+    const payload = await requestJson<{runs: PerfRunSummary[]}>('/admin/perf/runs');
+    setPerfRuns(payload.runs);
+    return payload.runs;
+  }
+
+  async function createPerfRun(payload: PerfRunRequest) {
+    const response = await requestJson<{run: PerfRunSummary}>('/admin/perf/runs', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    setActivePerfRun(response.run);
+    setLastUpdated(new Date());
+    setGlobalError(null);
+    void refreshPerfRuns();
+    return response.run;
+  }
+
+  async function cancelPerfRun(runId: string) {
+    const response = await requestJson<{run: PerfRunSummary}>(`/admin/perf/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: 'POST',
+    });
+    setActivePerfRun(response.run);
+    setLastUpdated(new Date());
+    setGlobalError(null);
+    void refreshPerfRuns();
+    return response.run;
+  }
+
   async function refreshAll() {
     await Promise.allSettled([
       refreshSnapshot(),
@@ -844,6 +904,7 @@ export function AppProvider({children}: {children: ReactNode}) {
       refreshDiagnostics(),
       refreshReadinessOverview(),
       refreshUsageOverview(),
+      refreshPerfRuns(),
     ]);
   }
 
@@ -1136,6 +1197,8 @@ export function AppProvider({children}: {children: ReactNode}) {
         diagnostics,
         readinessOverview,
         usageOverview,
+        perfRuns,
+        activePerfRun,
         loading,
         refreshAll,
         refreshSnapshot,
@@ -1157,6 +1220,9 @@ export function AppProvider({children}: {children: ReactNode}) {
         updateModelRoute,
         updateSchedule,
         restartBackend,
+        refreshPerfRuns,
+        createPerfRun,
+        cancelPerfRun,
       }}
     >
       {children}

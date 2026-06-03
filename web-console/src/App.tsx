@@ -10,6 +10,7 @@ import { UsageRecordsView } from './pages/UsageRecordsView';
 import { ApiKeysView } from './pages/ApiKeysView';
 import { ModelRoutesView } from './pages/ModelRoutesView';
 import { ScheduleView } from './pages/ScheduleView';
+import { PerformanceLabView } from './pages/PerformanceLabView';
 
 function PageRouter() {
   const { currentPage } = useAppContext();
@@ -20,6 +21,7 @@ function PageRouter() {
     case 'keys': return <ApiKeysView />;
     case 'models': return <ModelRoutesView />;
     case 'schedule': return <ScheduleView />;
+    case 'performance': return <PerformanceLabView />;
     default: return <OverviewView />;
   }
 }
