@@ -176,3 +176,19 @@ def test_settings_load_repo_awq_int4_profile(tmp_path: Path):
     assert profile_settings.vllm.model_name == "qwen36-27b-awq-int4"
     assert profile_settings.vllm.gpu_memory_utilization == 0.5
     assert profile_settings.gateway.backend_model == "qwen36-27b-awq-int4"
+
+
+def test_settings_load_repo_nvfp4_profile(tmp_path: Path, monkeypatch):
+    defaults = tmp_path / "defaults.yaml"
+    defaults.write_text("active_backend_profile: vllm_qwen36-27b-nvfp4\n", encoding="utf-8")
+    monkeypatch.delenv("VLLM_CLAUDE_VLLM_GPU_MEMORY_UTILIZATION", raising=False)
+
+    profile_settings = load_settings(defaults)
+    assert profile_settings.active_backend_profile == "vllm_qwen36-27b-nvfp4"
+    assert profile_settings.vllm.backend_type == "vllm"
+    assert profile_settings.vllm.model_dir.endswith("models/Qwen/Qwen3.6-27B-NVFP4")
+    assert profile_settings.vllm.model_name == "qwen36-27b-nvfp4"
+    assert profile_settings.vllm.display_name == "Qwen3.6 27B NVFP4"
+    assert profile_settings.vllm.max_model_len == 262144
+    assert profile_settings.vllm.gpu_memory_utilization == 0.55
+    assert profile_settings.gateway.backend_model == "qwen36-27b-nvfp4"

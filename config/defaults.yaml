@@ -32,4 +32,4 @@ schedule:
   auto_start_enabled: true
   cooldown_minutes: 10
 
-active_backend_profile: vllm_qwen36-27b-awq-int4
+active_backend_profile: vllm_qwen36-27b-nvfp4

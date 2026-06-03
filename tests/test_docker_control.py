@@ -2,8 +2,8 @@ from llmnode.agent.docker_control import VLLMContainerSpec, ensure_container_run
 
 
 class FakeContainer:
-    def __init__(self):
-        self.status = "exited"
+    def __init__(self, *, status: str = "exited"):
+        self.status = status
         self.attrs = {
             "Config": {
                 "Image": "vllm/vllm-openai:nightly",
@@ -100,6 +100,39 @@ def test_ensure_container_running_recreates_drifted_container(monkeypatch):
         tool_call_parser="qwen3_coder",
     )
     container = FakeContainer()
+    client = FakeClient(container)
+
+    monkeypatch.setattr("llmnode.agent.docker_control.docker_client", lambda: client)
+    monkeypatch.setattr(
+        "llmnode.agent.docker_control.container_snapshot",
+        lambda spec: {"exists": True, "running": True, "name": spec.container_name},
+    )
+
+    result = ensure_container_running(spec)
+
+    assert result["action"] == "recreated"
+    assert container.stopped is True
+    assert container.removed is True
+    assert len(client.containers.run_calls) == 1
+
+
+def test_ensure_container_running_recreates_running_drifted_container(monkeypatch):
+    spec = VLLMContainerSpec(
+        container_name="qwen36-vllm",
+        image_name="vllm/vllm-openai:nightly",
+        model_dir="/proj02/liuheshan/llmnode/models/Qwen/Qwen3.6-35B-A3B-FP8",
+        model_name="qwen36-35b-a3b-fp8",
+        host_port=15673,
+        gpu_memory_utilization=0.65,
+        tensor_parallel_size=1,
+        max_model_len=262144,
+        max_num_seqs=4,
+        shm_size="16g",
+        enable_auto_tool_choice=True,
+        reasoning_parser="qwen3",
+        tool_call_parser="qwen3_coder",
+    )
+    container = FakeContainer(status="running")
     client = FakeClient(container)
 
     monkeypatch.setattr("llmnode.agent.docker_control.docker_client", lambda: client)

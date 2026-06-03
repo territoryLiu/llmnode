@@ -1,0 +1,18 @@
+backend:
+  backend_type: vllm
+  container_name: qwen36-27b-nvfp4-vllm
+  image_name: vllm/vllm-openai:nightly
+  model_dir: models/Qwen/Qwen3.6-27B-NVFP4
+  model_file: ""
+  model_name: qwen36-27b-nvfp4
+  display_name: Qwen3.6 27B NVFP4
+  enabled: true
+  host_port: 15673
+  gpu_memory_utilization: 0.55
+  tensor_parallel_size: 1
+  max_model_len: 262144
+  max_num_seqs: 4
+  shm_size: 16g
+  enable_auto_tool_choice: true
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_coder

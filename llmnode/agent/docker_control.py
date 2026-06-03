@@ -268,13 +268,13 @@ def ensure_container_running(spec: AnyContainerSpec) -> dict[str, Any]:
     try:
         container = client.containers.get(spec.container_name)
         container.reload()
-        if container.status == "running":
-            return {"action": "already_running", "snapshot": container_snapshot(spec)}
         if not _container_matches_spec(container, spec):
             with suppress(APIError):
                 container.stop(timeout=30)
             container.remove(force=True)
             return _run_new_container(client, spec, action="recreated")
+        if container.status == "running":
+            return {"action": "already_running", "snapshot": container_snapshot(spec)}
         container.start()
         return {"action": "started_existing", "snapshot": container_snapshot(spec)}
     except NotFound:

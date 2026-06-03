@@ -9,9 +9,14 @@ from typing import Any
 class BenchmarkAttemptResult:
     kind: str
     latency_ms: float | None = None
+    prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    total_tokens: int | None = None
     completion_tokens_per_second: float | None = None
     http_status: int | None = None
+    finish_reason: str | None = None
+    error_message: str | None = None
+    prompt_token_mismatch: bool | None = None
     result: str = "unknown"
 
 
@@ -28,10 +33,15 @@ class BenchmarkStepResult:
     label: str
     target_prompt_tokens: int
     actual_prompt_tokens: int | None = None
+    prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    total_tokens: int | None = None
     latency_ms: float | None = None
     completion_tokens_per_second: float | None = None
     http_status: int | None = None
+    finish_reason: str | None = None
+    error_message: str | None = None
+    prompt_token_mismatch: bool | None = None
     result: str = "unknown"
     backend_metrics: dict[str, Any] = field(default_factory=dict)
     warmup_runs: int = 0

@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import statistics
 import os
+import threading
 from dataclasses import asdict
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 from typing import Any
+import tempfile
 
 import httpx
 
@@ -67,7 +69,28 @@ def _load_tokenizer(model_dir: str):
         from transformers import AutoTokenizer
     except ImportError as exc:
         raise RuntimeError("transformers is required to run benchmark_backend.py") from exc
-    return AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+    try:
+        return AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+    except ValueError as exc:
+        if "Tokenizer class" not in str(exc):
+            raise
+        tokenizer_config_path = Path(model_dir) / "tokenizer_config.json"
+        if not tokenizer_config_path.exists():
+            raise
+        config = json.loads(tokenizer_config_path.read_text(encoding="utf-8"))
+        if config.get("tokenizer_class") != "TokenizersBackend":
+            raise
+        fallback_config = dict(config)
+        fallback_config.pop("tokenizer_class", None)
+        with tempfile.TemporaryDirectory(prefix="llmnode-tokenizer-") as temp_dir:
+            temp_path = Path(temp_dir)
+            for item in Path(model_dir).iterdir():
+                target = temp_path / item.name
+                if item.name == "tokenizer_config.json":
+                    target.write_text(json.dumps(fallback_config, ensure_ascii=False, indent=2), encoding="utf-8")
+                else:
+                    os.symlink(item, target)
+            return AutoTokenizer.from_pretrained(str(temp_path), trust_remote_code=True)
 
 
 def _extract_backend_pids(container_name: str) -> set[int]:
@@ -102,6 +125,43 @@ def _sample_once(active_step: str, backend_type: str, container_name: str) -> Sa
         generation_throughput_tokens_per_s=backend_metrics.get("generation_throughput_tokens_per_s"),
         backend_metrics=backend_metrics,
     )
+
+
+def _sample_once_safe(active_step: str, backend_type: str, container_name: str) -> SamplePoint:
+    try:
+        return _sample_once(active_step, backend_type, container_name)
+    except Exception as exc:
+        return SamplePoint(
+            ts=_iso_now(),
+            active_step=active_step,
+            backend_metrics={"sample_error": str(exc)},
+        )
+
+
+def _run_with_sampling(
+    samples: list[SamplePoint],
+    active_label: str,
+    backend_type: str,
+    container_name: str,
+    sample_interval: float,
+    fn,
+):
+    interval = max(float(sample_interval), 0.1)
+    stop_event = threading.Event()
+
+    def collect() -> None:
+        while not stop_event.is_set():
+            samples.append(_sample_once_safe(active_label, backend_type, container_name))
+            stop_event.wait(interval)
+
+    thread = threading.Thread(target=collect, daemon=True)
+    thread.start()
+    try:
+        return fn()
+    finally:
+        stop_event.set()
+        thread.join(timeout=interval + 1.0)
+        samples.append(_sample_once_safe(active_label, backend_type, container_name))
 
 
 def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -139,8 +199,43 @@ def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         summary["completion_tokens_per_second_max"] = None
         summary["completion_tokens_per_second"] = None
     completion_values = [item.get("completion_tokens") for item in measured if item.get("completion_tokens") is not None]
+    prompt_values = [item.get("prompt_tokens") for item in measured if item.get("prompt_tokens") is not None]
+    total_values = [item.get("total_tokens") for item in measured if item.get("total_tokens") is not None]
+    finish_reasons = [item.get("finish_reason") for item in measured if item.get("finish_reason")]
+    error_messages = [item.get("error_message") for item in measured if item.get("error_message")]
+    mismatches = [item.get("prompt_token_mismatch") for item in measured if item.get("prompt_token_mismatch") is not None]
+    summary["prompt_tokens"] = prompt_values[-1] if prompt_values else None
     summary["completion_tokens"] = completion_values[-1] if completion_values else None
+    summary["total_tokens"] = total_values[-1] if total_values else None
+    summary["finish_reason"] = finish_reasons[-1] if finish_reasons else None
+    summary["error_message"] = error_messages[-1] if error_messages else None
+    summary["prompt_token_mismatch"] = any(mismatches) if mismatches else None
     return summary
+
+
+def _extract_error_message(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        return str(message) if message else json.dumps(error, ensure_ascii=False)
+    if isinstance(error, str):
+        return error
+    return None
+
+
+def _extract_finish_reason(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    finish_reason = first.get("finish_reason")
+    return str(finish_reason) if finish_reason is not None else None
 
 
 def run_benchmark(
@@ -196,25 +291,46 @@ def run_benchmark(
             for kind, count in total_runs:
                 for index in range(count):
                     active_label = f"{label}-{kind}-{index + 1}"
-                    samples.append(_sample_once(active_label, settings.vllm.backend_type, settings.vllm.container_name))
                     attempt_started_at = _utc_now()
                     attempt: dict[str, Any] = {"kind": kind, "result": "unknown"}
                     try:
-                        response = client.post(
-                            "/v1/chat/completions",
-                            json={
-                                "model": settings.vllm.model_name,
-                                "messages": [{"role": "user", "content": prompt}],
-                                "max_tokens": max_tokens,
-                            },
+                        response = _run_with_sampling(
+                            samples,
+                            active_label,
+                            settings.vllm.backend_type,
+                            settings.vllm.container_name,
+                            sample_interval,
+                            lambda: client.post(
+                                "/v1/chat/completions",
+                                json={
+                                    "model": settings.vllm.model_name,
+                                    "messages": [{"role": "user", "content": prompt}],
+                                    "max_tokens": max_tokens,
+                                },
+                            ),
                         )
                         finished_at = _utc_now()
-                        payload = response.json()
+                        attempt["http_status"] = response.status_code
+                        try:
+                            payload = response.json()
+                        except ValueError:
+                            payload = {}
+                            attempt["error_message"] = response.text[:500]
                         usage = payload.get("usage") if isinstance(payload, dict) else {}
                         latency_ms = (finished_at - attempt_started_at).total_seconds() * 1000.0
+                        prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
                         completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
-                        attempt["http_status"] = response.status_code
+                        total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+                        attempt["prompt_tokens"] = prompt_tokens
                         attempt["completion_tokens"] = completion_tokens
+                        attempt["total_tokens"] = total_tokens
+                        attempt["finish_reason"] = _extract_finish_reason(payload)
+                        attempt["error_message"] = attempt.get("error_message") or _extract_error_message(payload)
+                        attempt["prompt_token_mismatch"] = (
+                            prompt_tokens != actual_prompt_tokens
+                            if prompt_tokens is not None and actual_prompt_tokens is not None
+                            else None
+                        )
                         attempt["latency_ms"] = latency_ms
                         attempt["completion_tokens_per_second"] = (
                             completion_tokens / (latency_ms / 1000.0)
@@ -224,10 +340,11 @@ def run_benchmark(
                         attempt["result"] = "success" if response.is_success else "error"
                     except httpx.ReadTimeout:
                         attempt["result"] = "timeout"
+                        attempt["error_message"] = "read timeout"
                     except Exception as exc:
                         run.errors.append(str(exc))
                         attempt["result"] = "error"
-                    samples.append(_sample_once(active_label, settings.vllm.backend_type, settings.vllm.container_name))
+                        attempt["error_message"] = str(exc)
                     attempts.append(attempt)
             summary = _summarize_attempts(attempts)
             step.attempts = [BenchmarkAttemptResult(**attempt) for attempt in attempts]
@@ -235,7 +352,12 @@ def run_benchmark(
             step.measured_runs = summary["measured_runs"]
             step.http_status = summary["http_status"]
             step.result = summary["result"]
+            step.prompt_tokens = summary["prompt_tokens"]
             step.completion_tokens = summary["completion_tokens"]
+            step.total_tokens = summary["total_tokens"]
+            step.finish_reason = summary["finish_reason"]
+            step.error_message = summary["error_message"]
+            step.prompt_token_mismatch = summary["prompt_token_mismatch"]
             step.latency_ms = summary["latency_ms"]
             step.completion_tokens_per_second = summary["completion_tokens_per_second"]
             step.latency_ms_avg = summary["latency_ms_avg"]
@@ -248,7 +370,6 @@ def run_benchmark(
             step.completion_tokens_per_second_max = summary["completion_tokens_per_second_max"]
             steps.append(step)
 
-    _ = sample_interval
     run.status = "completed" if not run.errors else "completed_with_errors"
     run.finished_at = _iso_now()
     return write_benchmark_outputs(benchmark_root, run, steps, samples)
