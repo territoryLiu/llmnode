@@ -11,7 +11,7 @@
 | 顺序 | 文件 | 用途 |
 |---:|---|---|
 | 1 | [learning-log.md](./learning-log.md) | 总体学习路线和阶段目标 |
-| 2 | [experiment-master-plan.md](./experiment-master-plan.md) | 覆盖本专题全部目标的总实验方案 |
+| 2 | [experiment-master-plan.md](./experiments/experiment-master-plan.md)（已归档） | 覆盖本专题全部目标的总实验方案 |
 | 3 | [hardware.md](./foundations/hardware.md) | A800 / Ampere / Hopper / Blackwell 与精度支持 |
 | 4 | [model-format.md](./foundations/model-format.md) | 模型文件格式、量化格式、vLLM/SGLang/llama.cpp 差异 |
 | 5 | [accel-map.md](./foundations/accel-map.md) | 推理加速方法全景图 |
@@ -37,7 +37,7 @@
 | `performance/` | benchmark、KV cache、profiler、瓶颈定位方法 | 不写某一次实验的完整报告 |
 | `optimization/` | 量化、speculative、MTP、并行等优化专题 | 不承担实验流水账 |
 | `experiments/` | 阶段实验报告和实测结论 | 不重复大段基础概念，改为引用专题文档 |
-| 根目录 `experiment-master-plan.md` | 把整个专题的实验目标、阶段顺序、成功标准和产物路径统一收口 | 不替代具体实验报告和专题方法文档 |
+| `experiments/experiment-master-plan.md`（已归档） | 把整个专题的实验目标、阶段顺序、成功标准和产物路径统一收口 | 不替代具体实验报告和专题方法文档 |
 
 归口规则：
 

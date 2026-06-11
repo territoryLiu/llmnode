@@ -7,7 +7,7 @@
 
 相关专题：
 
-- 总方案见 [experiment-master-plan.md](../experiment-master-plan.md)
+- 总方案见 [experiment-master-plan.md](./experiment-master-plan.md)
 - Nsight bring-up 与 server-side `64K + 512` capture 见 [stage7-fp8-kv-quality-and-nsight.md](./stage7-fp8-kv-quality-and-nsight.md)
 - AWQ 并发与 profiler 代表点见 [stage3-awq-concurrency.md](./stage3-awq-concurrency.md)、[stage4-awq-profiler.md](./stage4-awq-profiler.md)
 

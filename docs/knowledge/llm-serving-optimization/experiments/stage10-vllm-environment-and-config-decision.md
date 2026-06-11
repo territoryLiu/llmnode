@@ -7,7 +7,7 @@
 
 相关专题：
 
-- 总方案见 [experiment-master-plan.md](../experiment-master-plan.md)。
+- 总方案见 [experiment-master-plan.md](./experiment-master-plan.md)。
 - AWQ benchmark / profiler 证据见 [stage2-vllm-prefill-decode.md](./stage2-vllm-prefill-decode.md)、[stage3-awq-concurrency.md](./stage3-awq-concurrency.md)、[stage4-awq-profiler.md](./stage4-awq-profiler.md)。
 - NVFP4 对照见 [stage5-nvfp4-nointerference.md](./stage5-nvfp4-nointerference.md)、[stage6-nvfp4-profiler.md](./stage6-nvfp4-profiler.md)。
 - FP8 KV 质量与 Nsight 进展见 [stage7-fp8-kv-quality-and-nsight.md](./stage7-fp8-kv-quality-and-nsight.md)。

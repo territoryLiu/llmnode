@@ -7,7 +7,7 @@
 
 相关专题：
 
-- 总方案见 [experiment-master-plan.md](../experiment-master-plan.md)
+- 总方案见 [experiment-master-plan.md](./experiment-master-plan.md)
 - 主配置决策见 [stage10-vllm-environment-and-config-decision.md](./stage10-vllm-environment-and-config-decision.md)
 - launch gap / queue 归因见 [stage11-launch-gap-and-queue-analysis.md](./stage11-launch-gap-and-queue-analysis.md)
 - `64K + 512` 同形状 `ncu` 现状见 [stage8-ncu-64k-same-shape.md](./stage8-ncu-64k-same-shape.md)
@@ -202,25 +202,118 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,nohead
 | 不可省略环境检查 | `nvidia-smi` 外部 GPU 进程核验 |
 | 当前不允许直接声称上线可用的配置 | `FP8 KV cache` 路线 |
 
-## 9. 已确认
+## 9. V2 最终闭环：从 LaunchStats 到瓶颈判断与优化动作
+
+### 9.1 Occupancy 瓶颈诊断
+
+基于 Stage 8 clean `64K + 512` `LaunchStats`，结合 A800 硬件规格（108 SMs, 每 SM 65,536 registers, 每 SM 164 KiB configurable shared memory），做出如下判断：
+
+**Marlin GEMM：**
+
+| 指标 | 值 | 含义 |
+|---|---|---|
+| Registers Per Thread | `255` | 接近上限，每 block 需 255×256=65,280 registers |
+| 每 SM 可放 block 数 | `1` | 65,280 < 65,536，刚好 1 个 |
+| 实际 occupancy | `12.5%` | 1/8，与 ncu 实测一致 |
+| 瓶颈根源 | **register 压力** | 不是 shared memory（166.91 KiB 虽高但不是主因） |
+
+**FlashAttention：**
+
+| 指标 | 值 | 含义 |
+|---|---|---|
+| Registers Per Thread | `255` | 同样接近上限，每 block 需 255×128=32,640 registers |
+| 每 SM 可放 block 数 | `2` | 32,640×2=65,280 < 65,536 |
+| 实际 occupancy | `12.5%` | 2/16，与 ncu 实测一致 |
+| 瓶颈根源 | **register 压力** | shared memory 仅 49.15 KiB/block，远未触及限制 |
+
+结论：**两个主热点 kernel 的共同瓶颈是 register 压力（255/thread），不是 shared memory。**
+
+### 9.2 Memory 吞吐利用率
+
+| Kernel | 实测吞吐 | A800 HBM 峰值 | 利用率 | L2 hit rate |
+|---|---|---|---|---|
+| Marlin | `~447-491 GB/s` | `~2,048 GB/s` | `22-25%` | `62.5%` |
+| FlashAttention | `~19 GB/s` | - | 极低 | `98.6%`（几乎全 L2） |
+
+- Marlin 只用了约 1/4 的 HBM 带宽，远未饱和。
+- FlashAttention 几乎完全命中 L2（98.6%），瓶颈不在 HBM 带宽而在 L2 cache 带宽或计算。
+- 低 occupancy → 活跃 warp 少 → 内存延迟隐藏不足 → HBM 利用率低。
+
+### 9.3 关键权衡：occupancy vs ILP
+
+Marlin 的 255 registers/thread 不一定是"浪费"。Weight-only dequantization kernel 的经典设计是：每个线程在 register 中缓存更多 weight fragment，减少重复内存访问，用指令级并行（ILP）替代 warp 级并行。这是 **occupancy vs ILP** 的经典权衡：
+
+- 高 register 用量 → 单线程 ILP 高 → 每次内存访问利用率高
+- 低 occupancy → 活跃 warp 少 → 内存延迟隐藏差
+- 净效果取决于 workload：memory-bound decode 场景下，ILP 策略可能已接近最优
+
+当前 Marlin 吞吐 447-491 GB/s（22-25% HBM 利用率）看起来不高，但考虑到：
+1. 单请求 decode batch_size=1，算术强度极低
+2. L2 hit rate 62.5%，实际 HBM 访问量已被 L2 减少
+3. 255 register 策略可能是 Marlin 作者在权衡后的最优选择
+
+因此 **occupancy 不一定是当前可操作的优化点**。
+
+### 9.4 优化动作判断
+
+综合 Stage 8（ncu）、Stage 11（launch gap / queue）、Stage 12（本节）的证据链：
+
+| 层级 | 瓶颈 | 当前可操作性 | 动作 |
+|---|---|---|---|
+| **调度/队列** | 长 prefill 分批进入 Running + launch/sync gap | 中 | 优先调 `max_num_seqs`、chunked prefill size |
+| **Kernel occupancy** | 255 registers/thread → 12.5% occupancy | 低 | Marlin 是第三方 kernel，当前无上游低 register 替代；改需自写 kernel |
+| **Memory 吞吐** | Marlin 22-25% HBM 利用率 | 低 | 受 occupancy 限制，且单请求 decode 本身 memory-bound 特征决定 |
+| **KV cache 容量** | 64K 场景下 KV 压力大 | 已有方案 | AWQ-INT4 已释放 22.38 GiB 给 KV，当前够用 |
+
+**优先行动：先在调度层做文章，而不是 kernel 层。**
+
+具体动作链（优先级从高到低）：
+
+1. **chunked prefill 调优**：当前 64K prefill 是一整块进入调度，导致长等待。尝试设置 `max_num_batched_tokens` 把 prefill 切成更小 chunk，让 decode 请求更早插入。
+2. **`max_num_seqs` 从 4 调到 2**：Stage 11 已证明 c4 有明确 Waiting 队列，c2 没有。如果目标是交互式延迟，限制并发到 2 可能更合理。
+3. **CUDA stream 并行**：当前 Marlin + FlashAttention 在单 stream 串行。如果 vLLM 支持多 stream，可以让 prefill attention 和 GEMM 部分重叠（需框架层支持，非用户参数可调）。
+4. **等待上游 kernel 优化**：Marlin 的低 occupancy 问题需要上游 Marlin 项目或 vLLM 社区提供低 register 版本的 kernel。关注 vLLM 的 kernel 更新。
+5. **不建议自写 kernel**：投入产出比太低。Marlin 已是 AWQ 社区最优 kernel 之一，自写难以超越。
+
+### 9.5 与 Stage 11 launch gap 的关联
+
+Stage 11 发现：
+- `cudaLaunchKernel + cuLaunchKernelEx` 合计占 CUDA API time ~58-66%
+- `cudaEventSynchronize` 占 ~32-40%
+- CUDA Graph 在用但只占 ~0.1%
+
+这与 ncu 发现的低 occupancy 一致：
+- 每个 kernel launch 后，因 occupancy 低，GPU 很快完成计算并等待下一次 launch
+- `cudaEventSynchronize` 高占比说明 CPU 端在频繁等待 GPU 完成
+- 减少 launch 次数（chunked prefill）或提高单 kernel 利用率（更高 occupancy）都能减少 gap
+
+但 kernel 层改动门槛高，调度层改动门槛低。所以先调调度。
+
+## 10. 已确认
 
 1. `AWQ-INT4` 已具备默认上线候选所需的第一轮证据闭环。
 2. `NVFP4` 当前仍是观察项，不是默认基线。
 3. `FP8 KV` 当前仍只能作为容量实验配置。
 4. `64K + 512` 同形状 `ncu LaunchStats` 已完成，不再是阻塞项。
 5. 现在已经足够固定一套最小回归模板与上线前环境检查。
+6. `V2` 已最终闭环：两个主热点 kernel 的共同瓶颈是 **register 压力（255/thread）**，不是 shared memory。
+7. Marlin 的 255 register 策略可能是 ILP 优化的有意选择，不是简单的"浪费"。
+8. 当前最可操作的优化方向在 **调度层**（chunked prefill、并发限制），不在 kernel 层。
+9. Marlin HBM 利用率 22-25%（单请求 decode），远未饱和，但受 workload 特性限制。
 
-## 10. 仍不确定
+## 11. 仍不确定
 
-1. 只凭 `LaunchStats` 还不能最终判断 `64K` 主代表点的底层限制更偏 memory behavior 还是 occupancy / shared memory / registers。
-2. 仓库默认 profile 是否应正式改到 `AWQ-INT4`，这需要单独做配置更新与验证。
-3. 未来是否要把 `NVFP4` 升为容量优先场景的正式备选上线配置，还缺更强证据。
+1. chunked prefill 对 `64K` 场景的实际 TTFT 改善幅度，需要实测。
+2. `max_num_seqs=2` vs `4` 的交互式延迟差异，需要回归验证。
+3. Marlin 未来是否会提供低 register 版本 kernel（关注上游 PR）。
+4. `NVFP4` 在 Hopper / Blackwell 上的实际表现，是否值得在新硬件上重新评估。
 
-## 11. 下一步
+## 12. 下一步
 
-- 下一次只改什么变量：
-  Stage 11 / Stage 12 的解释链，把 clean `LaunchStats` 转成优化动作判断。
-- 预期要验证什么：
-  是否需要继续补 `Occupancy / MemoryWorkloadAnalysis`；如果不需要，当前主线可以进入上线回归模板固化。
+- 下一步只做什么：
+  实测 chunked prefill 对 64K TTFT 的影响。只改 `max_num_batched_tokens` 一个变量。
 - 当前阶段不再优先做什么：
-  不再扩更多 benchmark 版本，不优先攻克 server-side attach，不先盲调上层参数
+  不再补 `Occupancy / MemoryWorkloadAnalysis`（当前证据已足够做调度层决策）。
+  不再扩更多 benchmark 版本。
+  不优先攻克 server-side ncu attach。
+  不自写 kernel。

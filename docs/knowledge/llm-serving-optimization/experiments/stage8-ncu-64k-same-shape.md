@@ -10,7 +10,7 @@
 - Stage 7 Nsight bring-up 与 `16K` `ncu` 成功样本见 [stage7-fp8-kv-quality-and-nsight.md](./stage7-fp8-kv-quality-and-nsight.md)
 - AWQ profiler 见 [stage4-awq-profiler.md](./stage4-awq-profiler.md)
 - NVFP4 profiler 见 [stage6-nvfp4-profiler.md](./stage6-nvfp4-profiler.md)
-- 当前总路线见 [experiment-master-plan.md](../experiment-master-plan.md)
+- 当前总路线见 [experiment-master-plan.md](./experiment-master-plan.md)
 
 ## 1. 本阶段要回答的问题
 
