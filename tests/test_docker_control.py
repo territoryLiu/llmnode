@@ -147,3 +147,54 @@ def test_ensure_container_running_recreates_running_drifted_container(monkeypatc
     assert container.stopped is True
     assert container.removed is True
     assert len(client.containers.run_calls) == 1
+
+
+def test_vllm_container_spec_supports_profiler_volume():
+    spec = VLLMContainerSpec(
+        container_name="qwen36-vllm",
+        image_name="vllm/vllm-openai:nightly",
+        model_dir="/proj02/liuheshan/llmnode/models/Qwen/Qwen3.6-35B-A3B-FP8",
+        model_name="qwen36-35b-a3b-fp8",
+        host_port=15673,
+        gpu_memory_utilization=0.65,
+        tensor_parallel_size=1,
+        max_model_len=262144,
+        max_num_seqs=4,
+        shm_size="16g",
+        enable_auto_tool_choice=True,
+        reasoning_parser="qwen3",
+        tool_call_parser="qwen3_coder",
+        profiler_config='{"profiler":"torch","torch_profiler_dir":"/tmp/vllm-profile"}',
+        profiler_host_dir="/proj02/liuheshan/llmnode/runtime/data/profiles/stage4",
+    )
+
+    assert spec.command[-2:] == [
+        "--profiler-config",
+        '{"profiler":"torch","torch_profiler_dir":"/tmp/vllm-profile"}',
+    ]
+    assert spec.volumes["/proj02/liuheshan/llmnode/runtime/data/profiles/stage4"] == {
+        "bind": "/tmp/vllm-profile",
+        "mode": "rw",
+    }
+
+
+def test_vllm_container_spec_supports_kv_cache_dtype():
+    spec = VLLMContainerSpec(
+        container_name="qwen36-vllm",
+        image_name="vllm/vllm-openai:nightly",
+        model_dir="/proj02/liuheshan/llmnode/models/Qwen/Qwen3.6-35B-A3B-FP8",
+        model_name="qwen36-35b-a3b-fp8",
+        host_port=15673,
+        gpu_memory_utilization=0.65,
+        tensor_parallel_size=1,
+        max_model_len=262144,
+        max_num_seqs=4,
+        shm_size="16g",
+        enable_auto_tool_choice=True,
+        reasoning_parser="qwen3",
+        tool_call_parser="qwen3_coder",
+        kv_cache_dtype="fp8",
+    )
+
+    assert "--kv-cache-dtype" in spec.command
+    assert spec.command[spec.command.index("--kv-cache-dtype") + 1] == "fp8"

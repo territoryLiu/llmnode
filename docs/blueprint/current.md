@@ -292,8 +292,8 @@
 
 与模型能力相关的长期参考仍分开放置：
 
-- 性能与长上下文记录见 [docs/knowledge/model_context_performance.md](../knowledge/model_context_performance.md)
-- 格式转换、量化与部署建议见 [docs/knowledge/model_format_conversion.md](../knowledge/model_format_conversion.md)
+- 性能与长上下文记录见 [docs/knowledge/models-and-formats/model_context_performance.md](../knowledge/models-and-formats/model_context_performance.md)
+- 格式转换、量化与部署建议见 [docs/knowledge/models-and-formats/model_format_conversion.md](../knowledge/models-and-formats/model_format_conversion.md)
 
 ## 7. 当前配置与真相源边界
 
@@ -330,7 +330,7 @@
 
 - 三后端的 ContainerSpec 与 BackendDriver 均已落地
 - 切换后端通过 `config/defaults.yaml` 的 `active_backend_profile` 或对应环境变量控制
-- 三后端均已完成线上联调验证（2026-05-12），详见 [docs/knowledge/backend_integration_qa.md](../knowledge/backend_integration_qa.md)
+- 三后端均已完成线上联调验证（2026-05-12），详见 [docs/knowledge/runtime-and-backends/backend_integration_qa.md](../knowledge/runtime-and-backends/backend_integration_qa.md)
 - 管理面 `/admin/models/{name}` 现已接受 `vllm / llama.cpp / sglang` 三个值
 - 当前激活 profile 仍决定本地受控 route 的默认供给
 - 启动时会把该默认供给增量同步到 SQLite 的 `model_routes`
@@ -364,12 +364,12 @@
 当前仍保留但已完成边界收口的内容包括：
 
 - 历史归档 `docs/blueprint/archive/*`
-- 知识性文档 `docs/knowledge/*`
+- 知识性文档 `docs/knowledge/**`
 - 过程设计与计划 `docs/superpowers/*`
 
 它们当前仍保留，但边界已经明确：
 
-- `docs/knowledge/*` 是常驻参考层，不承担正式真相
+- `docs/knowledge/**` 是常驻参考层，不承担正式真相
 - `docs/superpowers/*` 是进行中工作区，不作为长期沉淀层
 
 额外边界：

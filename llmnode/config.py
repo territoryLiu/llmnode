@@ -73,6 +73,9 @@ class BackendSettings:
     enable_auto_tool_choice: bool = True
     reasoning_parser: str = "qwen3"
     tool_call_parser: str = "qwen3_coder"
+    kv_cache_dtype: str = ""
+    profiler_config: str = ""
+    profiler_host_dir: str = ""
     n_gpu_layers: int = -1
     ctx_size: int = 262144
     n_parallel: int = 4
@@ -271,6 +274,12 @@ def load_settings(path: Path | None = None) -> AppSettings:
             ).lower() in {"1", "true", "yes", "on"},
             reasoning_parser=os.getenv("VLLM_CLAUDE_VLLM_REASONING_PARSER", vllm.get("reasoning_parser", "qwen3")),
             tool_call_parser=os.getenv("VLLM_CLAUDE_VLLM_TOOL_CALL_PARSER", vllm.get("tool_call_parser", "qwen3_coder")),
+            kv_cache_dtype=os.getenv("VLLM_CLAUDE_VLLM_KV_CACHE_DTYPE", vllm.get("kv_cache_dtype", "")),
+            profiler_config=os.getenv("VLLM_CLAUDE_VLLM_PROFILER_CONFIG", vllm.get("profiler_config", "")),
+            profiler_host_dir=_resolve_path(
+                os.getenv("VLLM_CLAUDE_VLLM_PROFILER_HOST_DIR", vllm.get("profiler_host_dir", "")),
+                PROJECT_ROOT / "runtime" / "data" / "profiles" / str(active_profile),
+            ) if os.getenv("VLLM_CLAUDE_VLLM_PROFILER_HOST_DIR", vllm.get("profiler_host_dir", "")) else "",
             n_gpu_layers=int(os.getenv("LLMNODE_LLAMACPP_N_GPU_LAYERS", vllm.get("n_gpu_layers", -1))),
             ctx_size=int(os.getenv("LLMNODE_LLAMACPP_CTX_SIZE", vllm.get("ctx_size", 262144))),
             n_parallel=int(os.getenv("LLMNODE_LLAMACPP_N_PARALLEL", vllm.get("n_parallel", 4))),

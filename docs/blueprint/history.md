@@ -102,9 +102,9 @@
 - 补充里程碑（2026-05）：
   三后端代码实现全部落地：`ContainerSpec / BackendDriver / service.py / control.py / api/app.py` 均已按 `backend_type` 动态路由；`gpu_memory_utilization` 改为 `0.9`；运行配置已进一步向 profile 驱动收口；GGUF 转换链路（f16 → Q4_K_M）已完成。
 - 补充里程碑（2026-05-12）：
-  **三后端线上联调验证全部完成**：vLLM / llama.cpp / SGLang 各自跑通推理链路，`reasoning_content` / `content` 干净分离已确认。主要发现：llama.cpp 须用 `full-cuda` 镜像（`:full` 为纯 CPU），验证约 68 token/s / 26GB VRAM；SGLang 需 `--reasoning-parser qwen3` 参数（非特性缺失，仅启动命令遗漏）；旧容器复用会导致启动参数变更不生效（需先 `docker rm`）。详见 [docs/knowledge/backend_integration_qa.md](../knowledge/backend_integration_qa.md)。
+  **三后端线上联调验证全部完成**：vLLM / llama.cpp / SGLang 各自跑通推理链路，`reasoning_content` / `content` 干净分离已确认。主要发现：llama.cpp 须用 `full-cuda` 镜像（`:full` 为纯 CPU），验证约 68 token/s / 26GB VRAM；SGLang 需 `--reasoning-parser qwen3` 参数（非特性缺失，仅启动命令遗漏）；旧容器复用会导致启动参数变更不生效（需先 `docker rm`）。详见 [docs/knowledge/runtime-and-backends/backend_integration_qa.md](../knowledge/runtime-and-backends/backend_integration_qa.md)。
 - 补充里程碑（2026-05-13）：
-  **文档系统第二轮收口已完成**：`docs/knowledge/*` 已固定为常驻参考层，`docs/superpowers/*` 已固定为进行中工作区；`README.md` 的失效文档入口已清理，文档边界统一回流到 `development-workflow / glossary / current / roadmap`。这标志着文档系统从”第一轮分层”进入”第二轮边界固化”阶段。
+  **文档系统第二轮收口已完成**：`docs/knowledge/**` 已固定为常驻参考层，`docs/superpowers/*` 已固定为进行中工作区；`README.md` 的失效文档入口已清理，文档边界统一回流到 `development-workflow / glossary / current / roadmap`。这标志着文档系统从”第一轮分层”进入”第二轮边界固化”阶段。
 - 补充里程碑（2026-05-14）：
   **profile 驱动配置收口与 API Key 管理台能力补齐**：激活 profile 与后端配置已继续向 `config/defaults.yaml + config/backends/*.yaml` 收口；API Key 管理台后端返回 `masked_key` 脱敏字段和 `usage_summary` 用量统计，新增 `/admin/overview/readiness` 端点统一下发 Base URL；管理台密钥页面支持 Base URL 展示/复制、新建密钥显示/隐藏切换、历史密钥 masked_key 和用量展示。
 - 补充里程碑（2026-05-15）：

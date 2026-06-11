@@ -68,7 +68,7 @@ python -m llmnode.control start
 - 当前常用后端端口通常为 `15673`，如 profile 另有声明则以该 profile 为准
 - 当前正式控制入口不再依赖 `scripts/*.sh`
 - `docs/blueprint/roadmap.md` 是唯一未来规划入口
-- `docs/knowledge/*` 是常驻参考层，不承担正式真相
+- `docs/knowledge/**` 是常驻参考层，不承担正式真相
 - `docs/superpowers/*` 负责设计展开与实施计划，默认只服务进行中的工作，不再保留 `docs/blueprintV3.md` / `docs/blueprintV4.md`
 
 ## 阅读顺序
@@ -96,8 +96,11 @@ python -m llmnode.control start
   当前一期重构已正式拆分 `backend_type / upstream_protocol / lifecycle_mode`
   `/v1/responses` 已支持按 route 选择 `native responses`、`responses -> chat`、`responses -> messages` 三路径
 - 三后端联调经验与已知问题：
-  [docs/knowledge/backend_integration_qa.md](/proj02/liuheshan/llmnode/docs/knowledge/backend_integration_qa.md:1)
+  [docs/knowledge/runtime-and-backends/backend_integration_qa.md](/proj02/liuheshan/llmnode/docs/knowledge/runtime-and-backends/backend_integration_qa.md:1)
 - 模型支持矩阵与 profile 命名：
-  [docs/knowledge/model_context_performance.md](/proj02/liuheshan/llmnode/docs/knowledge/model_context_performance.md:1)
+  [docs/knowledge/models-and-formats/model_context_performance.md](/proj02/liuheshan/llmnode/docs/knowledge/models-and-formats/model_context_performance.md:1)
+- 知识库总索引与 LLM serving 优化专题：
+  [docs/knowledge/README.md](/proj02/liuheshan/llmnode/docs/knowledge/README.md:1)、
+  [docs/knowledge/llm-serving-optimization/README.md](/proj02/liuheshan/llmnode/docs/knowledge/llm-serving-optimization/README.md:1)
 - 文档系统开发与回流规则：
   [docs/process/development-workflow.md](/proj02/liuheshan/llmnode/docs/process/development-workflow.md:1)

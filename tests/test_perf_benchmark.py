@@ -26,6 +26,20 @@ class FakeTokenizer:
         return [1] * len(content.split())
 
 
+class FakeBatchEncoding:
+    def __init__(self, token_count: int):
+        self.encodings = [type("FakeEncoding", (), {"ids": list(range(token_count))})()]
+
+    def __len__(self):
+        return 2
+
+
+class FakeBatchEncodingTokenizer:
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=True):
+        content = messages[0]["content"]
+        return FakeBatchEncoding(len(content.split()))
+
+
 def test_prompt_builder_returns_prompt_not_exceeding_target():
     from llmnode.perf.prompt_builder import build_prompt_for_target
 
@@ -36,6 +50,19 @@ def test_prompt_builder_returns_prompt_not_exceeding_target():
     )
     assert actual <= 8
     assert isinstance(prompt, str)
+
+
+def test_prompt_builder_counts_batch_encoding_tokens_not_container_fields():
+    from llmnode.perf.prompt_builder import build_prompt_for_target
+
+    prompt, actual = build_prompt_for_target(
+        tokenizer=FakeBatchEncodingTokenizer(),
+        target_prompt_tokens=8,
+        base_fragment="hello",
+    )
+
+    assert actual == 8
+    assert len(prompt.split()) == 8
 
 
 def test_write_benchmark_outputs_creates_summary_and_samples(tmp_path: Path):

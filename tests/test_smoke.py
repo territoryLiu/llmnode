@@ -175,8 +175,44 @@ def test_settings_load_repo_awq_int4_profile(tmp_path: Path):
     assert profile_settings.vllm.backend_type == "vllm"
     assert profile_settings.vllm.model_dir.endswith("models/Qwen/Qwen3.6-27B-AWQ-INT4")
     assert profile_settings.vllm.model_name == "qwen36-27b-awq-int4"
-    assert profile_settings.vllm.gpu_memory_utilization == 0.5
+    assert profile_settings.vllm.gpu_memory_utilization == 0.55
     assert profile_settings.gateway.backend_model == "qwen36-27b-awq-int4"
+
+
+def test_settings_load_repo_awq_int4_profiler_profile(tmp_path: Path):
+    defaults = tmp_path / "defaults.yaml"
+    defaults.write_text("active_backend_profile: vllm_qwen36-27b-awq-int4-profiler\n", encoding="utf-8")
+
+    profile_settings = load_settings(defaults)
+    assert profile_settings.active_backend_profile == "vllm_qwen36-27b-awq-int4-profiler"
+    assert profile_settings.vllm.container_name == "qwen36-27b-awq-int4-profiler-vllm"
+    assert profile_settings.vllm.profiler_config == '{"profiler":"torch","torch_profiler_dir":"/tmp/vllm-profile"}'
+    assert profile_settings.vllm.profiler_host_dir.endswith("runtime/data/profiles/stage4-awq-profiler")
+
+
+def test_settings_load_repo_awq_int4_fp8_kv_profile(tmp_path: Path):
+    defaults = tmp_path / "defaults.yaml"
+    defaults.write_text("active_backend_profile: vllm_qwen36-27b-awq-int4-fp8-kv\n", encoding="utf-8")
+
+    profile_settings = load_settings(defaults)
+    assert profile_settings.active_backend_profile == "vllm_qwen36-27b-awq-int4-fp8-kv"
+    assert profile_settings.vllm.container_name == "qwen36-27b-awq-int4-fp8-kv-vllm"
+    assert profile_settings.vllm.model_dir.endswith("models/Qwen/Qwen3.6-27B-AWQ-INT4")
+    assert profile_settings.vllm.model_name == "qwen36-27b-awq-int4"
+    assert profile_settings.vllm.kv_cache_dtype == "fp8"
+
+
+def test_settings_load_repo_nvfp4_profiler_profile(tmp_path: Path):
+    defaults = tmp_path / "defaults.yaml"
+    defaults.write_text("active_backend_profile: vllm_qwen36-27b-nvfp4-profiler\n", encoding="utf-8")
+
+    profile_settings = load_settings(defaults)
+    assert profile_settings.active_backend_profile == "vllm_qwen36-27b-nvfp4-profiler"
+    assert profile_settings.vllm.container_name == "qwen36-27b-nvfp4-profiler-vllm"
+    assert profile_settings.vllm.model_dir.endswith("models/Qwen/Qwen3.6-27B-NVFP4")
+    assert profile_settings.vllm.model_name == "qwen36-27b-nvfp4"
+    assert profile_settings.vllm.profiler_config == '{"profiler":"torch","torch_profiler_dir":"/tmp/vllm-profile"}'
+    assert profile_settings.vllm.profiler_host_dir.endswith("runtime/data/profiles/stage6-nvfp4-profiler")
 
 
 def test_settings_load_repo_nvfp4_profile(tmp_path: Path, monkeypatch):
@@ -192,4 +228,5 @@ def test_settings_load_repo_nvfp4_profile(tmp_path: Path, monkeypatch):
     assert profile_settings.vllm.display_name == "Qwen3.6 27B NVFP4"
     assert profile_settings.vllm.max_model_len == 262144
     assert profile_settings.vllm.gpu_memory_utilization == 0.55
+    assert profile_settings.vllm.kv_cache_dtype == ""
     assert profile_settings.gateway.backend_model == "qwen36-27b-nvfp4"

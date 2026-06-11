@@ -41,7 +41,7 @@
 - Docs:
   - `docs/blueprint/current.md`
   - `docs/process/run.md`
-  - `docs/knowledge/model_context_performance.md`
+  - `docs/knowledge/models-and-formats/model_context_performance.md`
 
 ---
 
@@ -1602,7 +1602,7 @@ git commit -m "新增性能实验室前端页面"
 **Files:**
 - Modify: `docs/blueprint/current.md`
 - Modify: `docs/process/run.md`
-- Modify: `docs/knowledge/model_context_performance.md`
+- Modify: `docs/knowledge/models-and-formats/model_context_performance.md`
 
 - [ ] **Step 1: Update current blueprint**
 
@@ -1631,7 +1631,7 @@ In `docs/process/run.md`, add an operator note:
 
 - [ ] **Step 3: Update knowledge doc**
 
-In `docs/knowledge/model_context_performance.md`, update section 11 from design note to implemented behavior:
+In `docs/knowledge/models-and-formats/model_context_performance.md`, update section 11 from design note to implemented behavior:
 
 ```markdown
 - 自动化矩阵已落地后，应优先通过 `/admin/perf/runs` 生成新结果。
@@ -1711,7 +1711,7 @@ Expected:
 - [ ] **Step 8: Commit**
 
 ```bash
-git add docs/blueprint/current.md docs/process/run.md docs/knowledge/model_context_performance.md
+git add docs/blueprint/current.md docs/process/run.md docs/knowledge/models-and-formats/model_context_performance.md
 git commit -m "更新性能实验室运行文档"
 ```
 

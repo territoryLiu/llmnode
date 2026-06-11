@@ -1,0 +1,19 @@
+backend:
+  backend_type: vllm
+  container_name: qwen36-27b-awq-int4-fp8-kv-vllm
+  image_name: vllm/vllm-openai:nightly
+  model_dir: models/Qwen/Qwen3.6-27B-AWQ-INT4
+  model_file: ""
+  model_name: qwen36-27b-awq-int4
+  display_name: Qwen3.6 27B AWQ INT4 FP8 KV
+  enabled: true
+  host_port: 15673
+  gpu_memory_utilization: 0.55
+  tensor_parallel_size: 1
+  max_model_len: 262144
+  max_num_seqs: 4
+  kv_cache_dtype: fp8
+  shm_size: 16g
+  enable_auto_tool_choice: true
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_coder

@@ -264,6 +264,9 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
             enable_auto_tool_choice=settings.vllm.enable_auto_tool_choice,
             reasoning_parser=settings.vllm.reasoning_parser,
             tool_call_parser=settings.vllm.tool_call_parser,
+            kv_cache_dtype=settings.vllm.kv_cache_dtype,
+            profiler_config=settings.vllm.profiler_config,
+            profiler_host_dir=settings.vllm.profiler_host_dir,
         )
         app.state.backend_driver = VLLMBackendDriver(spec=spec)
     app.state.backend_type = bt

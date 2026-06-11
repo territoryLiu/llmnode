@@ -26,6 +26,9 @@ class VLLMContainerSpec:
     enable_auto_tool_choice: bool
     reasoning_parser: str
     tool_call_parser: str
+    kv_cache_dtype: str = ""
+    profiler_config: str = ""
+    profiler_host_dir: str = ""
 
     @property
     def command(self) -> list[str]:
@@ -60,6 +63,10 @@ class VLLMContainerSpec:
             )
         else:
             args.extend(["--reasoning-parser", self.reasoning_parser])
+        if self.kv_cache_dtype:
+            args.extend(["--kv-cache-dtype", self.kv_cache_dtype])
+        if self.profiler_config:
+            args.extend(["--profiler-config", self.profiler_config])
         return args
 
     @property
@@ -68,7 +75,10 @@ class VLLMContainerSpec:
 
     @property
     def volumes(self) -> dict[str, dict[str, str]]:
-        return {self.model_dir: {"bind": "/model", "mode": "ro"}}
+        volumes = {self.model_dir: {"bind": "/model", "mode": "ro"}}
+        if self.profiler_host_dir:
+            volumes[self.profiler_host_dir] = {"bind": "/tmp/vllm-profile", "mode": "rw"}
+        return volumes
 
     @property
     def ports(self) -> dict[str, int]:

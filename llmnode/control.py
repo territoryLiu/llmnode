@@ -92,6 +92,9 @@ class RuntimeConfig:
     vllm_enable_auto_tool_choice: bool
     vllm_reasoning_parser: str
     vllm_tool_call_parser: str
+    vllm_kv_cache_dtype: str
+    vllm_profiler_config: str
+    vllm_profiler_host_dir: str
     llamacpp_model_file: str
     llamacpp_n_gpu_layers: int
     llamacpp_ctx_size: int
@@ -180,6 +183,9 @@ def _runtime_config() -> RuntimeConfig:
         vllm_enable_auto_tool_choice=settings.vllm.enable_auto_tool_choice,
         vllm_reasoning_parser=settings.vllm.reasoning_parser,
         vllm_tool_call_parser=settings.vllm.tool_call_parser,
+        vllm_kv_cache_dtype=settings.vllm.kv_cache_dtype,
+        vllm_profiler_config=settings.vllm.profiler_config,
+        vllm_profiler_host_dir=settings.vllm.profiler_host_dir,
         llamacpp_model_file=settings.vllm.model_file,
         llamacpp_n_gpu_layers=settings.vllm.n_gpu_layers,
         llamacpp_ctx_size=settings.vllm.ctx_size,
@@ -845,6 +851,9 @@ def _build_backend_spec(config: RuntimeConfig):
         enable_auto_tool_choice=config.vllm_enable_auto_tool_choice,
         reasoning_parser=config.vllm_reasoning_parser,
         tool_call_parser=config.vllm_tool_call_parser,
+        kv_cache_dtype=config.vllm_kv_cache_dtype,
+        profiler_config=config.vllm_profiler_config,
+        profiler_host_dir=config.vllm_profiler_host_dir,
     )
 
 
@@ -1245,6 +1254,8 @@ def _status_stack(config: RuntimeConfig) -> int:
                 _print_kv("tensor_parallel", str(config.vllm_tensor_parallel_size))
                 _print_kv("max_model_len", str(config.vllm_max_model_len))
                 _print_kv("max_num_seqs", str(config.vllm_max_num_seqs))
+                if config.vllm_kv_cache_dtype:
+                    _print_kv("kv_cache_dtype", config.vllm_kv_cache_dtype)
                 if config.vllm_reasoning_parser:
                     _print_kv("reasoning_parser", config.vllm_reasoning_parser)
                 if config.vllm_tool_call_parser:

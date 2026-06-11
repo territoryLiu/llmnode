@@ -51,6 +51,9 @@ def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
         vllm_enable_auto_tool_choice=True,
         vllm_reasoning_parser="qwen3",
         vllm_tool_call_parser="qwen3_coder",
+        vllm_kv_cache_dtype="",
+        vllm_profiler_config="",
+        vllm_profiler_host_dir="",
         llamacpp_model_file="",
         llamacpp_n_gpu_layers=-1,
         llamacpp_ctx_size=262144,
@@ -179,6 +182,23 @@ def test_build_backend_spec_vllm_uses_runtime_config(tmp_path: Path):
     assert spec.container_name == "qwen36-vllm"
     assert spec.model_dir == config.model_dir
     assert spec.host_port == 15673
+
+
+def test_build_backend_spec_vllm_includes_profiler_config(tmp_path: Path):
+    from dataclasses import replace
+
+    profiler_dir = tmp_path / "profiles" / "stage4"
+    config = replace(
+        make_runtime_config(tmp_path),
+        vllm_profiler_config='{"profiler":"torch","torch_profiler_dir":"/tmp/vllm-profile"}',
+        vllm_profiler_host_dir=str(profiler_dir),
+    )
+
+    spec = _build_backend_spec(config)
+
+    assert "--profiler-config" in spec.command
+    assert spec.command[-1] == '{"profiler":"torch","torch_profiler_dir":"/tmp/vllm-profile"}'
+    assert spec.volumes[str(profiler_dir)] == {"bind": "/tmp/vllm-profile", "mode": "rw"}
 
 
 def test_build_backend_spec_llamacpp(tmp_path: Path):
