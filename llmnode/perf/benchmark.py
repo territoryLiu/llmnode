@@ -5,6 +5,7 @@ import statistics
 import os
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from dataclasses import asdict
@@ -402,6 +403,234 @@ def run_benchmark(
         step.completion_tokens_per_second_p50 = summary["completion_tokens_per_second_p50"]
         step.completion_tokens_per_second_min = summary["completion_tokens_per_second_min"]
         step.completion_tokens_per_second_max = summary["completion_tokens_per_second_max"]
+        steps.append(step)
+
+    run.status = "completed" if not run.errors else "completed_with_errors"
+    run.finished_at = _iso_now()
+    return write_benchmark_outputs(benchmark_root, run, steps, samples)
+
+
+def _summarize_streaming_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    measured = [item for item in attempts if item.get("kind") == "measure"]
+    success_count = sum(1 for item in measured if item.get("result") == "success")
+    error_count = len(measured) - success_count
+
+    def _stats(key: str) -> dict[str, float | None]:
+        vals = [float(item[key]) for item in measured if item.get(key) is not None]
+        if not vals:
+            return {"avg": None, "p50": None, "min": None, "max": None}
+        return {
+            "avg": statistics.mean(vals),
+            "p50": statistics.median(vals),
+            "min": min(vals),
+            "max": max(vals),
+        }
+
+    summary: dict[str, Any] = {
+        "warmup_runs": sum(1 for item in attempts if item.get("kind") == "warmup"),
+        "measured_runs": len(measured),
+        "success_count": success_count,
+        "error_count": error_count,
+        "success_rate": success_count / len(measured) if measured else None,
+        "result": "success" if measured and all(item.get("result") == "success" for item in measured) else "error",
+    }
+    for field_name in ("ttft_ms", "prefill_ms", "decode_ms", "tpot_ms", "decode_tokens_per_second", "latency_ms"):
+        s = _stats(field_name)
+        summary[f"{field_name}_avg"] = s["avg"]
+        summary[f"{field_name}_p50"] = s["p50"]
+        summary[f"{field_name}_min"] = s["min"]
+        summary[f"{field_name}_max"] = s["max"]
+    completion_values = [item.get("completion_tokens") for item in measured if item.get("completion_tokens") is not None]
+    prompt_values = [item.get("prompt_tokens") for item in measured if item.get("prompt_tokens") is not None]
+    summary["completion_tokens"] = round(statistics.mean(completion_values)) if completion_values else None
+    summary["prompt_tokens"] = prompt_values[-1] if prompt_values else None
+    return summary
+
+
+def _execute_streaming_attempt(
+    *,
+    prompt: str,
+    model_name: str,
+    base_url: str,
+    timeout_s: float,
+    max_tokens: int,
+    kind: str,
+    samples: list[SamplePoint],
+    active_label: str,
+    backend_type: str,
+    container_name: str,
+    sample_interval: float,
+) -> dict[str, Any]:
+    attempt: dict[str, Any] = {"kind": kind, "result": "unknown"}
+
+    def do_stream() -> dict[str, Any]:
+        t_start = time.perf_counter()
+        first_token_time = None
+        token_times: list[float] = []
+        content_chunks: list[str] = []
+        usage: dict[str, Any] = {}
+        with httpx.Client(base_url=base_url, timeout=timeout_s) as client:
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "stream": True,
+                },
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = obj.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "") or delta.get("reasoning", "")
+                    if content:
+                        now = time.perf_counter()
+                        if first_token_time is None:
+                            first_token_time = now
+                        token_times.append(now)
+                        content_chunks.append(content)
+                    u = obj.get("usage")
+                    if u:
+                        usage = u
+        t_end = time.perf_counter()
+        e2e_ms = (t_end - t_start) * 1000
+        ttft_ms = (first_token_time - t_start) * 1000 if first_token_time else None
+        n_tokens = len(token_times)
+        decode_ms = (token_times[-1] - first_token_time) * 1000 if n_tokens > 1 else 0.0
+        tpot_ms = decode_ms / (n_tokens - 1) if n_tokens > 1 else None
+        decode_tok_s = (n_tokens - 1) / (decode_ms / 1000) if decode_ms > 0 else None
+        return {
+            "ttft_ms": round(ttft_ms, 2) if ttft_ms else None,
+            "prefill_ms": round(ttft_ms, 2) if ttft_ms else None,
+            "decode_ms": round(decode_ms, 2),
+            "tpot_ms": round(tpot_ms, 2) if tpot_ms else None,
+            "decode_tokens_per_second": round(decode_tok_s, 2) if decode_tok_s else None,
+            "latency_ms": round(e2e_ms, 2),
+            "completion_tokens": n_tokens,
+            "prompt_tokens": usage.get("prompt_tokens"),
+        }
+
+    try:
+        result = _run_with_sampling(
+            samples, active_label, backend_type, container_name, sample_interval, do_stream,
+        )
+        attempt.update(result)
+        attempt["result"] = "success"
+    except httpx.ReadTimeout:
+        attempt["result"] = "timeout"
+        attempt["error_message"] = "read timeout"
+    except Exception as exc:
+        attempt["result"] = "error"
+        attempt["error_message"] = str(exc)
+    return attempt
+
+
+def run_streaming_benchmark(
+    *,
+    targets: list[int],
+    max_tokens: int = 512,
+    sample_interval: float = 1.0,
+    output_dir: str = "",
+    profile: str = "",
+    warmup_runs: int = 1,
+    measure_runs: int = 3,
+) -> Path:
+    if profile:
+        os.environ["VLLM_CLAUDE_ACTIVE_BACKEND_PROFILE"] = profile
+    settings = load_settings()
+    benchmark_root = _resolve_benchmark_root(output_dir)
+    benchmark_root.mkdir(parents=True, exist_ok=True)
+    tokenizer = _load_tokenizer(settings.vllm.model_dir)
+    run = BenchmarkRun(
+        run_id=_default_run_id(settings.active_backend_profile),
+        backend_type=settings.vllm.backend_type,
+        model_name=settings.vllm.model_name,
+        endpoint=settings.gateway.backend_url,
+        targets=targets,
+        active_backend_profile=settings.active_backend_profile,
+        model_dir=settings.vllm.model_dir,
+        container_name=settings.vllm.container_name,
+        max_tokens=max_tokens,
+        concurrency=1,
+        started_at=_iso_now(),
+    )
+
+    steps: list[BenchmarkStepResult] = []
+    samples: list[SamplePoint] = []
+    backend_metrics = _collect_backend_metrics(settings.vllm.backend_type, settings.vllm.container_name)
+    base_url = settings.gateway.backend_url
+    model_name = settings.vllm.model_name
+    timeout_s = settings.gateway.backend_request_timeout_seconds
+
+    for target in targets:
+        label = f"{target // 1024}K" if target >= 1024 else str(target)
+        prompt, actual_prompt_tokens = build_prompt_for_target(
+            tokenizer=tokenizer,
+            target_prompt_tokens=target,
+            base_fragment="hello",
+        )
+        step = BenchmarkStepResult(
+            label=label,
+            target_prompt_tokens=target,
+            actual_prompt_tokens=actual_prompt_tokens,
+            backend_metrics=backend_metrics,
+        )
+        attempts: list[dict[str, Any]] = []
+        for kind, count in [("warmup", warmup_runs), ("measure", measure_runs)]:
+            for index in range(count):
+                active_label = f"{label}-{kind}-{index + 1}"
+                attempts.append(_execute_streaming_attempt(
+                    prompt=prompt,
+                    model_name=model_name,
+                    base_url=base_url,
+                    timeout_s=timeout_s,
+                    max_tokens=max_tokens,
+                    kind=kind,
+                    samples=samples,
+                    active_label=active_label,
+                    backend_type=settings.vllm.backend_type,
+                    container_name=settings.vllm.container_name,
+                    sample_interval=sample_interval,
+                ))
+        summary = _summarize_streaming_attempts(attempts)
+        step.attempts = [BenchmarkAttemptResult(**{k: v for k, v in a.items() if k in BenchmarkAttemptResult.__dataclass_fields__}) for a in attempts]
+        step.warmup_runs = summary["warmup_runs"]
+        step.measured_runs = summary["measured_runs"]
+        step.success_count = summary["success_count"]
+        step.error_count = summary["error_count"]
+        step.success_rate = summary["success_rate"]
+        step.result = summary["result"]
+        step.prompt_tokens = summary["prompt_tokens"]
+        step.completion_tokens = summary["completion_tokens"]
+        step.latency_ms = summary["latency_ms_avg"]
+        step.latency_ms_avg = summary["latency_ms_avg"]
+        step.latency_ms_p50 = summary["latency_ms_p50"]
+        step.latency_ms_min = summary["latency_ms_min"]
+        step.latency_ms_max = summary["latency_ms_max"]
+        step.ttft_ms_avg = summary["ttft_ms_avg"]
+        step.ttft_ms_p50 = summary["ttft_ms_p50"]
+        step.ttft_ms_min = summary["ttft_ms_min"]
+        step.ttft_ms_max = summary["ttft_ms_max"]
+        step.prefill_ms_avg = summary["prefill_ms_avg"]
+        step.decode_ms_avg = summary["decode_ms_avg"]
+        step.tpot_ms_avg = summary["tpot_ms_avg"]
+        step.tpot_ms_p50 = summary["tpot_ms_p50"]
+        step.tpot_ms_min = summary["tpot_ms_min"]
+        step.tpot_ms_max = summary["tpot_ms_max"]
+        step.decode_tokens_per_second_avg = summary["decode_tokens_per_second_avg"]
+        step.decode_tokens_per_second_p50 = summary["decode_tokens_per_second_p50"]
+        step.decode_tokens_per_second_min = summary["decode_tokens_per_second_min"]
+        step.decode_tokens_per_second_max = summary["decode_tokens_per_second_max"]
         steps.append(step)
 
     run.status = "completed" if not run.errors else "completed_with_errors"

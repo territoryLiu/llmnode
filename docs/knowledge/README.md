@@ -13,7 +13,7 @@
 
 1. 先看 [runtime-and-backends/backend_integration_qa.md](runtime-and-backends/backend_integration_qa.md)，理解三后端联调中的已知问题和解决方式。
 2. 再看 [runtime-and-backends/docker_deployment.md](runtime-and-backends/docker_deployment.md)，理解 vLLM / llama.cpp / SGLang 的容器化部署边界。
-3. 需要接口协议时，看 [protocols/api_protocol_reference.md](protocols/api_protocol_reference.md)。
+3. 需要 API 网关工具选型时，看 [runtime-and-backends/api-gateway-tools.md](runtime-and-backends/api-gateway-tools.md)。
 4. 需要模型、格式、上下文性能背景时，看模型与性能分组。
 5. 需要做 LLM serving 性能实验或调优时，看 [llm-serving-optimization/README.md](llm-serving-optimization/README.md)。
 
@@ -40,13 +40,13 @@
 | [runtime-and-backends/README.md](runtime-and-backends/README.md) | 后端集成与运行经验入口 |
 | [runtime-and-backends/backend_integration_qa.md](runtime-and-backends/backend_integration_qa.md) | 三后端联调验证 Q&A：已知问题、解决方案与验证结果汇总 |
 | [runtime-and-backends/docker_deployment.md](runtime-and-backends/docker_deployment.md) | 三后端（vLLM / llama.cpp / SGLang）Docker 部署方案与环境约束说明 |
+| [runtime-and-backends/api-gateway-tools.md](runtime-and-backends/api-gateway-tools.md) | API 网关工具选型：LiteLLM Proxy、OpenRouter、Cloudflare Workers 对比 |
 
 ### 协议与 API 参考
 
 | 文件 | 内容摘要 |
 |------|----------|
 | [protocols/README.md](protocols/README.md) | 协议与 API 参考入口 |
-| [protocols/api_protocol_reference.md](protocols/api_protocol_reference.md) | 三种对外接口协议（/v1/chat/completions、/v1/responses、/v1/messages）的规范对比、字段映射与转换策略 |
 
 ### 模型、格式与上下文性能
 
@@ -54,7 +54,7 @@
 |------|----------|
 | [models-and-formats/README.md](models-and-formats/README.md) | 模型、格式与上下文性能入口 |
 | [models-and-formats/llm_development.md](models-and-formats/llm_development.md) | Dense 与 MoE 模型资源特点、单卡边界与后端框架选型建议 |
-| [models-and-formats/model_format_conversion.md](models-and-formats/model_format_conversion.md) | HF / safetensors -> GGUF 转换、UD / Q4 / FP8 量化对比、MTP 与部署建议 |
+| [models-and-formats/gguf-llamacpp-deploy.md](models-and-formats/gguf-llamacpp-deploy.md) | HF / safetensors -> GGUF 转换、UD / Q4 / FP8 量化对比、MTP 与部署建议 |
 | [models-and-formats/model_context_performance.md](models-and-formats/model_context_performance.md) | 各模型在当前机器上的上下文长度可用性与单并发性能记录 |
 
 ---

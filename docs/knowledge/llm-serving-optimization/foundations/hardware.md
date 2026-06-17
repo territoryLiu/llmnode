@@ -291,4 +291,4 @@ docker logs <container_name> 2>&1 | rg -n "FP8|Marlin|quantization|Model loading
 - [加速方法地图](./accel-map.md)
 - [模型格式与框架](./model-format.md)
 - [KV cache 专题](../performance/kv-cache.md)
-- [第一阶段实验报告：Qwen3.6-27B 量化推理基线](../experiments/stage1-qwen27b.md)
+- [第一阶段实验报告：Qwen3.6-27B 量化推理基线](../experiments/stage1-2-qwen27b.md)

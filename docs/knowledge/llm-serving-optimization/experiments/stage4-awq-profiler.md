@@ -7,10 +7,10 @@
 
 相关专题：
 
-- profiler 方法见 [profiler-and-kernels.md](../performance/profiler-and-kernels.md)。
+- profiler 方法见 [profiling-guide.md](../performance/profiling-guide.md)。
 - benchmark 口径见 [benchmark-methodology.md](../performance/benchmark-methodology.md)。
 - 第三阶段并发结论见 [stage3-awq-concurrency.md](./stage3-awq-concurrency.md)。
-- 第二阶段 TTFT / TPOT 代表点见 [stage2-vllm-prefill-decode.md](./stage2-vllm-prefill-decode.md)。
+- 第一阶段 TTFT / TPOT 代表点见 [stage1-2-qwen27b.md](./stage1-2-qwen27b.md)。
 
 ## 1. 为什么现在做 profiler
 
@@ -52,7 +52,7 @@
 
 首轮只测 `concurrency=1`。原因：
 
-- Stage 2 已经有同形状 TTFT / TPOT 代表点，便于对齐。
+- Stage 1 已经有同形状 TTFT / TPOT 代表点，便于对齐。
 - Stage 3 已证明高并发下混入 queueing 和 batching，第一份 profiler 不应把系统调度和单请求阶段瓶颈混在一起。
 - 如果单请求 trace 能定位 prefill 主热点，再扩展到 `concurrency=4` 看 scheduler gap。
 

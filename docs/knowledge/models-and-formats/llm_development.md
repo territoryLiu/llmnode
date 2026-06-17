@@ -1,5 +1,14 @@
 # LLM 开发笔记
 
+> 内容：Dense vs MoE 资源特点 | 单卡边界 | 后端选型 | DeepSeek-V4-Flash 部署分析
+
+相关专题：
+
+- 硬件与精度速查见 [../llm-serving-optimization/foundations/hardware.md](../llm-serving-optimization/foundations/hardware.md)。
+- vLLM 机制与参数见 [../llm-serving-optimization/serving/vllm-deep-dive.md](../llm-serving-optimization/serving/vllm-deep-dive.md)。
+- 量化方法深入见 [../llm-serving-optimization/optimization/quantization-deep-dive.md](../llm-serving-optimization/optimization/quantization-deep-dive.md)。
+- GGUF / llama.cpp 部署见 [./gguf-llamacpp-deploy.md](./gguf-llamacpp-deploy.md)。
+
 ## 1. 先说结论
 
 - 判断大模型能不能本地跑，不能只看 GPU 显存。

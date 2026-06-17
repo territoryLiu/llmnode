@@ -491,4 +491,100 @@ curl -sS -m 5 http://127.0.0.1:15673/v1/models
 2. 当前后端和模型是什么？
 3. 我如何判断它已经 ready？
 
-把这三个问题回答清楚，就已经完成了从“看岗位要求很虚”到“能在真实项目里开始定位问题”的第一步。
+把这三个问题回答清楚，就已经完成了从”看岗位要求很虚”到”能在真实项目里开始定位问题”的第一步。
+
+## 9. 实验进展记录
+
+> 详细实验方案见 [experiments/experiment-master-plan.md](./experiments/experiment-master-plan.md)，各阶段报告见 [experiments/](./experiments/)。
+
+### Qwen3.6-27B 各阶段进展
+
+`Qwen3.6-27B` 第一阶段 streaming 最小闭环已经补完：`AWQ-INT4 / NVFP4 / FP8 / BF16 + 16K/64K + output=512` 重复测量、`NVFP4 gpu_memory_utilization=0.6` 确认为默认配置、`AWQ-INT4 64K + output=512` TTFT / TPOT 代表点。
+
+第三阶段 `AWQ-INT4` 并发阶梯已经完成：`concurrency=1/2/4` 均在无外部 GPU 负载环境下跑通，`16K/64K + output=512` 没有 OOM、timeout 或 HTTP error。
+
+Stage 3 已补系统总 output tok/s 近似口径：`16K c1 -> c4` 约 `32.85 -> 53.33 tok/s`，`64K c1 -> c4` 约 `10.85 -> 13.79 tok/s`。这说明 `64K` 并发扩展很弱。
+
+Stage 4 已完成 `AWQ-INT4 64K + output=512` 的 `concurrency=1` 与 `concurrency=4` torch profiler 代表点。证据显示：
+
+1. `prefill`：AWQ Marlin GEMM 是最大热点，FlashAttention 是第二热点。
+2. `decode`：AWQ Marlin GEMM 仍是最大热点，attention / FP16 GEMM / sampling 也有可见占比。
+3. `concurrency=4` 日志有明确 `Running/Waiting` 排队过程，KV cache usage 峰值约 `74.7%`。
+4. c1/c4 trace 都没有超过 `1.0%` 阈值的明确 GPU idle / overlap 机会。
+
+Stage 7 已完成 `AWQ-INT4 + FP8 KV cache` 的容量和速度对照：KV tokens 从普通 AWQ 的 `90,944` 提到 `178,752`，256K max concurrency 从 `1.38x` 提到 `2.68x`；但 `64K + output=512` 单并发平均吞吐为 `9.52 tok/s`，低于普通 AWQ。因此它当前更像容量方案，不是单请求加速方案。
+
+Stage 6 已完成 `NVFP4 64K + output=512` 的 torch profiler 代表点。证据显示：`prefill` 仍由 Marlin GEMM `61.6%` 和 FlashAttention `23.6%` 主导；`decode` 中 Marlin GEMM `41.3%`、普通 BF16 GEMM `23.9%`、FlashAttention `12.6%`。这说明 NVFP4 和 AWQ 共享 Marlin + attention 主热点，但 NVFP4 decode 的普通 BF16 GEMM 占比更明显。
+
+Stage 7 已完成 `FP8 KV cache` 最小质量回归，并开始 Nsight bring-up。普通 AWQ baseline 在 5 个质量用例中通过长上下文、代码、数学 3 项，但严格 JSON 和工具 JSON 因 reasoning 混入失败；FP8 KV 对照只通过长上下文 1 项，相比 baseline 新增 `code_generation` 和 `math_reasoning` 两项退化。因此 `AWQ-INT4 + FP8 KV cache` 当前仍只能视为容量实验配置，不能作为可上线配置。`nsys` 已在 Nsight Compute 2026.1.1 包内找到，并已完成真实 vLLM server 短请求 timeline capture，能生成 `.nsys-rep/.sqlite`，`nsys stats` 可读 CUDA API、GPU kernel、memops 和 CUDA graph 信息；短请求报告中 FlashAttention 与 Marlin 仍是主要 kernel 家族。随后又完成一次 `AWQ-INT4 64K + output=512` offline 请求窗口 capture，使用 `cudaProfilerStart/Stop` 收窄采集范围；请求窗口内 Marlin 占 GPU kernel time `68.1%`，FlashAttention splitkv 占 `23.4%`，CUDA graph trace `368` 行，`cudaGraphLaunch` `369` 次。之后补了一次 server-side `64K + output=512, concurrency=2` capture：两个请求均 `200 OK`，wall time `79.22 s`，vLLM 日志显示 `Running=2 / Waiting=0`，KV usage 峰值约 `37.3%`；Nsight 中 Marlin 占 `68.3%`，FlashAttention splitkv 占 `23.5%`。进一步又补了 server-side `concurrency=4` capture：4 个请求全部 `200 OK`，wall time `136.84 s`，vLLM 日志明确出现 `Running=2 / Waiting=2 -> Running=3 / Waiting=1 -> Running=4 / Waiting=0`，KV usage 峰值约 `74.7%`；Nsight 中 Marlin 占 `68.5%`，FlashAttention splitkv 占 `24.0%`。基于 c4 `.sqlite` 继续拆时间线后，可以再定量补充：kernel span 已覆盖请求 wall time 的 `98.2%`，但 kernel 内部累计 gap 仍约 `20.43 s`，占 kernel span `15.2%`；主要 kernel 全落在同一个 CUDA stream 上，没有看到多流 kernel overlap 证据。这说明当前瓶颈更像大量细碎 launch/sync gap 叠加在单流主热点之上。`/opt/anaconda3/bin/ncu` wrapper 不可用，但 Nsight Compute 2026.1.1 真实二进制可挂载进 vLLM 容器启动。2026-06-10 已确认 `RmProfilingAdminOnly: 0`，旧的 GPU counter 权限阻塞已消失；新的真实难点变成 `ncu` 对 vLLM 冷启动 / warmup 的额外显存与 replay 开销。当前 `64K + output=512` 同形状 workload 在 `ncu` 包裹下会因为 KV cache 预算被挤压而初始化失败；不过更小的 `16K + output=512` 真实 workload 已能在 `ncu` 下完整跑通，而且已经成功拿到真实 `Marlin` kernel 与 `flash_fwd_kernel` 的 `LaunchStats / Occupancy / MemoryWorkloadAnalysis`。其中 Marlin 代表点显示：`achieved occupancy=12.5%`、`registers/thread=255`、`dynamic shared memory/block=166.91 KiB`、`memory throughput≈447.53-490.95 GB/s`、`L2 hit rate≈62.5%`；FlashAttention 代表点显示：`achieved occupancy≈12.43%`、`dynamic shared memory/block=49.15 KiB`、`memory throughput≈19.09-19.29 GB/s`、`L2 hit rate≈98.6%`。
+
+### 当前状态与下一步
+
+所有 V0-V5 工作包均已完成第一轮闭环。V2 最终闭环结论：两个主热点 kernel（Marlin / FlashAttention）的共同瓶颈是 **register 压力（255/thread）**，不是 shared memory。当前最可操作的优化方向在调度层（chunked prefill、`max_num_seqs`），不在 kernel 层。
+
+下一步可选深化方向：
+
+1. **调度层实测**：chunked prefill 对 `64K` TTFT 的影响（只改 `max_num_batched_tokens`）
+2. **并发边界确认**：`max_num_seqs=2` vs `4` 的交互式延迟回归
+3. **上游追踪**：关注 Marlin / vLLM 是否提供低 register 版本 kernel
+4. **新硬件评估**：如有 Hopper / Blackwell 环境，重新评估 NVFP4 / FP8 路线
+
+## 10. 能力分级参考（技能图谱）
+
+> 原 `llm-engineer.md` 内容，合并到此作为学习路线的能力参照。
+
+### 能力分级总览
+
+```text
+Level 1: Profiler 级 — 能发现瓶颈在哪
+Level 2: Kernel 级 — 能自己写/改代码解决瓶颈
+Level 3: 架构级 — 能设计整个 serving 方案并做技术选型
+```
+
+### Level 1：Profiler 级（已基本掌握）
+
+| 能力项 | 要点 | 对应学习阶段 |
+|---|---|---|
+| Benchmark 方法论 | 控变量实验、TTFT/TPOT/E2E/tok/s/QPS/P50/P90/P99、并发阶梯 | 阶段 4 |
+| 量化选型与权衡 | BF16/FP8/INT8/INT4/FP4、AWQ/GPTQ、硬件匹配、质量回归 | 阶段 5 |
+| KV Cache 内存模型 | 计算公式、GQA/MQA、PagedAttention、vLLM 日志解读 | 阶段 3 |
+| 推理框架机制（vLLM） | 请求生命周期、PagedAttention/continuous batching/prefix caching、关键参数 | 阶段 2 |
+| Profiler 工具链 | torch profiler → nsys → ncu（从粗到细） | 阶段 7 |
+| 瓶颈归因能力 | compute-bound / HBM-bound / scheduling gap / KV pressure / dequant overhead | 阶段 7 |
+
+### Level 2：Kernel 级（待补）
+
+- **CUDA 编程基础**：grid/block/warp/thread、内存层次、shared memory、occupancy 计算
+- **Triton 编程**：block-level 模型、核心原语、自动 tiling
+- **常见 LLM Kernel**：GEMM（cuBLAS/Marlin/CUTLASS）、FlashAttention、RMSNorm、RoPE、Sampling
+
+### Level 3：架构级（待补）
+
+- **多 GPU 并行**：TP/PP/SP、NCCL 集合通信
+- **多框架对比**：vLLM / SGLang / TensorRT-LLM / llama.cpp
+- **Speculative Decoding**：draft → verify、Medusa/EAGLE 变体
+- **Attention 演进**：MQA → GQA → MLA、FlashAttention v1/v2/v3
+- **MoE Serving**：expert routing、EP vs TP、All-to-All 通信
+- **生产系统**：负载均衡、autoscaling、A/B 测试、成本优化、可观测性
+- **编译优化**：torch.compile、CUDA Graph、XLA/TensorRT
+
+### 学习路径
+
+```text
+当前位置（Level 1 完成）
+    │
+    ▼
+CUDA 基础 ──→ Triton 基础 ──→ 能写/改 kernel
+    │
+    ▼
+多 GPU 并行（TP/PP/NCCL）──→ 能部署 70B+ 模型
+    │
+    ▼
+SGLang / TensorRT-LLM 对比 ──→ 能做框架选型
+    │
+    ▼
+Speculative Decoding + MoE ──→ 能优化主流架构
+    │
+    ▼
+生产系统能力 ──→ 能独立设计 serving 架构
+```

@@ -1,16 +1,17 @@
-# 第十阶段实验报告：vLLM 主线环境核验与主配置决策收口
+# 第七阶段实验报告：vLLM 主线环境核验与主配置决策收口
 
-> 文档定位：项目知识库中的 LLM serving 优化实验报告，不属于 `llmnode` 项目蓝图、契约或正式路线图。  
-> 实验目标：完成 `experiment-master-plan.md` 中 `V0 / V1` 的第一轮现实核验，确认宿主真实实验环境、当前默认激活 profile、`AWQ-INT4` 主基线是否能稳定拉起，并把“默认上线候选 / 观察项 / 实验项”正式收口。  
-> 更新时间：2026-06-10。  
+> 文档定位：项目知识库中的 LLM serving 优化实验报告，不属于 `llmnode` 项目蓝图、契约或正式路线图。
+> 实验目标：完成 `experiment-master-plan.md` 中 `V0 / V1` 的第一轮现实核验，确认宿主真实实验环境、当前默认激活 profile、`AWQ-INT4` 主基线是否能稳定拉起，并把”默认上线候选 / 观察项 / 实验项”正式收口。
+> 更新时间：2026-06-10。
 > 当前结论状态：宿主机环境、Docker 镜像、GPU 状态和 `AWQ-INT4` baseline 启动证据已核验完成；仓库默认激活 profile 仍然指向 `NVFP4`，与当前主线决策不一致。
 
 相关专题：
 
 - 总方案见 [experiment-master-plan.md](./experiment-master-plan.md)。
-- AWQ benchmark / profiler 证据见 [stage2-vllm-prefill-decode.md](./stage2-vllm-prefill-decode.md)、[stage3-awq-concurrency.md](./stage3-awq-concurrency.md)、[stage4-awq-profiler.md](./stage4-awq-profiler.md)。
-- NVFP4 对照见 [stage5-nvfp4-nointerference.md](./stage5-nvfp4-nointerference.md)、[stage6-nvfp4-profiler.md](./stage6-nvfp4-profiler.md)。
-- FP8 KV 质量与 Nsight 进展见 [stage7-fp8-kv-quality-and-nsight.md](./stage7-fp8-kv-quality-and-nsight.md)。
+- AWQ benchmark / profiler 证据见 [stage1-2-qwen27b.md](./stage1-2-qwen27b.md)、[stage3-awq-concurrency.md](./stage3-awq-concurrency.md)、[stage4-awq-profiler.md](./stage4-awq-profiler.md)。
+- NVFP4 对照见 [stage1-2-qwen27b.md](./stage1-2-qwen27b.md)、[stage5-nvfp4-profiler.md](./stage5-nvfp4-profiler.md)。
+- FP8 KV 质量见 [stage6a-fp8-kv-benchmark.md](./stage6a-fp8-kv-benchmark.md)。
+- Nsight 进展见 [stage6b-nsight-toolchain.md](./stage6b-nsight-toolchain.md)。
 
 ## 1. 一页结论
 
@@ -20,7 +21,7 @@
 2. 非提权环境下的 `llmnode.control doctor` 会出现误判：它会把 GPU 和 Docker 镜像都看成缺失，因此后续所有真实 vLLM / GPU 实验必须以宿主提权环境为准。
 3. 仓库默认激活 profile 仍是 `vllm_qwen36-27b-nvfp4`，来源于 [config/defaults.yaml](/proj02/liuheshan/llmnode/config/defaults.yaml:35)，这与当前主线建议的默认基线 `AWQ-INT4` 不一致。
 4. `AWQ-INT4` 在宿主真实环境下已重新拉起并完成 API ready，说明它不仅是历史 benchmark 里的主候选，也是当前机器上可直接复现的主候选。
-5. 结合 Stage 2-7 已有证据，本轮正式收口如下：
+5. 结合 Stage 1、3-7 已有证据，本轮正式收口如下：
    - 默认上线候选：`AWQ-INT4`
    - 观察项：`NVFP4`
    - 仅实验配置：`AWQ-INT4 + FP8 KV cache`

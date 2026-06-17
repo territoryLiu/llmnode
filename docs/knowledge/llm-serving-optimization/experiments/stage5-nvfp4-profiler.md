@@ -8,8 +8,8 @@
 相关专题：
 
 - AWQ profiler 证据见 [stage4-awq-profiler.md](./stage4-awq-profiler.md)。
-- NVFP4 无干扰 benchmark 见 [stage5-nvfp4-nointerference.md](./stage5-nvfp4-nointerference.md)。
-- profiler 方法见 [profiler-and-kernels.md](../performance/profiler-and-kernels.md)。
+- NVFP4 无干扰 benchmark 见 [stage1-2-qwen27b.md](./stage1-2-qwen27b.md)。
+- profiler 方法见 [profiling-guide.md](../performance/profiling-guide.md)。
 - benchmark 口径见 [benchmark-methodology.md](../performance/benchmark-methodology.md)。
 
 ## 1. 一页结论
@@ -24,7 +24,7 @@
 | prompt tokens | `65,536` |
 | output tokens | `512` |
 | concurrency | `1` |
-| gpu_memory_utilization | `0.55` |
+| gpu_memory_utilization | `0.55`（当时配置；现已切换到 `0.6` 作为默认） |
 | profiler | vLLM torch profiler |
 
 核心结论：

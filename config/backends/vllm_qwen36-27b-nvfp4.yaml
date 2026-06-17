@@ -8,7 +8,7 @@ backend:
   display_name: Qwen3.6 27B NVFP4
   enabled: true
   host_port: 15673
-  gpu_memory_utilization: 0.55
+  gpu_memory_utilization: 0.6
   tensor_parallel_size: 1
   max_model_len: 262144
   max_num_seqs: 4

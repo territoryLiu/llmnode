@@ -19,6 +19,11 @@ class BenchmarkAttemptResult:
     prompt_token_mismatch: bool | None = None
     concurrency_index: int | None = None
     result: str = "unknown"
+    ttft_ms: float | None = None
+    prefill_ms: float | None = None
+    decode_ms: float | None = None
+    tpot_ms: float | None = None
+    decode_tokens_per_second: float | None = None
 
 
 @dataclass
@@ -58,6 +63,20 @@ class BenchmarkStepResult:
     completion_tokens_per_second_p50: float | None = None
     completion_tokens_per_second_min: float | None = None
     completion_tokens_per_second_max: float | None = None
+    ttft_ms_avg: float | None = None
+    ttft_ms_p50: float | None = None
+    ttft_ms_min: float | None = None
+    ttft_ms_max: float | None = None
+    prefill_ms_avg: float | None = None
+    decode_ms_avg: float | None = None
+    tpot_ms_avg: float | None = None
+    tpot_ms_p50: float | None = None
+    tpot_ms_min: float | None = None
+    tpot_ms_max: float | None = None
+    decode_tokens_per_second_avg: float | None = None
+    decode_tokens_per_second_p50: float | None = None
+    decode_tokens_per_second_min: float | None = None
+    decode_tokens_per_second_max: float | None = None
     attempts: list[BenchmarkAttemptResult] = field(default_factory=list)
 
 

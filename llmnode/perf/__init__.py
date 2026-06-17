@@ -1,4 +1,4 @@
-from .benchmark import run_benchmark, write_benchmark_outputs
+from .benchmark import run_benchmark, run_streaming_benchmark, write_benchmark_outputs
 from .models import BenchmarkRun, BenchmarkStepResult, GpuProcessBreakdown, SamplePoint
 
 __all__ = [
@@ -7,5 +7,6 @@ __all__ = [
     "GpuProcessBreakdown",
     "SamplePoint",
     "run_benchmark",
+    "run_streaming_benchmark",
     "write_benchmark_outputs",
 ]

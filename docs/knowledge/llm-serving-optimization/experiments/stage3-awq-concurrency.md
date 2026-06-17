@@ -10,7 +10,7 @@
 - benchmark 口径见 [benchmark-methodology.md](../performance/benchmark-methodology.md)。
 - KV cache 解释见 [kv-cache.md](../performance/kv-cache.md)。
 - vLLM 参数见 [vllm-deep-dive.md](../serving/vllm-deep-dive.md)。
-- 第二阶段结论见 [stage2-vllm-prefill-decode.md](./stage2-vllm-prefill-decode.md)。
+- 第一阶段结论见 [stage1-2-qwen27b.md](./stage1-2-qwen27b.md)。
 
 ## 1. 一页结论
 
@@ -284,7 +284,7 @@ runtime/data/benchmarks/manual-stage3-awq-concurrency-c2/20260609-115437-vllm_qw
 | 优先级 | 实验 | 固定项 | 目的 |
 |---:|---|---|---|
 | 1 | profiler 代表点 | `AWQ-INT4 64K + output=512` | 拆 prefill / decode top kernels |
-| 2 | NVFP4 无干扰复测 | `64K + output=512`、`0.55/0.6` | 排除早先外部负载干扰 |
+| 2 | NVFP4 无干扰复测 | `64K + output=512`、`0.6` | 排除早先外部负载干扰 |
 | 3 | FP8 KV cache | AWQ 或 NVFP4 一个 profile | 验证容量收益和质量风险 |
 
 截至 Stage 4，优先级 1 已完成，结论见 [stage4-awq-profiler.md](./stage4-awq-profiler.md)。当前下一步是：
@@ -292,7 +292,7 @@ runtime/data/benchmarks/manual-stage3-awq-concurrency-c2/20260609-115437-vllm_qw
 | 优先级 | 实验 | 固定项 | 目的 |
 |---:|---|---|---|
 | 1 | 并发 profiler / Nsight Systems | `AWQ-INT4 64K + output=512 + concurrency=4` | 拆 scheduler gap / queueing / GPU idle |
-| 2 | NVFP4 无干扰复测 | `64K + output=512`、`0.55/0.6` | 排除早先外部负载干扰 |
+| 2 | NVFP4 无干扰复测 | `64K + output=512`、`0.6` | 排除早先外部负载干扰 |
 | 3 | FP8 KV cache | AWQ 或 NVFP4 一个 profile | 验证容量收益和质量风险 |
 
 Stage 4 单请求 profiler 已拆出：

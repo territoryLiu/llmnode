@@ -1,16 +1,16 @@
-# 第十二阶段实验报告：优化动作链与上线边界收口
+# 第九阶段实验报告：优化动作链与上线边界收口
 
-> 文档定位：项目知识库中的 LLM serving 优化实验报告，不属于 `llmnode` 项目蓝图、契约或正式路线图。  
-> 实验目标：完成 `experiment-master-plan.md` 里 `V4 / V5` 的第一轮收口，把现有 benchmark / profiler / `nsys` / 质量回归证据转成工程动作链、上线边界和最小回归模板。  
-> 更新时间：2026-06-11。  
-> 当前结论状态：已完成第二轮决策收口；已吸收 Stage 8 clean `64K + 512` `Marlin / FlashAttention` `LaunchStats` 结果，当前不再把 `V2` 当作阻塞项。
+> 文档定位：项目知识库中的 LLM serving 优化实验报告，不属于 `llmnode` 项目蓝图、契约或正式路线图。
+> 实验目标：完成 `experiment-master-plan.md` 里 `V4 / V5` 的第一轮收口，把现有 benchmark / profiler / `nsys` / 质量回归证据转成工程动作链、上线边界和最小回归模板。
+> 更新时间：2026-06-11。
+> 当前结论状态：已完成第二轮决策收口；已吸收 Stage 6b clean `64K + 512` `Marlin / FlashAttention` `LaunchStats` 结果，当前不再把 `V2` 当作阻塞项。
 
 相关专题：
 
 - 总方案见 [experiment-master-plan.md](./experiment-master-plan.md)
-- 主配置决策见 [stage10-vllm-environment-and-config-decision.md](./stage10-vllm-environment-and-config-decision.md)
-- launch gap / queue 归因见 [stage11-launch-gap-and-queue-analysis.md](./stage11-launch-gap-and-queue-analysis.md)
-- `64K + 512` 同形状 `ncu` 现状见 [stage8-ncu-64k-same-shape.md](./stage8-ncu-64k-same-shape.md)
+- 主配置决策见 [stage7-vllm-environment-and-config-decision.md](./stage7-vllm-environment-and-config-decision.md)
+- launch gap / queue 归因见 [stage8-launch-gap-and-queue-analysis.md](./stage8-launch-gap-and-queue-analysis.md)
+- `64K + 512` 同形状 `ncu` 现状见 [stage6b-nsight-toolchain.md](./stage6b-nsight-toolchain.md)
 
 ## 1. 一页结论
 
@@ -24,28 +24,28 @@
 
 ## 2. 证据范围
 
-本轮只使用 Stage 2-11 的已有证据：
+本轮只使用已有证据：
 
-1. Stage 2：
+1. Stage 1-2：
    - `AWQ / NVFP4` 单并发 `16K / 64K + 512`
-   - `NVFP4 0.55 / 0.6` 容量对照
+   - `NVFP4 0.6` 容量与速度对照
 2. Stage 3：
    - `AWQ-INT4` `c1 / c2 / c4` 并发阶梯
-3. Stage 4 / Stage 6：
+3. Stage 4 / Stage 5：
    - `AWQ / NVFP4` profiler 热点长期收敛到 `Marlin + FlashAttention`
-4. Stage 5 / Stage 7：
-   - `AWQ + FP8 KV` 容量提升与质量退化
-5. Stage 8：
+4. Stage 6a：
+   - `AWQ + FP8 KV` 容量、速度与质量退化
+5. Stage 6b：
    - `64K + 512` same-shape workload 已可稳定构造
    - clean `Marlin` `LaunchStats` 已可导入
    - clean `FlashAttention` `LaunchStats` 已可导入
    - KV cache 观测：`21.12 GiB` 可用、`86,240 tokens`、`66,048 tokens/request` 最大并发 `5.01x`
-6. Stage 10：
+6. Stage 7：
    - 环境核验与主配置决策
-7. Stage 11：
+7. Stage 8：
    - launch gap / queue 第一轮归因
 
-本轮不新增新的 benchmark；Nsight 证据来自 Stage 8 clean 复测产物。
+本轮不新增新的 benchmark；Nsight 证据来自 Stage 6b clean 复测产物。
 
 ## 3. 保留 / 观察 / 禁用 清单
 
@@ -104,7 +104,7 @@
 
 ### 5.1 先做什么
 
-1. 用 Stage 8 clean `LaunchStats` 解释 Stage 11 的 launch gap / queue 现象。
+1. 用 Stage 6b clean `LaunchStats` 解释 Stage 8 的 launch gap / queue 现象。
 2. 判断是否需要继续补 `Occupancy / MemoryWorkloadAnalysis`；如果优化动作仍停留在参数和调度层，暂不深采。
 3. 维持 `AWQ-INT4` 主线，不在这时切默认基线到 `NVFP4`。
 
@@ -122,7 +122,7 @@
 | 只需要上线边界与回归模板 | 不继续深采；保留当前 `LaunchStats` 作为主热点 section 证据 |
 | 需要判断 `Marlin` 是否被 registers / shared memory / occupancy 限制 | 补 `Occupancy`，优先 offline 单进程 + eager 路径 |
 | 需要判断 `FlashAttention` memory behavior | 补 `MemoryWorkloadAnalysis`，优先 offline 单进程 + eager 路径 |
-| `64K` `ncu` 与现有 Stage 11 一致，仍以 queue + launch/sync gap 为主 | 优先回到调度与阶段切换解释，而不是马上做更底层 patch |
+| `64K` `ncu` 与现有 Stage 8 一致，仍以 queue + launch/sync gap 为主 | 优先回到调度与阶段切换解释，而不是马上做更底层 patch |
 
 ## 6. GPU 环境与上线前检查
 
@@ -206,7 +206,7 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,nohead
 
 ### 9.1 Occupancy 瓶颈诊断
 
-基于 Stage 8 clean `64K + 512` `LaunchStats`，结合 A800 硬件规格（108 SMs, 每 SM 65,536 registers, 每 SM 164 KiB configurable shared memory），做出如下判断：
+基于 Stage 6b clean `64K + 512` `LaunchStats`，结合 A800 硬件规格（108 SMs, 每 SM 65,536 registers, 每 SM 164 KiB configurable shared memory），做出如下判断：
 
 **Marlin GEMM：**
 
@@ -256,7 +256,7 @@ Marlin 的 255 registers/thread 不一定是"浪费"。Weight-only dequantizatio
 
 ### 9.4 优化动作判断
 
-综合 Stage 8（ncu）、Stage 11（launch gap / queue）、Stage 12（本节）的证据链：
+综合 Stage 6b（ncu）、Stage 8（launch gap / queue）、Stage 9（本节）的证据链：
 
 | 层级 | 瓶颈 | 当前可操作性 | 动作 |
 |---|---|---|---|
@@ -270,14 +270,14 @@ Marlin 的 255 registers/thread 不一定是"浪费"。Weight-only dequantizatio
 具体动作链（优先级从高到低）：
 
 1. **chunked prefill 调优**：当前 64K prefill 是一整块进入调度，导致长等待。尝试设置 `max_num_batched_tokens` 把 prefill 切成更小 chunk，让 decode 请求更早插入。
-2. **`max_num_seqs` 从 4 调到 2**：Stage 11 已证明 c4 有明确 Waiting 队列，c2 没有。如果目标是交互式延迟，限制并发到 2 可能更合理。
+2. **`max_num_seqs` 从 4 调到 2**：Stage 8 已证明 c4 有明确 Waiting 队列，c2 没有。如果目标是交互式延迟，限制并发到 2 可能更合理。
 3. **CUDA stream 并行**：当前 Marlin + FlashAttention 在单 stream 串行。如果 vLLM 支持多 stream，可以让 prefill attention 和 GEMM 部分重叠（需框架层支持，非用户参数可调）。
 4. **等待上游 kernel 优化**：Marlin 的低 occupancy 问题需要上游 Marlin 项目或 vLLM 社区提供低 register 版本的 kernel。关注 vLLM 的 kernel 更新。
 5. **不建议自写 kernel**：投入产出比太低。Marlin 已是 AWQ 社区最优 kernel 之一，自写难以超越。
 
-### 9.5 与 Stage 11 launch gap 的关联
+### 9.5 与 Stage 8 launch gap 的关联
 
-Stage 11 发现：
+Stage 8 发现：
 - `cudaLaunchKernel + cuLaunchKernelEx` 合计占 CUDA API time ~58-66%
 - `cudaEventSynchronize` 占 ~32-40%
 - CUDA Graph 在用但只占 ~0.1%

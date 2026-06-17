@@ -1,8 +1,15 @@
-# Qwen3.6-27B 本地部署与量化选型手册
+# Qwen3.6-27B GGUF / llama.cpp 本地部署手册
 
-> 整合：格式转换 | 量化对比 | MTP加速 | 显存规划 | 部署命令  
-> 适用：24GB 显存本地部署（RTX 4090/3090）  
+> 内容：HF → GGUF 格式转换 | UD 量化 vs 传统 Q4 | Q4_K_M vs FP8 | MTP 加速 | 显存规划 | 部署命令
+> 适用：24GB 显存本地部署（RTX 4090/3090）
 > 更新日期：2026-05
+
+相关专题：
+
+- 通用量化方法论见 [../llm-serving-optimization/optimization/quantization-deep-dive.md](../llm-serving-optimization/optimization/quantization-deep-dive.md)。
+- 模型文件格式概念见 [../llm-serving-optimization/foundations/model-format.md](../llm-serving-optimization/foundations/model-format.md)。
+- vLLM 部署与优化见 [../llm-serving-optimization/serving/vllm-deep-dive.md](../llm-serving-optimization/serving/vllm-deep-dive.md)。
+- Qwen3.6-27B 实验数据见 [../llm-serving-optimization/experiments/](../llm-serving-optimization/experiments/)。
 
 ---
 

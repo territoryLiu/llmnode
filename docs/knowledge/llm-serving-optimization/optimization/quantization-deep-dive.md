@@ -162,4 +162,4 @@ tok/s
 
 - [硬件与精度速查](../foundations/hardware.md)
 - [KV cache 专题](../performance/kv-cache.md)
-- [第一阶段实验报告](../experiments/stage1-qwen27b.md)
+- [第一阶段实验报告](../experiments/stage1-2-qwen27b.md)

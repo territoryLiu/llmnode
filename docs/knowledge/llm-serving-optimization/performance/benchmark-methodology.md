@@ -174,7 +174,7 @@ output 越长 -> decode 占比越高 -> TPOT 更有意义
 | 输出长度阶梯 | `AWQ/NVFP4`、16K/64K prompt、并发 1 | `64/256/512` | 判断短输出结论是否误导 |
 | AWQ 并发阶梯 | AWQ、固定 prompt/output | `1/2/4/8` | 看显存效率是否转化为服务吞吐 |
 | 上下文阶梯 | AWQ、并发 1、output 256 | `16K/32K/64K/128K/192K/256K` | 找真实长上下文曲线 |
-| NVFP4 显存参数 | NVFP4、固定 workload | `gpu_memory_utilization=0.55/0.6` | 看容量和稳定性余量 |
+| NVFP4 显存参数 | NVFP4、固定 workload | `gpu_memory_utilization=0.6`（已完成，确认为默认） | 容量余量从 1.07x 提升到 1.32x，速度无显著差异 |
 | 代表点 profiler | NVFP4 或 AWQ | `64K prompt + 512 output` | 拆 prefill / decode |
 
 ## 9. 常见误区
@@ -187,8 +187,36 @@ output 越长 -> decode 占比越高 -> TPOT 更有意义
 | 平均值够了 | 多并发必须看 P90/P99 |
 | 一次实验能定论 | 需要 warmup、重复测量和噪声判断 |
 
-## 10. 相关文档
+## 10. 当前 Benchmark 工具
+
+`llmnode.perf` 模块提供两种 benchmark 入口：
+
+| 工具 | 入口 | 测量方式 | 适用场景 |
+|---|---|---|---|
+| 非 streaming benchmark | `scripts/benchmark_backend.py` → `run_benchmark()` | 一次性请求，等全部输出完成 | 测 completion tok/s、E2E latency、并发吞吐 |
+| Streaming benchmark | `scripts/benchmark_streaming.py` → `run_streaming_benchmark()` | SSE streaming，逐 token 计时 | 测 TTFT、prefill、decode、TPOT 拆分 |
+
+Streaming benchmark 用法：
+
+```bash
+python scripts/benchmark_streaming.py \
+  --profile vllm_qwen36-27b-awq-int4 \
+  --targets 16384 65536 \
+  --max-tokens 512 \
+  --warmup-runs 1 \
+  --measure-runs 3
+```
+
+输出 JSON 包含：`ttft_ms_avg` / `prefill_ms_avg` / `decode_ms_avg` / `tpot_ms_avg` / `decode_tokens_per_second_avg`，以及对应的 p50 / min / max 统计。
+
+何时用哪个：
+
+- 只关心端到端吞吐和延迟 → 用 `benchmark_backend.py`
+- 需要拆分 prefill / decode 阶段，判断瓶颈在哪 → 用 `benchmark_streaming.py`
+- 测量 TTFT（首 token 延迟）→ 只能用 streaming 方式
+
+## 11. 相关文档
 
 - [KV cache 专题](./kv-cache.md)
 - [vLLM 深入](../serving/vllm-deep-dive.md)
-- [第一阶段实验报告](../experiments/stage1-qwen27b.md)
+- [第一阶段实验报告](../experiments/stage1-2-qwen27b.md)

@@ -1,6 +1,6 @@
-# vLLM Serving 性能分析与优化总实验方案（已归档）
+# vLLM Serving 性能分析与优化总实验方案
 
-> **状态：已归档。** 本方案所有退出标准已于 2026-06-11 全部完成，后续不再更新，仅供回溯查阅。  
+> **状态：所有退出标准已于 2026-06-11 全部完成。** 后续仅在调度层实测等可选深化方向更新。  
 > 文档定位：`docs/knowledge/llm-serving-optimization/` 的主线总方案，只服务当前 `llmnode` 项目的 `vLLM + Qwen3.6-27B`。  
 > 目标：以”资深大模型部署工程师”的工作方式，完成从配置筛选、指标解释、瓶颈归因到上线边界与优化动作的完整闭环。  
 > 当前范围：不再承担 `SGLang / llama.cpp` 的统一路线规划，也不再要求把所有量化版本反复重测一遍。
@@ -13,12 +13,12 @@
 
 | 阶段 | 目标 | 当前状态 | 结果文档 |
 |---|---|---|---|
-| Stage 1-7 | 基线、并发、profiler、FP8 KV、Nsight bring-up | 已完成 | `experiments/stage1` 到 `stage7` |
-| V0 | 环境与证据清点 | 已完成 | [stage10-vllm-environment-and-config-decision.md](./experiments/stage10-vllm-environment-and-config-decision.md) |
-| V1 | 主配置决策收口 | 已完成第一轮 | [stage10-vllm-environment-and-config-decision.md](./experiments/stage10-vllm-environment-and-config-decision.md) |
-| V3 | launch gap / queue 归因 | 已完成第一轮 | [stage11-launch-gap-and-queue-analysis.md](./experiments/stage11-launch-gap-and-queue-analysis.md) |
-| V4 | 从证据到优化动作 | 已完成第一轮 | [stage12-vllm-optimization-actions-and-deployment-boundaries.md](./experiments/stage12-vllm-optimization-actions-and-deployment-boundaries.md) |
-| V5 | 上线边界与回归模板 | 已完成第一轮 | [stage12-vllm-optimization-actions-and-deployment-boundaries.md](./experiments/stage12-vllm-optimization-actions-and-deployment-boundaries.md) |
+| Stage 1-6 | 基线、并发、profiler、FP8 KV、Nsight bring-up | 已完成 | `experiments/stage1-2` 到 `stage6b` |
+| V0 | 环境与证据清点 | 已完成 | [stage7-vllm-environment-and-config-decision.md](./stage7-vllm-environment-and-config-decision.md) |
+| V1 | 主配置决策收口 | 已完成第一轮 | [stage7-vllm-environment-and-config-decision.md](./stage7-vllm-environment-and-config-decision.md) |
+| V3 | launch gap / queue 归因 | 已完成第一轮 | [stage8-launch-gap-and-queue-analysis.md](./stage8-launch-gap-and-queue-analysis.md) |
+| V4 | 从证据到优化动作 | 已完成第一轮 | [stage9-optimization-actions-and-deployment-boundaries.md](./stage9-optimization-actions-and-deployment-boundaries.md) |
+| V5 | 上线边界与回归模板 | 已完成第一轮 | [stage9-optimization-actions-and-deployment-boundaries.md](./stage9-optimization-actions-and-deployment-boundaries.md) |
 
 ### 1.2 当前核心收口项
 
@@ -214,7 +214,7 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,nohead
 
 当前方法摸排与证据见：
 
-- [stage8-ncu-64k-same-shape.md](./experiments/stage8-ncu-64k-same-shape.md)
+- [stage6b-nsight-toolchain.md](./stage6b-nsight-toolchain.md)
 
 ### 5.4 V3：launch gap / queue 归因深化
 
@@ -227,7 +227,7 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,nohead
 
 当前有效结论见：
 
-- [stage11-launch-gap-and-queue-analysis.md](./experiments/stage11-launch-gap-and-queue-analysis.md)
+- [stage8-launch-gap-and-queue-analysis.md](./stage8-launch-gap-and-queue-analysis.md)
 
 ### 5.5 V4：从证据到优化动作
 
@@ -243,7 +243,7 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,nohead
 
 当前收口见：
 
-- [stage12-vllm-optimization-actions-and-deployment-boundaries.md](./experiments/stage12-vllm-optimization-actions-and-deployment-boundaries.md) 第 9 节
+- [stage9-optimization-actions-and-deployment-boundaries.md](./stage9-optimization-actions-and-deployment-boundaries.md) 第 9 节
 
 ### 5.6 V5：上线边界与回归模板
 
@@ -309,7 +309,7 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,nohead
 
 | 类型 | 路径 |
 |---|---|
-| 总方案（已归档） | `docs/knowledge/llm-serving-optimization/experiments/experiment-master-plan.md` |
+| 总方案 | `docs/knowledge/llm-serving-optimization/experiments/experiment-master-plan.md` |
 | 阶段实验报告 | `docs/knowledge/llm-serving-optimization/experiments/` |
 | benchmark / KV / profiler 方法 | `docs/knowledge/llm-serving-optimization/performance/` |
 | 量化与 KV 配置结论 | `docs/knowledge/llm-serving-optimization/optimization/` |
