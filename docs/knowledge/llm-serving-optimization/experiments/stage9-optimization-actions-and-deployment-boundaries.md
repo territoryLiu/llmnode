@@ -278,7 +278,7 @@ Marlin 的 255 registers/thread 不一定是"浪费"。Weight-only dequantizatio
 ### 9.5 与 Stage 8 launch gap 的关联
 
 Stage 8 发现：
-- `cudaLaunchKernel + cuLaunchKernelEx` 合计占 CUDA API time ~58-66%
+- `cudaLaunchKernel + cuLaunchKernelEx` 合计占 CUDA API time ~58-66% 
 - `cudaEventSynchronize` 占 ~32-40%
 - CUDA Graph 在用但只占 ~0.1%
 

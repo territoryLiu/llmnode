@@ -5,6 +5,8 @@
 > 更新时间：2026-06-11。
 > 当前结论状态：Nsight Systems 已覆盖 c1/c2/c4 server-side timeline；Nsight Compute 已在 `64K + 512` 同形状上取得 clean Marlin 与 FlashAttention LaunchStats；server-side attach 路径已摸排但未完全打通。
 
+> 备注：本文件保留大量 `attach path` 摸排细节，便于追溯 Nsight 工具链 bring-up 过程；但从主线优先级看，`server-side attach` 已不再是当前阻塞项。后续是否继续攻克，以 [stage9-optimization-actions-and-deployment-boundaries.md](./stage9-optimization-actions-and-deployment-boundaries.md) 和 [experiment-master-plan.md](./experiment-master-plan.md) 的“下一步”定义为准。
+
 相关专题：
 
 - AWQ profiler 见 [stage4-awq-profiler.md](./stage4-awq-profiler.md)。

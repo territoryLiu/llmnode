@@ -7,7 +7,7 @@ gateway:
   agent_status_url: http://127.0.0.1:4010/state
   require_agent_ready: false
   queue_limit: 8
-  execution_limit: 1
+  execution_limit: 3
 
 agent:
   host: 127.0.0.1
@@ -32,4 +32,10 @@ schedule:
   auto_start_enabled: true
   cooldown_minutes: 10
 
-active_backend_profile: vllm_qwen36-27b-nvfp4
+sqlite_retention:
+  request_logs_days: 30
+  request_metrics_days: 90
+  agent_events_days: 30
+  response_states_days: 7
+
+active_backend_profile: sglang_qwen38-27b-awq-int4-dflash2

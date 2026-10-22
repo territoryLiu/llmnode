@@ -121,6 +121,10 @@
   **route 注册表平台化 phase 1 已落地**：`model_routes` 已从启动时可整表重建的运行态缓存升级为单机节点上的长期 route 注册表；新增 `source_kind / source_ref / stale` 用于表达 route 来源与同步状态；启动 seed 已改为 `profile_seed` 增量同步，不再清空 manual route；旧 profile route 会标记 `stale=1` 且自动禁用；`/admin/models` 与管理台模型页现已形成 `external route create + manual route delete` 的最小管理闭环，而 `profile_seed` route 当前只允许编辑和禁用，不允许物理删除或直接转换为 manual external route。
 - 补充里程碑（2026-05-18）：
   **route phase 2 可观测性与配置回退语义已补齐一轮收口**：管理台总览与模型页之外，启动 seed 的 reconcile 结果现已进入 `/admin/events`，至少可观察 `route_marked_stale / route_manual_preserved`；同时配置加载与 smoke 测试已进一步统一到“当前激活 profile / 当前配置决定运行真相”，`load_settings()` 在自定义 defaults/backends 场景下若本地 active profile 缺字段，会优先回退到 repo 中同名 profile，而不再串回 repo 默认 profile。
+- 补充里程碑（2026-08-19）：
+  **API Key hash-only 与本机暴露面收紧完成**：生产库已删除 `api_keys.plain_secret`，admin 明文只保存在同目录 `admin.key`，数据库、密钥文件和数据目录权限分别收紧为 `0600 / 0600 / 0700`；三类后端容器端口统一绑定 loopback，局域网访问只能经过带鉴权网关；流式上游请求增加有限连接和读空闲超时，避免断联流无限占用并发槽。Qwen3.8 MTP 公平 A/B 同期完成，当前环境下 decode 从 `56.06` 降至 `27.61 tok/s`，因此不把 MTP 作为已验证加速项。
+- 补充里程碑（2026-08-27）：
+  **SGLang Qwen3.8 AWQ + DFlash2 编排配置落地**：新增官方专用镜像 profile，扩展 `SGLangContainerSpec` 支持草稿模型挂载与 DFLASH 参数透传，Claude 本地模型指向该 route。实际容器拉取、启动和端到端推理仍待验证。
 - 对应历史蓝图：
   未来方向已回流到 [roadmap.md](roadmap.md)，相关正式边界已进入 [current.md](current.md) 与相关 `contracts / process` 文档。
 

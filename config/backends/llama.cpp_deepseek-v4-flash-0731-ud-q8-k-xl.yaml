@@ -1,0 +1,14 @@
+backend:
+  backend_type: llama.cpp
+  container_name: deepseek-v4-flash-0731-llamacpp
+  image_name: ghcr.io/ggml-org/llama.cpp:server-cuda
+  model_dir: models/deepseek/unsloth/DeepSeek-V4-Flash-0731-GGUF/UD-Q8_K_XL
+  model_file: DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00001-of-00005.gguf
+  model_name: deepseek-v4-flash-0731-ud-q8-k-xl
+  display_name: DeepSeek V4 Flash 0731 UD-Q8_K_XL
+  enabled: true
+  host_port: 15673
+  shm_size: 16g
+  n_gpu_layers: 16
+  ctx_size: 16384
+  n_parallel: 1

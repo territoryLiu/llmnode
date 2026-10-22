@@ -1,8 +1,21 @@
 # LLM 部署优化学习库
 
 > 文档定位：这是 `docs/knowledge/` 下的 LLM serving 优化专题，属于项目知识库参考层，不属于 `llmnode` 项目蓝图、契约或正式路线图。  
-> 目标：围绕当前 `llmnode` 的 vLLM / SGLang / llama.cpp 三后端，把大模型部署、性能实验、量化、KV cache、profiler 和 kernel 优化串成一套可复用知识库。  
+> 目标：围绕当前 `llmnode` 的 vLLM / SGLang / llama.cpp 三后端，沉淀大模型部署、性能实验、量化、KV cache、profiler 和 kernel 优化知识。  
+> 当前实验主线：知识库覆盖三后端背景，但截至 `2026-06-11`，真正完成第一轮闭环的实验主线只收敛在 `vLLM + Qwen3.6-27B`。  
 > 使用原则：概念必须落到本机实验；所有框架支持状态以官方文档、当前镜像版本和本机实测为准。
+
+## 当前状态
+
+当前这套知识库已经不是“从零搭实验”，而是“第一轮闭环已完成，等待下一轮调度层实测”的状态：
+
+- 主线 profile：`vllm_qwen36-27b-awq-int4`
+- 观察项：`vllm_qwen36-27b-nvfp4`
+- 容量实验项：`vllm_qwen36-27b-awq-int4-fp8-kv`
+- 主代表 workload：`64K + 512`
+- 当前下一步：优先实测 `chunked prefill` 和 `max_num_seqs`
+
+快速收口结论以 [experiment-master-plan.md](./experiments/experiment-master-plan.md) 和 [stage9-optimization-actions-and-deployment-boundaries.md](./experiments/stage9-optimization-actions-and-deployment-boundaries.md) 为准。
 
 ## 阅读顺序
 
@@ -30,6 +43,7 @@
 | 18 | [stage7-vllm-environment-and-config-decision.md](./experiments/stage7-vllm-environment-and-config-decision.md) | 环境核验与配置决策收口 |
 | 19 | [stage8-launch-gap-and-queue-analysis.md](./experiments/stage8-launch-gap-and-queue-analysis.md) | launch gap / queue 归因 |
 | 20 | [stage9-optimization-actions-and-deployment-boundaries.md](./experiments/stage9-optimization-actions-and-deployment-boundaries.md) | 优化动作链与上线边界 |
+| 21 | [stage10-scheduler-tuning-plan.md](./experiments/stage10-scheduler-tuning-plan.md) | 调度层实测方案与执行口径 |
 
 ## 目录职责
 
@@ -67,6 +81,18 @@
 -> 用 profiler 证明瓶颈
 -> 再决定调参数、换框架或看 kernel
 ```
+
+## 现在优先做什么
+
+如果只继续推进一件事，当前建议不是扩更多 benchmark，也不是继续攻 server-side `ncu attach`，而是：
+
+```text
+在 AWQ-INT4 主线上做调度层实测：
+1. 只改 `max_num_batched_tokens`，验证 chunked prefill 对 `64K + 512` TTFT / E2E 的影响
+2. 再只改 `max_num_seqs`，对比 `2` 和 `4` 的交互延迟与排队
+```
+
+具体执行口径见 [stage10-scheduler-tuning-plan.md](./experiments/stage10-scheduler-tuning-plan.md)。
 
 ## 文档维护规则
 

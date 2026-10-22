@@ -99,6 +99,65 @@ def test_benchmark_cli_accepts_concurrency():
     assert args.concurrency == 2
 
 
+def test_streaming_benchmark_cli_can_force_output_tokens():
+    from scripts.benchmark_streaming import build_parser
+
+    args = build_parser().parse_args(["--max-tokens", "800", "--force-output-tokens"])
+
+    assert args.max_tokens == 800
+    assert args.force_output_tokens is True
+
+
+def test_streaming_benchmark_cli_accepts_concurrency():
+    from scripts.benchmark_streaming import build_parser
+
+    args = build_parser().parse_args(["--concurrency", "3"])
+
+    assert args.concurrency == 3
+
+
+def test_streaming_summary_reports_unique_batch_throughput():
+    summary = benchmark_module._summarize_streaming_attempts([
+        {
+            "kind": "measure",
+            "result": "success",
+            "completion_tokens": 800,
+            "batch_index": 1,
+            "batch_latency_ms": 10000.0,
+            "batch_output_tokens_per_second": 160.0,
+        },
+        {
+            "kind": "measure",
+            "result": "success",
+            "completion_tokens": 800,
+            "batch_index": 1,
+            "batch_latency_ms": 10000.0,
+            "batch_output_tokens_per_second": 160.0,
+        },
+        {
+            "kind": "measure",
+            "result": "success",
+            "completion_tokens": 800,
+            "batch_index": 2,
+            "batch_latency_ms": 8000.0,
+            "batch_output_tokens_per_second": 200.0,
+        },
+        {
+            "kind": "measure",
+            "result": "success",
+            "completion_tokens": 800,
+            "batch_index": 2,
+            "batch_latency_ms": 8000.0,
+            "batch_output_tokens_per_second": 200.0,
+        },
+    ])
+
+    assert summary["batch_latency_ms_avg"] == 9000.0
+    assert summary["aggregate_output_tokens_per_second_avg"] == 180.0
+    assert summary["aggregate_output_tokens_per_second_min"] == 160.0
+    assert summary["aggregate_output_tokens_per_second_max"] == 200.0
+
+
 def test_summarize_attempts_uses_measured_runs_only():
     summary = _summarize_attempts([
         {"kind": "warmup", "latency_ms": 1200.0, "completion_tokens": 64, "completion_tokens_per_second": 53.3, "http_status": 200, "result": "success"},

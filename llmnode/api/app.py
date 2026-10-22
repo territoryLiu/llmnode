@@ -10,6 +10,7 @@ import uuid
 from contextlib import suppress
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 
 import httpx
@@ -373,6 +374,48 @@ def _flatten_content_for_vllm(content: Any) -> Any:
         if all_blocks_are_text and text_parts:
             return "\n\n".join(text_parts)
     return content
+
+
+def _promote_vllm_mid_conversation_system_messages(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    messages = raw.get("messages")
+    if not isinstance(messages, list):
+        return raw, False
+
+    def text_blocks(content: Any) -> list[dict[str, Any]] | None:
+        if isinstance(content, str):
+            return [{"type": "text", "text": content}]
+        if not isinstance(content, list):
+            return None
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "text" or not isinstance(block.get("text"), str):
+                return None
+            blocks.append(dict(block))
+        return blocks
+
+    system_blocks = text_blocks(raw.get("system")) if raw.get("system") is not None else []
+    if system_blocks is None:
+        return raw, False
+
+    normalized_messages: list[Any] = []
+    promoted = False
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "system":
+            normalized_messages.append(message)
+            continue
+        promoted_blocks = text_blocks(message.get("content"))
+        if promoted_blocks is None:
+            normalized_messages.append(message)
+            continue
+        system_blocks.extend(promoted_blocks)
+        promoted = True
+
+    if not promoted:
+        return raw, False
+    normalized = dict(raw)
+    normalized["messages"] = normalized_messages
+    normalized["system"] = system_blocks
+    return normalized, True
 
 
 def _merge_native_vllm_responses_input(raw_input: list[Any], existing_instructions: Any) -> tuple[list[Any], Any]:
@@ -757,12 +800,27 @@ def _parse_anthropic_stream_event(chunk: bytes) -> tuple[str | None, dict[str, A
     return event_type, payload if isinstance(payload, dict) else None
 
 
+def _split_sse_frames(buffer: bytes) -> tuple[list[bytes], bytes]:
+    frames: list[bytes] = []
+    while buffer:
+        lf_index = buffer.find(b"\n\n")
+        crlf_index = buffer.find(b"\r\n\r\n")
+        candidates = [index for index in (lf_index, crlf_index) if index >= 0]
+        if not candidates:
+            break
+        index = min(candidates)
+        delimiter = b"\r\n\r\n" if index == crlf_index else b"\n\n"
+        end = index + len(delimiter)
+        frames.append(buffer[:end])
+        buffer = buffer[end:]
+    return frames, buffer
+
+
 def _sanitize_api_key_row(row: dict[str, Any], *, masked_key: str | None = None) -> dict[str, Any]:
     return {
         "id": row["id"],
         "name": row["name"],
         "masked_key": masked_key or stable_masked_key(row["id"]),
-        "plain_secret": row.get("plain_secret"),
         "status": row["status"],
         "scopes": row["scopes"],
         "rpm_limit": row["rpm_limit"],
@@ -1240,7 +1298,10 @@ def create_app() -> FastAPI:
         backend_client=backend_client,
         models={item["name"]: model_route_from_row(item) for item in list_model_routes(db)},
         post_json_to=post_json_to,
-        stream_bytes_from=stream_bytes_from,
+        stream_bytes_from=partial(
+            stream_bytes_from,
+            timeout_seconds=settings.gateway.backend_request_timeout_seconds,
+        ),
     )
     request_gate = RequestGate(
         execution_limit=settings.gateway.execution_limit,
@@ -1268,7 +1329,10 @@ def create_app() -> FastAPI:
     app.state.require_agent_ready = settings.gateway.require_agent_ready
     app.state.schedule = schedule_state
     app.state.post_json_to = post_json_to
-    app.state.stream_bytes_from = stream_bytes_from
+    app.state.stream_bytes_from = partial(
+        stream_bytes_from,
+        timeout_seconds=settings.gateway.backend_request_timeout_seconds,
+    )
     app.state.perf_lab_runner = PerfLabRunner(
         store=PerfRunStore(BENCHMARK_DIR),
         executor=NoopPerfPointExecutor(),
@@ -1413,6 +1477,10 @@ def create_app() -> FastAPI:
                 "tensor_parallel_size": s.vllm.tensor_parallel_size,
                 "max_model_len": s.vllm.max_model_len,
                 "max_num_seqs": s.vllm.max_num_seqs,
+                "enable_prefix_caching": s.vllm.enable_prefix_caching,
+                "speculative_config": s.vllm.speculative_config,
+                "speculative_model_dir": s.vllm.speculative_model_dir,
+                "disabled_kernels": s.vllm.disabled_kernels,
                 "enable_auto_tool_choice": s.vllm.enable_auto_tool_choice,
                 "reasoning_parser": s.vllm.reasoning_parser,
                 "tool_call_parser": s.vllm.tool_call_parser,
@@ -1683,7 +1751,6 @@ def create_app() -> FastAPI:
                 request.app.state.db,
                 name=payload["name"],
                 key_hash=hash_api_key(secret),
-                plain_secret=secret,
                 scopes=payload["scopes"],
                 rpm_limit=payload["rpm_limit"],
                 concurrency_limit=payload["concurrency_limit"],
@@ -2410,9 +2477,16 @@ def create_app() -> FastAPI:
 
         async def execute_native_stream() -> StreamingResponse:
             upstream_payload = build_native_upstream_payload()
+            repair_vllm_message_done_events = (
+                route.lifecycle_mode == "managed_local" and route.backend_type == "vllm"
+            )
 
             async def native_body():
                 completed_payload: dict[str, Any] | None = None
+                completed_response: dict[str, Any] | None = None
+                message_items: dict[int, dict[str, Any]] = {}
+                sse_buffer = b""
+                last_sequence_number: int | None = None
                 try:
                     if route.lifecycle_mode == "external":
                         stream = request.app.state.stream_bytes_from(
@@ -2424,18 +2498,133 @@ def create_app() -> FastAPI:
                     else:
                         stream = request.app.state.ctx.backend_client.stream_bytes("/v1/responses", upstream_payload)
                     async for chunk in stream:
-                        text = chunk.decode("utf-8", errors="ignore")
-                        if "event: response.completed" in text:
-                            parts = text.split("data: ", 1)
-                            if len(parts) == 2:
-                                with suppress(json.JSONDecodeError, ValueError):
-                                    completed_payload = json.loads(parts[1].strip())
-                        yield chunk
+                        sse_buffer += chunk
+                        frames, sse_buffer = _split_sse_frames(sse_buffer)
+                        for frame in frames:
+                            event_type, event_payload = _parse_anthropic_stream_event(frame)
+                            if not isinstance(event_payload, dict):
+                                yield frame
+                                continue
+
+                            sequence_number = event_payload.get("sequence_number")
+                            if isinstance(sequence_number, int):
+                                last_sequence_number = sequence_number
+
+                            output_index = event_payload.get("output_index")
+                            if event_type == "response.output_item.added" and isinstance(output_index, int):
+                                item = event_payload.get("item")
+                                if isinstance(item, dict) and item.get("type") == "message":
+                                    message_items[output_index] = {
+                                        "item": dict(item),
+                                        "item_id": item.get("id"),
+                                        "contents": {},
+                                        "item_done": False,
+                                    }
+                            elif event_type == "response.content_part.added" and isinstance(output_index, int):
+                                state = message_items.get(output_index)
+                                content_index = event_payload.get("content_index")
+                                part = event_payload.get("part")
+                                if state is not None and isinstance(content_index, int) and isinstance(part, dict):
+                                    state["contents"][content_index] = {
+                                        "part": dict(part),
+                                        "text_parts": [],
+                                        "text_done": False,
+                                        "part_done": False,
+                                    }
+                            elif event_type == "response.output_text.delta" and isinstance(output_index, int):
+                                state = message_items.get(output_index)
+                                content_index = event_payload.get("content_index")
+                                delta = event_payload.get("delta")
+                                if state is not None and isinstance(content_index, int) and isinstance(delta, str):
+                                    content_state = state["contents"].get(content_index)
+                                    if content_state is not None:
+                                        content_state["text_parts"].append(delta)
+                            elif event_type == "response.output_text.done" and isinstance(output_index, int):
+                                state = message_items.get(output_index)
+                                content_index = event_payload.get("content_index")
+                                if state is not None and isinstance(content_index, int):
+                                    content_state = state["contents"].get(content_index)
+                                    if content_state is not None:
+                                        content_state["text_done"] = True
+                            elif event_type == "response.content_part.done" and isinstance(output_index, int):
+                                state = message_items.get(output_index)
+                                content_index = event_payload.get("content_index")
+                                if state is not None and isinstance(content_index, int):
+                                    content_state = state["contents"].get(content_index)
+                                    if content_state is not None:
+                                        content_state["part_done"] = True
+                            elif event_type == "response.output_item.done" and isinstance(output_index, int):
+                                state = message_items.get(output_index)
+                                if state is not None:
+                                    state["item_done"] = True
+
+                            if event_type != "response.completed":
+                                yield frame
+                                continue
+
+                            completed_payload = event_payload
+                            nested_response = event_payload.get("response")
+                            completed_response = nested_response if isinstance(nested_response, dict) else event_payload
+                            injected_events: list[tuple[str, dict[str, Any]]] = []
+                            for message_output_index, state in sorted(message_items.items()):
+                                completed_contents: list[dict[str, Any]] = []
+                                for content_index, content_state in sorted(state["contents"].items()):
+                                    part = dict(content_state["part"])
+                                    text = "".join(content_state["text_parts"])
+                                    part["text"] = text
+                                    completed_contents.append(part)
+                                    common_payload = {
+                                        "content_index": content_index,
+                                        "item_id": state["item_id"],
+                                        "output_index": message_output_index,
+                                    }
+                                    if not content_state["text_done"]:
+                                        injected_events.append((
+                                            "response.output_text.done",
+                                            {**common_payload, "text": text, "type": "response.output_text.done"},
+                                        ))
+                                    if not content_state["part_done"]:
+                                        injected_events.append((
+                                            "response.content_part.done",
+                                            {**common_payload, "part": part, "type": "response.content_part.done"},
+                                        ))
+                                if not state["item_done"]:
+                                    item = dict(state["item"])
+                                    item["content"] = completed_contents
+                                    item["status"] = "completed"
+                                    injected_events.append((
+                                        "response.output_item.done",
+                                        {
+                                            "item": item,
+                                            "output_index": message_output_index,
+                                            "type": "response.output_item.done",
+                                        },
+                                    ))
+
+                            if injected_events and repair_vllm_message_done_events:
+                                next_sequence_number = (
+                                    sequence_number
+                                    if isinstance(sequence_number, int)
+                                    else ((last_sequence_number + 1) if last_sequence_number is not None else None)
+                                )
+                                for injected_event_type, injected_payload in injected_events:
+                                    if next_sequence_number is not None:
+                                        injected_payload["sequence_number"] = next_sequence_number
+                                        next_sequence_number += 1
+                                    yield _format_sse_event(injected_event_type, injected_payload)
+                                if next_sequence_number is not None:
+                                    completed_payload = dict(completed_payload)
+                                    completed_payload["sequence_number"] = next_sequence_number
+                                yield _format_sse_event("response.completed", completed_payload)
+                            else:
+                                yield frame
+                    if sse_buffer:
+                        yield sse_buffer
                 finally:
                     await key_lease.finish()
                     finished_at = datetime.now(timezone.utc)
-                    if completed_payload is not None:
-                        persisted_response_id = completed_payload.get("id") or response_id
+                    if completed_response is not None:
+                        persisted_response_id = completed_response.get("id") or response_id
                         _record_request_metric(
                             request.app,
                             request_id=request_id,
@@ -2444,18 +2633,18 @@ def create_app() -> FastAPI:
                             status="ok",
                             started_at=started_at,
                             finished_at=finished_at,
-                            response_payload=_responses_metric_payload_from_responses(completed_payload),
+                            response_payload=_responses_metric_payload_from_responses(completed_response),
                             backend_type=route.backend_type or "external",
                             api_key_id=auth.api_key_id,
                         )
                         persist_response_state(
                             persisted_response_id=persisted_response_id,
-                            output_items=completed_payload.get("output", []),
-                            messages=[*messages_for_state, *_response_output_to_messages(completed_payload.get("output"))],
+                            output_items=completed_response.get("output", []),
+                            messages=[*messages_for_state, *_response_output_to_messages(completed_response.get("output"))],
                             upstream_protocol="responses",
-                            upstream_response_id=completed_payload.get("id"),
+                            upstream_response_id=completed_response.get("id"),
                             request_payload=upstream_payload,
-                            output_payload=completed_payload,
+                            output_payload=completed_response,
                         )
 
             write_request_log(
@@ -2616,6 +2805,12 @@ def create_app() -> FastAPI:
         initial_payload = AnthropicMessagesRequest.model_validate(raw)
         route = resolve_route(initial_payload.model, request.app.state.ctx.models)
         sanitized_raw = strip_claude_code_builtin_tools_for_managed_messages(route, raw)
+        builtin_tools_filtered = sanitized_raw != raw
+        mid_conversation_system_promoted = False
+        if route.lifecycle_mode == "managed_local" and route.backend_type == "vllm":
+            sanitized_raw, mid_conversation_system_promoted = _promote_vllm_mid_conversation_system_messages(
+                sanitized_raw
+            )
         payload = AnthropicMessagesRequest.model_validate(sanitized_raw)
         plan = plan_route_execution(
             route,
@@ -2634,14 +2829,21 @@ def create_app() -> FastAPI:
                 tool_classes_detected.append("anthropic_function_tools")
             elif isinstance(tool, dict):
                 tool_classes_detected.append("builtin_tools")
+        mutation_reasons: list[str] = []
+        if builtin_tools_filtered:
+            mutation_reasons.append("builtin_tool_metadata_filtered")
+        if mid_conversation_system_promoted:
+            mutation_reasons.append("mid_conversation_system_promoted")
+        if plan.execution_mode != "native":
+            mutation_reasons.append(plan.selected_adapter or "adapter_path")
         log_context["metadata"] = {
             "client_protocol": "messages",
             "execution_mode": plan.execution_mode,
             "adapter_selected": plan.selected_adapter,
             "tool_classes_detected": tool_classes_detected,
             "message_block_types": _summarize_message_block_types(sanitized_raw.get("messages")),
-            "request_mutation": bool(sanitized_raw != raw) or plan.execution_mode == "adapter",
-            "mutation_reason": "builtin_tool_metadata_filtered" if sanitized_raw != raw else (None if plan.execution_mode == "native" else (plan.selected_adapter or "adapter_path")),
+            "request_mutation": bool(mutation_reasons),
+            "mutation_reason": "+".join(mutation_reasons) if mutation_reasons else None,
         }
         key_lease = await _begin_api_key_lease_or_raise(
             request.app,

@@ -522,6 +522,13 @@ Stage 7 已完成 `FP8 KV cache` 最小质量回归，并开始 Nsight bring-up�
 
 所有 V0-V5 工作包均已完成第一轮闭环。V2 最终闭环结论：两个主热点 kernel（Marlin / FlashAttention）的共同瓶颈是 **register 压力（255/thread）**，不是 shared memory。当前最可操作的优化方向在调度层（chunked prefill、`max_num_seqs`），不在 kernel 层。
 
+为了避免与阶段文档的历史“下一步”混淆，当前统一口径是：
+
+- 不再回头扩更多 `16K/64K + 512` benchmark 矩阵
+- 不再把 `server-side ncu attach` 当主阻塞项
+- 下一轮真正优先做的是调度层实测：先测 chunked prefill，再测 `max_num_seqs`
+- 这轮实测的执行口径已单独整理到 `experiments/stage10-scheduler-tuning-plan.md`
+
 下一步可选深化方向：
 
 1. **调度层实测**：chunked prefill 对 `64K` TTFT 的影响（只改 `max_num_batched_tokens`）

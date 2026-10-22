@@ -1,5 +1,6 @@
 import asyncio
 
+from dataclasses import replace
 from unittest.mock import patch
 
 import httpx
@@ -229,6 +230,109 @@ def test_anthropic_messages_managed_local_accepts_tool_result_followup():
             )
             assert resp.status_code == 200
             assert captured[0][1]["messages"][2]["content"][0]["type"] == "tool_result"
+
+    asyncio.run(run())
+
+
+def test_anthropic_messages_managed_local_vllm_promotes_mid_conversation_system_message():
+    async def run():
+        app = create_app()
+        app.state.ctx.models[TEST_MODEL] = replace(app.state.ctx.models[TEST_MODEL], backend_type="vllm")
+        captured: list[tuple[str, dict]] = []
+
+        class CapturingClient(FakeClient):
+            async def post_json(self, path, payload):
+                captured.append((path, payload))
+                return await super().post_json(path, payload)
+
+        app.state.ctx.backend_client = CapturingClient()
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": f"Bearer {admin_secret}"},
+                json={
+                    "model": TEST_MODEL,
+                    "max_tokens": 16,
+                    "system": [{"type": "text", "text": "base instructions"}],
+                    "messages": [
+                        {"role": "user", "content": "summary"},
+                        {"role": "system", "content": "restored context"},
+                        {"role": "user", "content": "continue"},
+                    ],
+                },
+            )
+            assert resp.status_code == 200
+            request_id = resp.headers["x-request-id"]
+
+        upstream_payload = captured[0][1]
+        assert [message["role"] for message in upstream_payload["messages"]] == ["user", "user"]
+        assert upstream_payload["system"] == [
+            {"type": "text", "text": "base instructions"},
+            {"type": "text", "text": "restored context"},
+        ]
+        detail = app.state.db.execute(
+            "SELECT metadata_json FROM request_logs WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+        metadata = __import__("json").loads(detail[0])
+        assert metadata["request_mutation"] is True
+        assert metadata["mutation_reason"] == "mid_conversation_system_promoted"
+
+    asyncio.run(run())
+
+
+def test_anthropic_messages_external_preserves_mid_conversation_system_message():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = FakeClient()
+        calls: list[tuple[str, str, dict, dict | None]] = []
+
+        async def fake_post_json_to(base_url, path, payload, headers=None):
+            calls.append((base_url, path, payload, headers))
+            return {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "model": payload["model"],
+            }
+
+        app.state.ctx.post_json_to = fake_post_json_to
+        app.state.ctx.models[TEST_MODEL] = ModelRoute(
+            name=TEST_MODEL,
+            display_name="Claude External",
+            backend_model=None,
+            backend_type=None,
+            enabled=True,
+            lifecycle_mode="external",
+            upstream_protocol="messages",
+            upstream_base_url="https://messages.example.com",
+            upstream_model="claude-sonnet-4",
+            upstream_auth_kind="x_api_key",
+            upstream_auth_ref="ANTHROPIC_PROXY_KEY",
+            capabilities=ModelCapabilities(supports_messages=True),
+        )
+        admin_secret = seed_admin_key(app)
+        transport = httpx.ASGITransport(app=app)
+        with patch.dict("os.environ", {"ANTHROPIC_PROXY_KEY": "sk-upstream-anthropic"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await client.post(
+                    "/v1/messages",
+                    headers={"Authorization": f"Bearer {admin_secret}"},
+                    json={
+                        "model": TEST_MODEL,
+                        "max_tokens": 16,
+                        "messages": [
+                            {"role": "user", "content": "summary"},
+                            {"role": "system", "content": "restored context"},
+                            {"role": "user", "content": "continue"},
+                        ],
+                    },
+                )
+                assert resp.status_code == 200
+
+        assert [message["role"] for message in calls[0][2]["messages"]] == ["user", "system", "user"]
 
     asyncio.run(run())
 

@@ -44,7 +44,7 @@ def test_admin_can_create_and_list_inference_api_keys():
             assert key_row["name"] == "worker"
             assert "secret" not in key_row
             assert "key_hash" not in key_row
-            assert key_row["plain_secret"] == body["secret"]
+            assert "plain_secret" not in key_row
             # Listed key returns masked_key
             assert "masked_key" in key_row
             assert key_row["masked_key"].startswith("sk-")

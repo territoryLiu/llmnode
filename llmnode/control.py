@@ -29,8 +29,8 @@ from .diagnostics import (
     parse_model_config,
 )
 from .runtime_paths import resolve_gateway_db_path
-from .security import generate_api_key, hash_api_key
-from .storage.db import create_api_key, get_api_key_by_hash, get_api_key_by_name, init_db, list_api_keys, update_api_key
+from .security import generate_api_key, hash_api_key, read_secret_file, write_secret_file
+from .storage.db import cleanup_retention, create_api_key, get_api_key_by_hash, get_api_key_by_name, init_db, list_api_keys, update_api_key
 
 _ADMIN_KEY_NAME = "admin"
 
@@ -92,17 +92,30 @@ class RuntimeConfig:
     vllm_enable_auto_tool_choice: bool
     vllm_reasoning_parser: str
     vllm_tool_call_parser: str
-    vllm_kv_cache_dtype: str
-    vllm_profiler_config: str
-    vllm_profiler_host_dir: str
-    llamacpp_model_file: str
-    llamacpp_n_gpu_layers: int
-    llamacpp_ctx_size: int
-    llamacpp_n_parallel: int
-    sglang_tp_size: int
-    sglang_mem_fraction_static: float
-    sglang_max_running_requests: int
-    sglang_reasoning_parser: str
+    vllm_kv_cache_dtype: str = ""
+    vllm_profiler_config: str = ""
+    vllm_profiler_host_dir: str = ""
+    llamacpp_model_file: str = ""
+    llamacpp_n_gpu_layers: int = 0
+    llamacpp_ctx_size: int = 0
+    llamacpp_n_parallel: int = 1
+    llamacpp_n_cpu_moe: int = 0
+    llamacpp_spec_draft_model_dir: str = ""
+    llamacpp_spec_draft_model_file: str = ""
+    llamacpp_spec_type: str = ""
+    llamacpp_spec_draft_n_max: int = 0
+    llamacpp_flash_attention: bool = False
+    llamacpp_jinja: bool = False
+    sglang_tp_size: int = 1
+    sglang_mem_fraction_static: float = 0.5
+    sglang_max_running_requests: int = 4
+    sglang_reasoning_parser: str = ""
+    sglang_speculative_algorithm: str = ""
+    sglang_extra_args: tuple[str, ...] = ()
+    vllm_enable_prefix_caching: bool = False
+    vllm_speculative_config: str = ""
+    vllm_speculative_model_dir: str = ""
+    vllm_disabled_kernels: str = ""
 
 
 def _default_python_bin() -> str:
@@ -184,16 +197,29 @@ def _runtime_config() -> RuntimeConfig:
         vllm_reasoning_parser=settings.vllm.reasoning_parser,
         vllm_tool_call_parser=settings.vllm.tool_call_parser,
         vllm_kv_cache_dtype=settings.vllm.kv_cache_dtype,
+        vllm_speculative_config=settings.vllm.speculative_config,
+        vllm_speculative_model_dir=settings.vllm.speculative_model_dir,
+        vllm_disabled_kernels=settings.vllm.disabled_kernels,
         vllm_profiler_config=settings.vllm.profiler_config,
         vllm_profiler_host_dir=settings.vllm.profiler_host_dir,
         llamacpp_model_file=settings.vllm.model_file,
         llamacpp_n_gpu_layers=settings.vllm.n_gpu_layers,
         llamacpp_ctx_size=settings.vllm.ctx_size,
         llamacpp_n_parallel=settings.vllm.n_parallel,
+        llamacpp_n_cpu_moe=settings.vllm.n_cpu_moe,
+        llamacpp_spec_draft_model_dir=settings.vllm.spec_draft_model_dir,
+        llamacpp_spec_draft_model_file=settings.vllm.spec_draft_model_file,
+        llamacpp_spec_type=settings.vllm.spec_type,
+        llamacpp_spec_draft_n_max=settings.vllm.spec_draft_n_max,
+        llamacpp_flash_attention=settings.vllm.flash_attention,
+        llamacpp_jinja=settings.vllm.jinja,
         sglang_tp_size=settings.vllm.tensor_parallel_size,
         sglang_mem_fraction_static=settings.vllm.mem_fraction_static,
         sglang_max_running_requests=settings.vllm.max_running_requests,
         sglang_reasoning_parser=settings.vllm.reasoning_parser,
+        sglang_speculative_algorithm=settings.vllm.sglang_speculative_algorithm,
+        sglang_extra_args=settings.vllm.sglang_extra_args,
+        vllm_enable_prefix_caching=settings.vllm.enable_prefix_caching,
     )
 
 
@@ -221,13 +247,17 @@ def _ensure_web_console_api_key(config: RuntimeConfig) -> str:
     db_path = resolve_gateway_db_path()
     conn = init_db(db_path)
     row = _admin_key_row(conn)
-    if row is None or not row.get("plain_secret"):
+    key_file = db_path.parent / "admin.key"
+    secret = read_secret_file(key_file)
+    if row is None or not secret:
         raise RuntimeError("admin key is missing. Run 'python -m llmnode.control create-admin-key' first")
+    if hash_api_key(secret) != row["key_hash"]:
+        raise RuntimeError(f"admin key file is out of sync: {key_file}; run 'python -m llmnode.control rotate-admin-key'")
     if row["status"] != "active":
         updated = update_api_key(conn, row["id"], status="active")
         if updated is not None:
             row = updated
-    return str(row["plain_secret"])
+    return secret
 
 
 def _create_admin_key(conn, *, rotate: bool = False) -> tuple[dict, str]:
@@ -240,7 +270,6 @@ def _create_admin_key(conn, *, rotate: bool = False) -> tuple[dict, str]:
             conn,
             name=_ADMIN_KEY_NAME,
             key_hash=hash_api_key(secret),
-            plain_secret=secret,
             scopes=["admin"],
             note="control-plane admin key",
         )
@@ -249,7 +278,6 @@ def _create_admin_key(conn, *, rotate: bool = False) -> tuple[dict, str]:
             conn,
             existing["id"],
             key_hash=hash_api_key(secret),
-            plain_secret=secret,
             name=_ADMIN_KEY_NAME,
             status="active",
             scopes=["admin"],
@@ -278,7 +306,6 @@ def _create_inference_key(
             conn,
             name=name,
             key_hash=hash_api_key(secret),
-            plain_secret=secret,
             scopes=["inference"],
             rpm_limit=rpm_limit,
             concurrency_limit=concurrency_limit,
@@ -290,7 +317,6 @@ def _create_inference_key(
             conn,
             existing["id"],
             key_hash=hash_api_key(secret),
-            plain_secret=secret,
             name=name,
             status="disabled" if disabled else "active",
             scopes=["inference"],
@@ -307,6 +333,7 @@ def _create_admin_key_action(rotate: bool = False) -> int:
     conn = init_db(db_path)
     try:
         row, secret = _create_admin_key(conn, rotate=rotate)
+        write_secret_file(db_path.parent / "admin.key", secret)
     except Exception as exc:
         _print_error(str(exc))
         return 1
@@ -317,6 +344,7 @@ def _create_admin_key_action(rotate: bool = False) -> int:
     _print_kv("status", row["status"])
     _print_kv("scopes", ",".join(row["scopes"]))
     _print_kv("db", str(db_path))
+    _print_kv("key_file", str(db_path.parent / "admin.key"))
     _print_info("secret", secret)
     return 0
 
@@ -336,6 +364,52 @@ def _admin_key_status_action() -> int:
     _print_kv("status", row["status"])
     _print_kv("created_at", str(row["created_at"]))
     _print_kv("last_used_at", str(row["last_used_at"]))
+    key_file = db_path.parent / "admin.key"
+    secret = read_secret_file(key_file)
+    _print_kv("key_file", str(key_file))
+    _print_kv("key_file_sync", "yes" if secret and hash_api_key(secret) == row["key_hash"] else "no")
+    return 0
+
+
+def _migrate_action() -> int:
+    db_path = resolve_gateway_db_path()
+    try:
+        conn = init_db(db_path)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(api_keys)").fetchall()}
+        row = _admin_key_row(conn)
+        key_file = db_path.parent / "admin.key"
+        secret = read_secret_file(key_file)
+        key_file_sync = bool(row and secret and hash_api_key(secret) == row["key_hash"])
+    except Exception as exc:
+        _print_error(str(exc))
+        return 1
+    _print_header("migration status")
+    _print_kv("db", str(db_path))
+    _print_kv("plain_secret_column", "present" if "plain_secret" in columns else "removed")
+    _print_kv("db_mode", oct(db_path.stat().st_mode & 0o777))
+    _print_kv("data_dir_mode", oct(db_path.parent.stat().st_mode & 0o777))
+    _print_kv("admin_key_file", str(key_file))
+    _print_kv("admin_key_file_sync", "yes" if key_file_sync else "no")
+    return 0
+
+
+def _cleanup_action(args: argparse.Namespace) -> int:
+    db_path = resolve_gateway_db_path()
+    policies = load_settings().sqlite_retention.as_dict()
+    try:
+        conn = init_db(db_path)
+        result = cleanup_retention(conn, policies, tables=args.table or None, dry_run=not args.execute)
+    except Exception as exc:
+        _print_error(str(exc))
+        return 1
+    _print_header("sqlite retention cleanup")
+    _print_kv("db", str(db_path))
+    _print_kv("mode", "execute" if args.execute else "dry-run")
+    for table, item in result["tables"].items():
+        _print_kv(table, f"ttl={item['ttl_days']}d eligible={item['eligible']} deleted={item['deleted']}")
+    _print_kv("total", f"eligible={result['total_eligible']} deleted={result['total_deleted']}")
+    if not args.execute and result["total_eligible"]:
+        _print_info("next", "append --execute to delete eligible rows")
     return 0
 
 
@@ -822,6 +896,13 @@ def _build_backend_spec(config: RuntimeConfig):
             n_gpu_layers=config.llamacpp_n_gpu_layers,
             ctx_size=config.llamacpp_ctx_size,
             n_parallel=config.llamacpp_n_parallel,
+            n_cpu_moe=config.llamacpp_n_cpu_moe,
+            spec_draft_model_dir=config.llamacpp_spec_draft_model_dir,
+            spec_draft_model_file=config.llamacpp_spec_draft_model_file,
+            spec_type=config.llamacpp_spec_type,
+            spec_draft_n_max=config.llamacpp_spec_draft_n_max,
+            flash_attention=config.llamacpp_flash_attention,
+            jinja=config.llamacpp_jinja,
             shm_size=config.backend_shm_size,
         )
     if bt == "sglang":
@@ -836,6 +917,9 @@ def _build_backend_spec(config: RuntimeConfig):
             max_running_requests=config.sglang_max_running_requests,
             shm_size=config.backend_shm_size,
             reasoning_parser=config.sglang_reasoning_parser,
+            speculative_algorithm=config.sglang_speculative_algorithm,
+            speculative_draft_model_dir=config.vllm_speculative_model_dir,
+            extra_args=config.sglang_extra_args,
         )
     return VLLMContainerSpec(
         container_name=config.backend_container_name,
@@ -851,7 +935,11 @@ def _build_backend_spec(config: RuntimeConfig):
         enable_auto_tool_choice=config.vllm_enable_auto_tool_choice,
         reasoning_parser=config.vllm_reasoning_parser,
         tool_call_parser=config.vllm_tool_call_parser,
+        enable_prefix_caching=config.vllm_enable_prefix_caching,
         kv_cache_dtype=config.vllm_kv_cache_dtype,
+        speculative_config=config.vllm_speculative_config,
+        speculative_model_dir=config.vllm_speculative_model_dir,
+        disabled_kernels=config.vllm_disabled_kernels,
         profiler_config=config.vllm_profiler_config,
         profiler_host_dir=config.vllm_profiler_host_dir,
     )
@@ -865,6 +953,8 @@ def _backend_log_file(config: RuntimeConfig) -> Path:
 def _ensure_backend_prerequisites(config: RuntimeConfig) -> None:
     if not Path(config.model_dir).is_dir():
         raise RuntimeError(f"Model directory not found: {config.model_dir}")
+    if config.vllm_speculative_model_dir and not Path(config.vllm_speculative_model_dir).is_dir():
+        raise RuntimeError(f"Speculative model directory not found: {config.vllm_speculative_model_dir}")
     result = _run_command_capture(["docker", "image", "inspect", config.backend_image_name])
     if result.returncode != 0:
         raise RuntimeError(f"Docker image not found: {config.backend_image_name}")
@@ -1254,8 +1344,15 @@ def _status_stack(config: RuntimeConfig) -> int:
                 _print_kv("tensor_parallel", str(config.vllm_tensor_parallel_size))
                 _print_kv("max_model_len", str(config.vllm_max_model_len))
                 _print_kv("max_num_seqs", str(config.vllm_max_num_seqs))
+                _print_kv("prefix_caching", str(config.vllm_enable_prefix_caching).lower())
                 if config.vllm_kv_cache_dtype:
                     _print_kv("kv_cache_dtype", config.vllm_kv_cache_dtype)
+                if config.vllm_speculative_config:
+                    _print_kv("speculative_config", config.vllm_speculative_config)
+                if config.vllm_speculative_model_dir:
+                    _print_kv("speculative_model", config.vllm_speculative_model_dir)
+                if config.vllm_disabled_kernels:
+                    _print_kv("disabled_kernels", config.vllm_disabled_kernels)
                 if config.vllm_reasoning_parser:
                     _print_kv("reasoning_parser", config.vllm_reasoning_parser)
                 if config.vllm_tool_call_parser:
@@ -1265,12 +1362,22 @@ def _status_stack(config: RuntimeConfig) -> int:
                 _print_kv("n_gpu_layers", str(config.llamacpp_n_gpu_layers))
                 _print_kv("ctx_size", str(config.llamacpp_ctx_size))
                 _print_kv("n_parallel", str(config.llamacpp_n_parallel))
+                if config.llamacpp_n_cpu_moe > 0:
+                    _print_kv("n_cpu_moe", str(config.llamacpp_n_cpu_moe))
+                if config.llamacpp_spec_draft_model_file:
+                    _print_kv("spec_draft_model", config.llamacpp_spec_draft_model_file)
+                    _print_kv("spec_type", config.llamacpp_spec_type)
+                    _print_kv("spec_draft_n_max", str(config.llamacpp_spec_draft_n_max))
             elif config.backend_type == "sglang":
                 _print_kv("tp_size", str(config.sglang_tp_size))
                 _print_kv("mem_fraction", str(config.sglang_mem_fraction_static))
                 _print_kv("max_requests", str(config.sglang_max_running_requests))
                 if config.sglang_reasoning_parser:
                     _print_kv("reasoning_parser", config.sglang_reasoning_parser)
+                if config.sglang_speculative_algorithm:
+                    _print_kv("speculative_algorithm", config.sglang_speculative_algorithm)
+                if config.vllm_speculative_model_dir:
+                    _print_kv("speculative_model", config.vllm_speculative_model_dir)
 
             # 健康检查
             backend_http_state = "ok" if _http_ok(config.backend_url) else "unreachable"
@@ -1873,7 +1980,7 @@ def _create_api_key_action(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m llmnode.control")
-    parser.add_argument("action", choices=["start", "stop", "restart", "status", "doctor", "env", "logs", "create-api-key", "create-inference-key", "rotate-inference-key", "inference-key-status", "create-admin-key", "rotate-admin-key", "admin-key-status"], nargs="?", default="status")
+    parser.add_argument("action", choices=["start", "stop", "restart", "status", "doctor", "env", "logs", "migrate", "cleanup-retention", "create-api-key", "create-inference-key", "rotate-inference-key", "inference-key-status", "create-admin-key", "rotate-admin-key", "admin-key-status"], nargs="?", default="status")
     parser.add_argument("--service", choices=["agent", "gateway", "vllm"])
     parser.add_argument("--exclude-backend", action="store_true")
     parser.add_argument("--web-console-mode", choices=["static", "dev"], default="static")
@@ -1892,6 +1999,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concurrency-limit", type=int, default=None)
     parser.add_argument("--note", type=str, default=None)
     parser.add_argument("--disabled", action="store_true")
+    parser.add_argument("--execute", action="store_true", help="Apply retention deletions; default is dry-run")
+    parser.add_argument("--table", action="append", choices=["request_logs", "request_metrics", "agent_events", "response_states"])
     return parser
 
 
@@ -1932,6 +2041,10 @@ def main(argv: Iterable[str] | None = None) -> int:
             ignore_case=args.ignore_case,
             highlight=not args.no_highlight,
         )
+    if args.action == "migrate":
+        return _migrate_action()
+    if args.action == "cleanup-retention":
+        return _cleanup_action(args)
     if args.action == "create-api-key":
         if not args.name.strip():
             parser.error("--name is required for 'create-api-key'")

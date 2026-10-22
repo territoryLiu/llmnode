@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from pathlib import Path
 
 from ..models import ModelCapabilities, ModelRoute
+from ..security import hash_api_key, write_secret_file
 
 _UNSET = object()
 _ALLOWED_CHART_WINDOWS = {"12h", "day", "month", "year"}
 _ALLOWED_CHART_GROUP_BY = {"backend_type", "model_name", "api_key_name"}
 _ALLOWED_GROUP_BY = {"backend_type", "model_name", "api_key_id", "api_key_name"}
+RETENTION_TABLES = {
+    "request_logs": "created_at",
+    "request_metrics": "created_at",
+    "agent_events": "created_at",
+    # A response can be updated while a client resumes it; use the last activity.
+    "response_states": "updated_at",
+}
 
 
 def _now_sql() -> str:
@@ -61,7 +70,6 @@ def _decode_api_key_row(row: Any) -> dict[str, Any]:
         "disabled_at": _normalize_utc_timestamp(row[8]),
         "last_used_at": _normalize_utc_timestamp(row[9]),
         "note": row[10],
-        "plain_secret": row[11] if len(row) > 11 else None,
     }
 
 
@@ -104,6 +112,10 @@ def init_db(path: Path) -> sqlite3.Connection:
         },
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_request_logs_created_at "
+        "ON request_logs(created_at)"
+    )
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS agent_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,6 +135,10 @@ def init_db(path: Path) -> sqlite3.Connection:
             "inference_ready": "INTEGER",
             "metadata_json": "TEXT",
         },
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_events_created_at "
+        "ON agent_events(created_at)"
     )
     conn.execute(
         """
@@ -192,9 +208,30 @@ def init_db(path: Path) -> sqlite3.Connection:
         {
             "last_used_at": "TEXT",
             "note": "TEXT",
-            "plain_secret": "TEXT",
         },
     )
+    if "plain_secret" in _table_columns(conn, "api_keys"):
+        admin_rows = conn.execute(
+            "SELECT key_hash, plain_secret FROM api_keys WHERE name = 'admin' AND plain_secret IS NOT NULL"
+        ).fetchall()
+        admin_file = path.parent / "admin.key"
+        if admin_rows:
+            key_hash, plain_secret = admin_rows[0]
+            if admin_file.exists():
+                existing = admin_file.read_text(encoding="utf-8").strip()
+                if hash_api_key(existing) != key_hash:
+                    raise RuntimeError(f"admin key file does not match database: {admin_file}; rotate-admin-key required")
+            else:
+                write_secret_file(admin_file, plain_secret)
+        conn.execute("UPDATE api_keys SET plain_secret = NULL")
+        conn.execute("ALTER TABLE api_keys DROP COLUMN plain_secret")
+        conn.commit()
+        conn.execute("VACUUM")
+    try:
+        os.chmod(path.parent, 0o700)
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS request_metrics (
@@ -260,6 +297,10 @@ def init_db(path: Path) -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_response_states_created_at "
         "ON response_states(created_at)"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_response_states_updated_at "
+        "ON response_states(updated_at)"
+    )
     _ensure_columns(
         conn,
         "response_states",
@@ -275,6 +316,48 @@ def init_db(path: Path) -> sqlite3.Connection:
     )
     conn.commit()
     return conn
+
+
+def cleanup_retention(
+    conn: sqlite3.Connection,
+    policies: dict[str, int],
+    *,
+    tables: list[str] | None = None,
+    dry_run: bool = True,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Preview or delete rows older than each table's configured TTL."""
+    selected = list(tables or RETENTION_TABLES)
+    unknown = sorted(set(selected) - set(RETENTION_TABLES))
+    if unknown:
+        raise ValueError(f"unsupported retention table(s): {', '.join(unknown)}")
+    current = now or datetime.now(timezone.utc)
+    result: dict[str, Any] = {"dry_run": dry_run, "tables": {}}
+    for table in selected:
+        days = policies.get(table)
+        if not isinstance(days, int) or days <= 0:
+            raise ValueError(f"retention TTL for {table} must be a positive integer")
+        cutoff_sql = (current - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp_column = RETENTION_TABLES[table]
+        count = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {timestamp_column} < ?", (cutoff_sql,)
+        ).fetchone()[0]
+        deleted = 0
+        if not dry_run and count:
+            deleted = conn.execute(
+                f"DELETE FROM {table} WHERE {timestamp_column} < ?", (cutoff_sql,)
+            ).rowcount
+        result["tables"][table] = {
+            "ttl_days": days,
+            "cutoff": cutoff_sql,
+            "eligible": count,
+            "deleted": deleted,
+        }
+    if not dry_run:
+        conn.commit()
+    result["total_eligible"] = sum(item["eligible"] for item in result["tables"].values())
+    result["total_deleted"] = sum(item["deleted"] for item in result["tables"].values())
+    return result
 
 
 def write_request_log(
@@ -775,7 +858,6 @@ def create_api_key(
     *,
     name: str,
     key_hash: str,
-    plain_secret: str | None = None,
     scopes: list[str],
     rpm_limit: int | None = None,
     concurrency_limit: int | None = None,
@@ -785,8 +867,8 @@ def create_api_key(
     disabled_at = _now_sql() if status == "disabled" else None
     cursor = conn.execute(
         """
-        INSERT INTO api_keys(key_hash, name, status, scopes, rpm_limit, concurrency_limit, disabled_at, note, plain_secret)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO api_keys(key_hash, name, status, scopes, rpm_limit, concurrency_limit, disabled_at, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             key_hash,
@@ -797,13 +879,12 @@ def create_api_key(
             concurrency_limit,
             disabled_at,
             note,
-            plain_secret,
         ),
     )
     conn.commit()
     row = conn.execute(
         """
-        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note
         FROM api_keys
         WHERE id = ?
         """,
@@ -816,7 +897,7 @@ def create_api_key(
 def list_api_keys(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     cursor = conn.execute(
         """
-        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note
         FROM api_keys
         ORDER BY id DESC
         """
@@ -827,7 +908,7 @@ def list_api_keys(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def get_api_key_by_hash(conn: sqlite3.Connection, key_hash: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
-        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note
         FROM api_keys
         WHERE key_hash = ?
         """,
@@ -839,7 +920,7 @@ def get_api_key_by_hash(conn: sqlite3.Connection, key_hash: str) -> dict[str, An
 def get_api_key_by_name(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
     row = conn.execute(
         """
-        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note
         FROM api_keys
         WHERE name = ?
         """,
@@ -851,7 +932,7 @@ def get_api_key_by_name(conn: sqlite3.Connection, name: str) -> dict[str, Any] |
 def get_api_key_by_id(conn: sqlite3.Connection, key_id: int) -> dict[str, Any] | None:
     row = conn.execute(
         """
-        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note, plain_secret
+        SELECT id, key_hash, name, status, scopes, rpm_limit, concurrency_limit, created_at, disabled_at, last_used_at, note
         FROM api_keys
         WHERE id = ?
         """,
@@ -865,7 +946,6 @@ def update_api_key(
     key_id: int,
     *,
     key_hash: str | None | object = _UNSET,
-    plain_secret: str | None | object = _UNSET,
     name: str | None | object = _UNSET,
     status: str | None | object = _UNSET,
     scopes: list[str] | None | object = _UNSET,
@@ -879,9 +959,6 @@ def update_api_key(
     if key_hash is not _UNSET:
         assignments.append("key_hash = ?")
         params.append(key_hash)
-    if plain_secret is not _UNSET:
-        assignments.append("plain_secret = ?")
-        params.append(plain_secret)
     if name is not _UNSET:
         assignments.append("name = ?")
         params.append(name)

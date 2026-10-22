@@ -4,9 +4,10 @@
 
 ## 说明
 
-- 上级目录 `0/` 放的是汇报型摘要文件（01-06），便于快速了解结论。
 - 本目录保留完整的实验过程、数据和分析。
-- 需要快速了解结论时，先读 `0/` 目录的汇报文件。
+- 需要快速了解当前结论时，先读 [experiment-master-plan.md](./experiment-master-plan.md) 和 [stage9-optimization-actions-and-deployment-boundaries.md](./stage9-optimization-actions-and-deployment-boundaries.md)。
+- 截至 `2026-06-11`，`Stage 1-9` 已完成第一轮闭环；后续如果继续推进，应优先新增“调度层实测”而不是回头补旧矩阵。
+- 当前下一步实验入口见 [stage10-scheduler-tuning-plan.md](./stage10-scheduler-tuning-plan.md)。
 
 ## 实验索引
 
@@ -21,6 +22,7 @@
 | 7 | [stage7-vllm-environment-and-config-decision.md](./stage7-vllm-environment-and-config-decision.md) | 环境核验与配置决策 | 宿主环境 / 默认 profile |
 | 8 | [stage8-launch-gap-and-queue-analysis.md](./stage8-launch-gap-and-queue-analysis.md) | launch gap / queue 归因 | c2 / c4 scheduler 行为 |
 | 9 | [stage9-optimization-actions-and-deployment-boundaries.md](./stage9-optimization-actions-and-deployment-boundaries.md) | 优化动作链与上线边界 | 调度层 / kernel 层决策 |
+| 10 | [stage10-scheduler-tuning-plan.md](./stage10-scheduler-tuning-plan.md) | 调度层实测方案 | `max_num_batched_tokens` / `max_num_seqs` |
 
 ## 阅读顺序
 
@@ -35,6 +37,7 @@
 7. [stage7-vllm-environment-and-config-decision.md](./stage7-vllm-environment-and-config-decision.md) — 环境与配置收口
 8. [stage8-launch-gap-and-queue-analysis.md](./stage8-launch-gap-and-queue-analysis.md) — 调度层瓶颈归因
 9. [stage9-optimization-actions-and-deployment-boundaries.md](./stage9-optimization-actions-and-deployment-boundaries.md) — 最终优化决策
+10. [stage10-scheduler-tuning-plan.md](./stage10-scheduler-tuning-plan.md) — 下一轮实测怎么做
 
 ## 其他文件
 
@@ -47,3 +50,4 @@
 - 同一组变量、同一条判断链，尽量放在同一份文件里。
 - 稳定结论和数据对比放在文件主体，踩坑过程和失败尝试放在后部"踩坑记录"。
 - 编号连续（1-2 → 3 → 4 → 5 → 6a → 6b → 7 → 8 → 9），无跳号。
+- 如果某阶段文档里的“下一步”已被后续阶段覆盖，以编号更大的阶段文档和 `experiment-master-plan.md` 为准。

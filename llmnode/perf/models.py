@@ -18,6 +18,9 @@ class BenchmarkAttemptResult:
     error_message: str | None = None
     prompt_token_mismatch: bool | None = None
     concurrency_index: int | None = None
+    batch_index: int | None = None
+    batch_latency_ms: float | None = None
+    batch_output_tokens_per_second: float | None = None
     result: str = "unknown"
     ttft_ms: float | None = None
     prefill_ms: float | None = None
@@ -77,6 +80,12 @@ class BenchmarkStepResult:
     decode_tokens_per_second_p50: float | None = None
     decode_tokens_per_second_min: float | None = None
     decode_tokens_per_second_max: float | None = None
+    batch_latency_ms_avg: float | None = None
+    batch_latency_ms_p50: float | None = None
+    aggregate_output_tokens_per_second_avg: float | None = None
+    aggregate_output_tokens_per_second_p50: float | None = None
+    aggregate_output_tokens_per_second_min: float | None = None
+    aggregate_output_tokens_per_second_max: float | None = None
     attempts: list[BenchmarkAttemptResult] = field(default_factory=list)
 
 
@@ -105,6 +114,7 @@ class BenchmarkRun:
     model_dir: str = ""
     container_name: str = ""
     max_tokens: int = 64
+    force_output_tokens: bool = False
     concurrency: int = 1
     status: str = "running"
     errors: list[str] = field(default_factory=list)

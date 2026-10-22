@@ -1,0 +1,28 @@
+backend:
+  backend_type: sglang
+  container_name: qwen38-27b-awq-int4-sglang-dflash2
+  image_name: lmsysorg/sglang:dev-cu13-qwen38-27b-dflash2
+  model_dir: models/Qwen/Qwen3.8-27B-AWQ-INT4
+  model_file: ""
+  model_name: qwen38-27b-sglang-awq-int4-dflash2
+  display_name: Qwen3.8 27B AWQ INT4 + DFlash2 (SGLang)
+  enabled: true
+  host_port: 15673
+  gpu_memory_utilization: 0.70
+  tensor_parallel_size: 1
+  shm_size: 16g
+  reasoning_parser: qwen3
+  mem_fraction_static: 0.70
+  max_running_requests: 4
+  speculative_model_dir: models/Qwen/Qwen3.8-27B-DFlash2
+  sglang_speculative_algorithm: DFLASH
+  sglang_extra_args: >-
+    --speculative-num-draft-tokens 8
+    --tool-call-parser qwen3_coder
+    --chunked-prefill-size 32768
+    --max-prefill-tokens 32768
+    --disable-prefill-cuda-graph
+    --cuda-graph-max-bs-decode 4
+    --mamba-full-memory-ratio 4.59
+    --mamba-radix-cache-strategy extra_buffer
+    --mamba-ssm-dtype float32

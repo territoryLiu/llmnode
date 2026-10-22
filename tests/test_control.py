@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from llmnode.agent.docker_control import SGLangContainerSpec
 from llmnode.agent.service import create_agent_app
 from llmnode.api.app import create_app
-from llmnode.control import RuntimeConfig, _build_backend_spec, _create_inference_key, _default_python_bin, _probe_process_state, _resolve_log_targets, _restart_without_backend, _start_stack, _stop_python_service, _tail_lines, build_parser
+from llmnode.control import RuntimeConfig, _build_backend_spec, _cleanup_action, _create_inference_key, _default_python_bin, _probe_process_state, _resolve_log_targets, _restart_without_backend, _start_stack, _stop_python_service, _tail_lines, build_parser
 from llmnode.storage.db import init_db
 
 
@@ -68,7 +69,26 @@ def make_runtime_config(tmp_path: Path) -> RuntimeConfig:
 def test_control_parser_defaults_to_status():
     parser = build_parser()
     args = parser.parse_args([])
+
     assert args.action == "status"
+
+
+def test_cleanup_retention_action_defaults_to_dry_run(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "gateway.db"
+    conn = init_db(db_path)
+    conn.execute(
+        "INSERT INTO request_logs(request_id, model_name, status, protocol, created_at) VALUES (?, ?, ?, ?, ?)",
+        ("old", "demo", "ok", "openai", "2000-01-01 00:00:00"),
+    )
+    conn.commit()
+    monkeypatch.setenv("VLLM_CLAUDE_DB_PATH", str(db_path))
+    monkeypatch.setattr("llmnode.control._print_header", lambda *args: None)
+    monkeypatch.setattr("llmnode.control._print_kv", lambda *args: None)
+    monkeypatch.setattr("llmnode.control._print_info", lambda *args: None)
+    args = build_parser().parse_args(["cleanup-retention", "--table", "request_logs"])
+
+    assert _cleanup_action(args) == 0
+    assert conn.execute("SELECT COUNT(*) FROM request_logs").fetchone()[0] == 1
 
 
 def test_control_parser_supports_service_options():
@@ -201,6 +221,75 @@ def test_build_backend_spec_vllm_includes_profiler_config(tmp_path: Path):
     assert spec.volumes[str(profiler_dir)] == {"bind": "/tmp/vllm-profile", "mode": "rw"}
 
 
+def test_build_backend_spec_vllm_includes_speculative_config(tmp_path: Path):
+    from dataclasses import replace
+
+    speculative_config = '{"method":"mtp","num_speculative_tokens":1}'
+    config = replace(
+        make_runtime_config(tmp_path),
+        vllm_speculative_config=speculative_config,
+    )
+
+    spec = _build_backend_spec(config)
+
+    assert spec.speculative_config == speculative_config
+    assert spec.command[spec.command.index("--speculative-config") + 1] == speculative_config
+
+
+def test_build_backend_spec_vllm_includes_speculative_model_dir(tmp_path: Path):
+    from dataclasses import replace
+
+    draft_dir = tmp_path / "Qwen3.8-27B-DFlash2"
+    config = replace(
+        make_runtime_config(tmp_path),
+        vllm_speculative_model_dir=str(draft_dir),
+    )
+
+    spec = _build_backend_spec(config)
+
+    assert spec.speculative_model_dir == str(draft_dir)
+    assert spec.volumes[str(draft_dir)] == {"bind": "/draft-model", "mode": "ro"}
+
+
+def test_build_backend_spec_sglang_includes_speculative_config(tmp_path: Path):
+    from dataclasses import replace
+
+    draft_dir = tmp_path / "Qwen3.8-27B-DFlash2"
+    extra_args = ("--speculative-num-draft-tokens", "8")
+    config = replace(
+        make_runtime_config(tmp_path),
+        backend_type="sglang",
+        vllm_speculative_model_dir=str(draft_dir),
+        sglang_speculative_algorithm="DFLASH",
+        sglang_extra_args=extra_args,
+    )
+
+    spec = _build_backend_spec(config)
+
+    assert isinstance(spec, SGLangContainerSpec)
+    assert spec.speculative_algorithm == "DFLASH"
+    assert spec.speculative_draft_model_dir == str(draft_dir)
+    command = " ".join(spec.command).split()
+    assert command[command.index("--speculative-algorithm") + 1] == "DFLASH"
+    assert command[-2:] == list(extra_args)
+    assert spec.volumes[str(draft_dir)] == {"bind": "/draft-model", "mode": "ro"}
+
+
+def test_build_backend_spec_vllm_includes_disabled_kernels(tmp_path: Path):
+    from dataclasses import replace
+
+    config = replace(
+        make_runtime_config(tmp_path),
+        vllm_disabled_kernels="HummingFP8ScaledMMLinearKernel",
+    )
+
+    spec = _build_backend_spec(config)
+
+    assert spec.environment == {
+        "VLLM_DISABLED_KERNELS": "HummingFP8ScaledMMLinearKernel"
+    }
+
+
 def test_build_backend_spec_llamacpp(tmp_path: Path):
     config = make_runtime_config(tmp_path)
     object.__setattr__(config, "backend_type", "llama.cpp") if hasattr(config, "__dataclass_fields__") else None
@@ -259,6 +348,10 @@ def test_control_parser_supports_admin_key_actions():
     assert parser.parse_args(["create-admin-key"]).action == "create-admin-key"
     assert parser.parse_args(["rotate-admin-key"]).action == "rotate-admin-key"
     assert parser.parse_args(["admin-key-status"]).action == "admin-key-status"
+
+
+def test_control_parser_supports_migrate_action():
+    assert build_parser().parse_args(["migrate"]).action == "migrate"
 
 
 def test_control_parser_supports_inference_key_actions():

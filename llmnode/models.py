@@ -58,6 +58,38 @@ class ModelRoute:
                     "previous_response_id": True,
                 },
             }
+        if self.lifecycle_mode == "managed_local" and self.backend_type == "llama.cpp":
+            return {
+                "native_protocols": ["chat", "messages"],
+                "adapter_policies": [],
+                "tool_policies": {
+                    "openai_function_tools": True,
+                    "anthropic_function_tools": True,
+                    "builtin_tools": False,
+                },
+                "protocol_features": {
+                    "stream": self.capabilities.supports_stream,
+                    "count_tokens": True,
+                    "json_schema": self.capabilities.supports_json_schema,
+                    "previous_response_id": False,
+                },
+            }
+        if self.lifecycle_mode == "managed_local" and self.backend_type == "sglang":
+            return {
+                "native_protocols": ["chat", "messages"],
+                "adapter_policies": [],
+                "tool_policies": {
+                    "openai_function_tools": True,
+                    "anthropic_function_tools": True,
+                    "builtin_tools": False,
+                },
+                "protocol_features": {
+                    "stream": self.capabilities.supports_stream,
+                    "count_tokens": True,
+                    "json_schema": self.capabilities.supports_json_schema,
+                    "previous_response_id": False,
+                },
+            }
         if self.lifecycle_mode == "external":
             return {
                 "native_protocols": [self.upstream_protocol],

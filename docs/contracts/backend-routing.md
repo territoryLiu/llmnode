@@ -230,6 +230,11 @@
     - 默认原生支持 `chat / responses / messages`
     - 默认不启用 adapter
     - 默认 `tool_policies`：`openai_function_tools: True`，`anthropic_function_tools: True`，`builtin_tools: True`
+  - `managed_local + llama.cpp / sglang`
+    - 默认原生支持 `chat / messages`
+    - 默认不启用 adapter
+    - 默认 `tool_policies`：`openai_function_tools: True`，`anthropic_function_tools: True`，`builtin_tools: False`
+    - 默认提供网关侧 `count_tokens` 兼容能力，不声明原生 `responses` 或 `previous_response_id`
   - `external`
     - 默认 `native_protocols_json = [upstream_protocol]`
     - 默认 `adapter_policies_json = []`
@@ -353,6 +358,17 @@ gateway 当前不应做的事情：
 - 原因：vLLM 的 Pydantic 校验不允许 `input` 数组中包含 `type=reasoning` 的 item（无论是否设置 `instructions`）；但直接删除会丢失多轮推理上下文
 - 行为：提取 `reasoning.summary` / `reasoning.content` 中可读文本，追加到 `instructions` 的显式 `reasoning context` 段，再从 `input` 数组中移除原始 `reasoning` item
 
+**d) Responses message 流式收尾事件补全**
+- 原因：部分 vLLM nightly 会在 message 的 `response.output_text.delta` 后直接发送 `response.completed`，缺少 `response.output_text.done / response.content_part.done / response.output_item.done`，导致 Codex 等严格消费端无法定稿最终文本
+- 行为：gateway 按完整 SSE frame 跟踪 message item、content part 和累积文本；只在上游确实缺失时，于 `response.completed` 前依次补发三个 `.done` 事件并顺延 `sequence_number`
+- 边界：reasoning 和上游已经完整发送的 message 收尾事件保持原样，不重复注入；最终指标和 response state 从 `response.completed.response` 读取
+
+**e) Messages 中途 `system` → 顶层 `system` 提升**
+- 原因：Claude Code 压缩上下文后会通过 `mid-conversation-system` beta 在 `messages` 数组中插入 `role=system`；vLLM 原生 Messages API 只接受 `user / assistant`，会直接返回 400
+- 行为：仅将纯文本型中途 system message 提升并追加到顶层 `system`，保留 system 语义与文本内容，并从 `messages` 数组移除原位置
+- 可观测性：请求日志记录 `request_mutation=true` 与 `mutation_reason=mid_conversation_system_promoted`
+- 边界：不处理包含非文本 block 的中途 system message；external messages route 保持原请求，不执行该归一化
+
 **适用范围**：以上归一化仅在 `managed_local + vllm` 且走 native pass-through 路径时生效，不影响 external route 和 adapter 路径。
 
 ## 11. 工程客户端兼容边界
@@ -363,6 +379,7 @@ gateway 当前不应做的事情：
   - 走 `/v1/messages`
   - Anthropic function tools 当前按原生语义透传
   - `/v1/messages/count_tokens` 已提供最小兼容实现，供工程模式探测
+  - 压缩上下文产生的中途 `system` message 会在 managed-local vLLM 路径提升到顶层 `system`，避免 vLLM 原生 Messages 校验失败
   - builtin tools 对 `managed_local + vllm` route 现已默认开放（`builtin_tools: True`），不再返回 `builtin_tools_not_supported`；`external` route 仍按 `capabilities.supports_builtin_tools` 决定
 - `Codex`
   - 走 `/responses`（裸路径，无 `/v1/` 前缀），已通过 `/responses` → `/v1/responses` 别名路由支持
@@ -454,6 +471,18 @@ Agent 服务（`llmnode/agent/service.py`）暴露以下诊断 API 端点：
   - 返回 `masked_key` 和 `secret`（仅当次可见）
 - `PATCH /admin/keys/{id}` - 更新 API Key 状态/名称/权限
 - `DELETE /admin/keys/{id}` - 删除 API Key
+
+API Key 存储边界：
+
+- `api_keys` 只持久化 `key_hash`，不存在 `plain_secret` 列
+- 列表、更新和删除响应均不得返回 secret；只有创建或轮换当次允许返回一次性明文
+- admin key 的本地文件由控制面管理，不通过管理 API 返回
+
+流式上游超时边界：
+
+- managed-local 与 external route 的流式请求都使用有限连接和读空闲超时
+- 当前连接超时为 10 秒，读空闲超时沿用 `gateway.backend_request_timeout_seconds`（默认 300 秒）
+- 超时按连续无上游数据计算，不限制持续有数据输出的流式请求总时长
 
 ## 16. 长期扩展方向
 

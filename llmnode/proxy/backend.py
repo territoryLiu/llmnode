@@ -34,8 +34,10 @@ async def stream_bytes_from(
     path: str,
     payload: Dict[str, Any],
     headers: dict[str, str] | None = None,
+    timeout_seconds: int = 300,
 ) -> AsyncIterator[bytes]:
-    async with httpx.AsyncClient(base_url=base_url, timeout=None) as client:
+    timeout = httpx.Timeout(timeout_seconds, connect=10.0)
+    async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
         async with client.stream("POST", path, json=payload, headers=headers) as response:
             response.raise_for_status()
             async for chunk in response.aiter_bytes():
@@ -62,7 +64,8 @@ class VLLMBackendClient:
             return response.status_code == 200
 
     async def stream_bytes(self, path: str, payload: Dict[str, Any]) -> AsyncIterator[bytes]:
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=None) as client:
+        timeout = httpx.Timeout(self.request_timeout_seconds, connect=self.health_timeout_seconds)
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=timeout) as client:
             async with client.stream("POST", path, json=payload) as response:
                 response.raise_for_status()
                 async for chunk in response.aiter_bytes():

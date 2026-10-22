@@ -26,7 +26,11 @@ class VLLMContainerSpec:
     enable_auto_tool_choice: bool
     reasoning_parser: str
     tool_call_parser: str
+    enable_prefix_caching: bool = False
     kv_cache_dtype: str = ""
+    speculative_config: str = ""
+    speculative_model_dir: str = ""
+    disabled_kernels: str = ""
     profiler_config: str = ""
     profiler_host_dir: str = ""
 
@@ -63,8 +67,12 @@ class VLLMContainerSpec:
             )
         else:
             args.extend(["--reasoning-parser", self.reasoning_parser])
+        if self.enable_prefix_caching:
+            args.append("--enable-prefix-caching")
         if self.kv_cache_dtype:
             args.extend(["--kv-cache-dtype", self.kv_cache_dtype])
+        if self.speculative_config:
+            args.extend(["--speculative-config", self.speculative_config])
         if self.profiler_config:
             args.extend(["--profiler-config", self.profiler_config])
         return args
@@ -76,13 +84,21 @@ class VLLMContainerSpec:
     @property
     def volumes(self) -> dict[str, dict[str, str]]:
         volumes = {self.model_dir: {"bind": "/model", "mode": "ro"}}
+        if self.speculative_model_dir:
+            volumes[self.speculative_model_dir] = {"bind": "/draft-model", "mode": "ro"}
         if self.profiler_host_dir:
             volumes[self.profiler_host_dir] = {"bind": "/tmp/vllm-profile", "mode": "rw"}
         return volumes
 
     @property
-    def ports(self) -> dict[str, int]:
-        return {"8000/tcp": self.host_port}
+    def ports(self) -> dict[str, tuple[str, int]]:
+        return {"8000/tcp": ("127.0.0.1", self.host_port)}
+
+    @property
+    def environment(self) -> dict[str, str]:
+        if not self.disabled_kernels:
+            return {}
+        return {"VLLM_DISABLED_KERNELS": self.disabled_kernels}
 
     @property
     def device_requests(self) -> list[DeviceRequest]:
@@ -104,6 +120,13 @@ class LlamaCppContainerSpec:
     ctx_size: int
     n_parallel: int
     shm_size: str
+    n_cpu_moe: int = 0
+    spec_draft_model_dir: str = ""
+    spec_draft_model_file: str = ""
+    spec_type: str = ""
+    spec_draft_n_max: int = 0
+    flash_attention: bool = False
+    jinja: bool = False
 
     @property
     def entrypoint(self) -> list[str] | None:
@@ -111,7 +134,7 @@ class LlamaCppContainerSpec:
 
     @property
     def command(self) -> list[str]:
-        return [
+        args = [
             "--model", f"/model/{self.model_file}",
             "--host", "0.0.0.0",
             "--port", "8080",
@@ -119,14 +142,30 @@ class LlamaCppContainerSpec:
             "--ctx-size", str(self.ctx_size),
             "--parallel", str(self.n_parallel),
         ]
+        if self.n_cpu_moe > 0:
+            args.extend(["--n-cpu-moe", str(self.n_cpu_moe)])
+        if self.spec_draft_model_file:
+            args.extend(["--model-draft", f"/draft-model/{self.spec_draft_model_file}"])
+        if self.spec_type:
+            args.extend(["--spec-type", self.spec_type])
+        if self.spec_draft_n_max > 0:
+            args.extend(["--spec-draft-n-max", str(self.spec_draft_n_max)])
+        if self.flash_attention:
+            args.extend(["-fa", "on"])
+        if self.jinja:
+            args.append("--jinja")
+        return args
 
     @property
     def volumes(self) -> dict[str, dict[str, str]]:
-        return {self.model_dir: {"bind": "/model", "mode": "ro"}}
+        volumes = {self.model_dir: {"bind": "/model", "mode": "ro"}}
+        if self.spec_draft_model_dir:
+            volumes[self.spec_draft_model_dir] = {"bind": "/draft-model", "mode": "ro"}
+        return volumes
 
     @property
-    def ports(self) -> dict[str, int]:
-        return {"8080/tcp": self.host_port}
+    def ports(self) -> dict[str, tuple[str, int]]:
+        return {"8080/tcp": ("127.0.0.1", self.host_port)}
 
     @property
     def device_requests(self) -> list[DeviceRequest]:
@@ -148,6 +187,9 @@ class SGLangContainerSpec:
     max_running_requests: int
     shm_size: str
     reasoning_parser: str
+    speculative_algorithm: str = ""
+    speculative_draft_model_dir: str = ""
+    extra_args: tuple[str, ...] = ()
 
     @property
     def entrypoint(self) -> list[str] | None:
@@ -169,15 +211,24 @@ class SGLangContainerSpec:
         ]
         if self.reasoning_parser:
             parts += ["--reasoning-parser", self.reasoning_parser]
+        if self.speculative_algorithm:
+            parts += ["--speculative-algorithm", self.speculative_algorithm]
+        if self.speculative_draft_model_dir:
+            parts += ["--speculative-draft-model-path", "/draft-model"]
+        if self.extra_args:
+            parts.extend(self.extra_args)
         return [" ".join(parts)]
 
     @property
     def volumes(self) -> dict[str, dict[str, str]]:
-        return {self.model_dir: {"bind": "/model", "mode": "ro"}}
+        volumes = {self.model_dir: {"bind": "/model", "mode": "ro"}}
+        if self.speculative_draft_model_dir:
+            volumes[self.speculative_draft_model_dir] = {"bind": "/draft-model", "mode": "ro"}
+        return volumes
 
     @property
-    def ports(self) -> dict[str, int]:
-        return {"30000/tcp": self.host_port}
+    def ports(self) -> dict[str, tuple[str, int]]:
+        return {"30000/tcp": ("127.0.0.1", self.host_port)}
 
     @property
     def device_requests(self) -> list[DeviceRequest]:
@@ -202,16 +253,19 @@ def _normalized_entrypoint(value: Any) -> list[str] | None:
     return [str(value)]
 
 
-def _normalized_port_bindings(value: Any) -> dict[str, list[str]]:
-    bindings: dict[str, list[str]] = {}
+def _normalized_port_bindings(value: Any) -> dict[str, list[tuple[str, str]]]:
+    bindings: dict[str, list[tuple[str, str]]] = {}
     if not isinstance(value, dict):
         return bindings
     for container_port, items in value.items():
-        host_ports: list[str] = []
+        host_ports: list[tuple[str, str]] = []
         if isinstance(items, list):
             for item in items:
                 if isinstance(item, dict) and item.get("HostPort") is not None:
-                    host_ports.append(str(item["HostPort"]))
+                    host_ip = str(item.get("HostIp") or "")
+                    if host_ip == "0.0.0.0":
+                        host_ip = ""
+                    host_ports.append((host_ip, str(item["HostPort"])))
         bindings[str(container_port)] = sorted(host_ports)
     return bindings
 
@@ -230,6 +284,18 @@ def _normalized_mount_sources(value: Any) -> dict[str, str]:
     return mounts
 
 
+def _normalized_environment(value: Any) -> dict[str, str]:
+    environment: dict[str, str] = {}
+    if not isinstance(value, list):
+        return environment
+    for item in value:
+        if not isinstance(item, str) or "=" not in item:
+            continue
+        key, content = item.split("=", 1)
+        environment[key] = content
+    return environment
+
+
 def _container_matches_spec(container: Any, spec: AnyContainerSpec) -> bool:
     attrs = getattr(container, "attrs", {}) or {}
     config = attrs.get("Config", {}) if isinstance(attrs, dict) else {}
@@ -240,12 +306,17 @@ def _container_matches_spec(container: Any, spec: AnyContainerSpec) -> bool:
     actual_entrypoint = _normalized_entrypoint(config.get("Entrypoint"))
     actual_ports = _normalized_port_bindings(host_config.get("PortBindings"))
     actual_mounts = _normalized_mount_sources(attrs.get("Mounts"))
+    actual_environment = _normalized_environment(config.get("Env"))
 
-    expected_ports = {str(port): [str(host_port)] for port, host_port in spec.ports.items()}
+    expected_ports = {
+        str(port): [(str(host_ip), str(host_port))]
+        for port, (host_ip, host_port) in spec.ports.items()
+    }
     expected_mounts = {
         details["bind"]: str(Path(source).resolve())
         for source, details in spec.volumes.items()
     }
+    expected_environment = getattr(spec, "environment", {})
 
     return (
         actual_image == spec.image_name
@@ -253,6 +324,7 @@ def _container_matches_spec(container: Any, spec: AnyContainerSpec) -> bool:
         and actual_entrypoint == spec.entrypoint
         and actual_ports == expected_ports
         and actual_mounts == expected_mounts
+        and all(actual_environment.get(key) == value for key, value in expected_environment.items())
     )
 
 
@@ -306,6 +378,9 @@ def _run_new_container(client: docker.DockerClient, spec: AnyContainerSpec, *, a
         )
         if spec.entrypoint is not None:
             kwargs["entrypoint"] = spec.entrypoint
+        environment = getattr(spec, "environment", {})
+        if environment:
+            kwargs["environment"] = environment
         client.containers.run(spec.image_name, **kwargs)
     except APIError as exc:
         raise RuntimeError(f"failed to start container: {exc}") from exc

@@ -41,6 +41,8 @@ python -m llmnode.control <action>
 - `create-admin-key`
 - `rotate-admin-key`
 - `admin-key-status`
+- `migrate`
+- `cleanup-retention`
 
 如果后续新增命令，应同步更新：
 
@@ -86,6 +88,20 @@ export VLLM_CLAUDE_RUNTIME_DIR=/path/to/custom-runtime
 - `VLLM_CLAUDE_DB_PATH` 优先级高于 `VLLM_CLAUDE_RUNTIME_DIR`
 - 如果显式设置 `VLLM_CLAUDE_DB_PATH`，则数据库路径以它为准
 - 测试环境不应再把临时测试库写入仓库 `runtime/data/`
+
+## 3.2 SQLite 保留清理契约
+
+```bash
+python -m llmnode.control cleanup-retention
+python -m llmnode.control cleanup-retention --table request_logs
+python -m llmnode.control cleanup-retention --execute
+```
+
+- 默认是 dry-run，只报告各表 TTL、截止时间和待删除行数。
+- 只有显式 `--execute` 才提交删除；`--table` 可重复，用于限制目标表。
+- TTL 来自 `config/defaults.yaml` 的 `sqlite_retention`，必须是正整数天。
+- `request_logs`、`request_metrics`、`agent_events` 按 `created_at` 清理；`response_states` 按最后活动时间 `updated_at` 清理，避免删除仍被续写或恢复的响应状态。
+- 清理不会自动执行 `VACUUM`。删除后的空闲页会被 SQLite 后续写入复用；需要缩小物理文件时，应在停机维护窗口另行备份并执行 `VACUUM`。
 
 ## 4. `start`
 
@@ -336,10 +352,22 @@ python -m llmnode.control admin-key-status
 - admin key 名字固定为 `admin`
 - admin key scope 固定为 `admin`
 - admin key 不再落地为 `runtime/data/web-console-admin.key`
+- admin key 明文只允许落地到数据库同目录的 `admin.key`，权限固定为 `0600`；数据库只保留 hash
 - admin key 不出现在普通 `/admin/keys` 列表中
 - `web-console` 通过右上角“管理员”入口录入或更新本地保存的 admin key，再以 `x-api-key` 访问 `/admin/*`
 
-## 14. 命令变更后的回流要求
+## 14. `migrate`
+
+### 职责
+- 显式执行幂等存储迁移并输出当前迁移状态
+- 当前会移除 `api_keys.plain_secret`、校验 `admin.key` 与数据库 hash 一致，并收紧 `runtime/data` / `gateway.db` 权限
+
+### 当前边界
+- `runtime/data` 权限为 `0700`，`gateway.db` 与 `admin.key` 权限为 `0600`
+- 迁移不会轮换 inference key；客户端继续使用原 secret，网关按既有 hash 鉴权
+- hash-only 迁移是单向门，完成后不得回滚到仍依赖 `plain_secret` 的旧代码
+
+## 15. 命令变更后的回流要求
 
 如果控制面发生变化，至少要检查是否同步更新：
 

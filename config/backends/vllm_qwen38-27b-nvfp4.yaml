@@ -1,0 +1,21 @@
+backend:
+  backend_type: vllm
+  container_name: qwen38-27b-spec-benchmark-vllm
+  image_name: docker.m.daocloud.io/vllm/vllm-openai@sha256:8bd082c274fae025b7079498fe1da65182ba1d4c2188c0f5a68c1042c38c3695
+  model_dir: models/Qwen/Qwen3.8-27B-NVFP4
+  model_file: ""
+  model_name: qwen38-27b-nvfp4
+  display_name: Qwen3.8 27B NVFP4
+  enabled: true
+  host_port: 15673
+  gpu_memory_utilization: 0.55
+  tensor_parallel_size: 1
+  max_model_len: 262144
+  max_num_seqs: 4
+  enable_prefix_caching: true
+  speculative_config: ""
+  disabled_kernels: HummingFP8ScaledMMLinearKernel
+  shm_size: 16g
+  enable_auto_tool_choice: true
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_coder

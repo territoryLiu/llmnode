@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import shlex
 
 import yaml
 
@@ -55,6 +56,22 @@ class ScheduleSettings:
 
 
 @dataclass
+class SQLiteRetentionSettings:
+    request_logs_days: int = 30
+    request_metrics_days: int = 90
+    agent_events_days: int = 30
+    response_states_days: int = 7
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "request_logs": self.request_logs_days,
+            "request_metrics": self.request_metrics_days,
+            "agent_events": self.agent_events_days,
+            "response_states": self.response_states_days,
+        }
+
+
+@dataclass
 class BackendSettings:
     backend_type: str = "vllm"
     container_name: str = "qwen36-vllm"
@@ -69,18 +86,31 @@ class BackendSettings:
     tensor_parallel_size: int = 1
     max_model_len: int = 262144
     max_num_seqs: int = 4
+    enable_prefix_caching: bool = False
     shm_size: str = "16g"
     enable_auto_tool_choice: bool = True
     reasoning_parser: str = "qwen3"
     tool_call_parser: str = "qwen3_coder"
     kv_cache_dtype: str = ""
+    speculative_config: str = ""
+    speculative_model_dir: str = ""
+    disabled_kernels: str = ""
     profiler_config: str = ""
     profiler_host_dir: str = ""
     n_gpu_layers: int = -1
     ctx_size: int = 262144
     n_parallel: int = 4
+    n_cpu_moe: int = 0
+    spec_draft_model_dir: str = ""
+    spec_draft_model_file: str = ""
+    spec_type: str = ""
+    spec_draft_n_max: int = 0
+    flash_attention: bool = False
+    jinja: bool = False
     mem_fraction_static: float = 0.85
     max_running_requests: int = 4
+    sglang_speculative_algorithm: str = ""
+    sglang_extra_args: tuple[str, ...] = ()
 
 
 @dataclass
@@ -89,6 +119,7 @@ class AppSettings:
     gateway: GatewaySettings
     agent: AgentSettings
     schedule: ScheduleSettings
+    sqlite_retention: SQLiteRetentionSettings
     vllm: BackendSettings
 
 
@@ -137,6 +168,7 @@ def load_settings(path: Path | None = None) -> AppSettings:
     gateway = data.get("gateway", {})
     agent = data.get("agent", {})
     schedule = data.get("schedule", {})
+    retention = data.get("sqlite_retention", {})
     default_active_profile = _repo_default_active_profile() if path is not None else DEFAULT_BACKEND_PROFILE
     active_profile = os.getenv(
         "VLLM_CLAUDE_ACTIVE_BACKEND_PROFILE",
@@ -169,6 +201,12 @@ def load_settings(path: Path | None = None) -> AppSettings:
         "LLMNODE_LLAMACPP_MODEL_FILE",
         vllm.get("model_file", default_backend.get("model_file", "")),
     )
+    resolved_speculative_model_dir = os.getenv(
+        "VLLM_CLAUDE_VLLM_SPECULATIVE_MODEL_DIR",
+        vllm.get("speculative_model_dir", ""),
+    )
+    if resolved_speculative_model_dir:
+        resolved_speculative_model_dir = _resolve_path(resolved_speculative_model_dir, PROJECT_ROOT)
     resolved_model_name = os.getenv(
         "VLLM_CLAUDE_VLLM_MODEL_NAME",
         vllm.get("model_name", default_backend.get("model_name", "qwen36-35b-a3b-fp8")),
@@ -246,6 +284,12 @@ def load_settings(path: Path | None = None) -> AppSettings:
                 os.getenv("VLLM_CLAUDE_SCHEDULE_COOLDOWN_MINUTES", schedule.get("cooldown_minutes", 10))
             ),
         ),
+        sqlite_retention=SQLiteRetentionSettings(
+            request_logs_days=int(os.getenv("VLLM_CLAUDE_RETENTION_REQUEST_LOGS_DAYS", retention.get("request_logs_days", 30))),
+            request_metrics_days=int(os.getenv("VLLM_CLAUDE_RETENTION_REQUEST_METRICS_DAYS", retention.get("request_metrics_days", 90))),
+            agent_events_days=int(os.getenv("VLLM_CLAUDE_RETENTION_AGENT_EVENTS_DAYS", retention.get("agent_events_days", 30))),
+            response_states_days=int(os.getenv("VLLM_CLAUDE_RETENTION_RESPONSE_STATES_DAYS", retention.get("response_states_days", 7))),
+        ),
         vllm=BackendSettings(
             backend_type=resolved_backend_type,
             container_name=resolved_container_name,
@@ -267,6 +311,10 @@ def load_settings(path: Path | None = None) -> AppSettings:
             ),
             max_model_len=int(os.getenv("VLLM_CLAUDE_VLLM_MAX_MODEL_LEN", vllm.get("max_model_len", 262144))),
             max_num_seqs=int(os.getenv("VLLM_CLAUDE_VLLM_MAX_NUM_SEQS", vllm.get("max_num_seqs", 4))),
+            enable_prefix_caching=os.getenv(
+                "VLLM_CLAUDE_VLLM_ENABLE_PREFIX_CACHING",
+                str(vllm.get("enable_prefix_caching", False)),
+            ).lower() in {"1", "true", "yes", "on"},
             shm_size=os.getenv("VLLM_CLAUDE_VLLM_SHM_SIZE", vllm.get("shm_size", "16g")),
             enable_auto_tool_choice=os.getenv(
                 "VLLM_CLAUDE_VLLM_ENABLE_AUTO_TOOL_CHOICE",
@@ -275,6 +323,15 @@ def load_settings(path: Path | None = None) -> AppSettings:
             reasoning_parser=os.getenv("VLLM_CLAUDE_VLLM_REASONING_PARSER", vllm.get("reasoning_parser", "qwen3")),
             tool_call_parser=os.getenv("VLLM_CLAUDE_VLLM_TOOL_CALL_PARSER", vllm.get("tool_call_parser", "qwen3_coder")),
             kv_cache_dtype=os.getenv("VLLM_CLAUDE_VLLM_KV_CACHE_DTYPE", vllm.get("kv_cache_dtype", "")),
+            speculative_config=os.getenv(
+                "VLLM_CLAUDE_VLLM_SPECULATIVE_CONFIG",
+                vllm.get("speculative_config", ""),
+            ),
+            speculative_model_dir=resolved_speculative_model_dir,
+            disabled_kernels=os.getenv(
+                "VLLM_CLAUDE_VLLM_DISABLED_KERNELS",
+                vllm.get("disabled_kernels", ""),
+            ),
             profiler_config=os.getenv("VLLM_CLAUDE_VLLM_PROFILER_CONFIG", vllm.get("profiler_config", "")),
             profiler_host_dir=_resolve_path(
                 os.getenv("VLLM_CLAUDE_VLLM_PROFILER_HOST_DIR", vllm.get("profiler_host_dir", "")),
@@ -283,11 +340,32 @@ def load_settings(path: Path | None = None) -> AppSettings:
             n_gpu_layers=int(os.getenv("LLMNODE_LLAMACPP_N_GPU_LAYERS", vllm.get("n_gpu_layers", -1))),
             ctx_size=int(os.getenv("LLMNODE_LLAMACPP_CTX_SIZE", vllm.get("ctx_size", 262144))),
             n_parallel=int(os.getenv("LLMNODE_LLAMACPP_N_PARALLEL", vllm.get("n_parallel", 4))),
+            n_cpu_moe=int(os.getenv("LLMNODE_LLAMACPP_N_CPU_MOE", vllm.get("n_cpu_moe", 0))),
+            spec_draft_model_dir=_resolve_path(
+                os.getenv("LLMNODE_LLAMACPP_SPEC_DRAFT_MODEL_DIR", vllm.get("spec_draft_model_dir", "")),
+                PROJECT_ROOT,
+            ) if os.getenv("LLMNODE_LLAMACPP_SPEC_DRAFT_MODEL_DIR", vllm.get("spec_draft_model_dir", "")) else "",
+            spec_draft_model_file=os.getenv(
+                "LLMNODE_LLAMACPP_SPEC_DRAFT_MODEL_FILE",
+                vllm.get("spec_draft_model_file", ""),
+            ),
+            spec_type=os.getenv("LLMNODE_LLAMACPP_SPEC_TYPE", vllm.get("spec_type", "")),
+            spec_draft_n_max=int(
+                os.getenv("LLMNODE_LLAMACPP_SPEC_DRAFT_N_MAX", vllm.get("spec_draft_n_max", 0))
+            ),
+            flash_attention=os.getenv(
+                "LLMNODE_LLAMACPP_FLASH_ATTENTION",
+                str(vllm.get("flash_attention", False)),
+            ).lower() in {"1", "true", "yes", "on"},
+            jinja=os.getenv("LLMNODE_LLAMACPP_JINJA", str(vllm.get("jinja", False))).lower()
+            in {"1", "true", "yes", "on"},
             mem_fraction_static=float(
                 os.getenv("LLMNODE_SGLANG_MEM_FRACTION_STATIC", vllm.get("mem_fraction_static", 0.85))
             ),
             max_running_requests=int(
                 os.getenv("LLMNODE_SGLANG_MAX_RUNNING_REQUESTS", vllm.get("max_running_requests", 4))
             ),
+            sglang_speculative_algorithm=str(vllm.get("sglang_speculative_algorithm", "")),
+            sglang_extra_args=tuple(shlex.split(str(vllm.get("sglang_extra_args", "")))),
         ),
     )

@@ -115,6 +115,224 @@ class ResponsesStreamingFakeClient(VLLMClient):
             yield chunk
 
 
+class ResponsesIncompleteMessageDoneStreamingFakeClient(VLLMClient):
+    def __init__(self):
+        super().__init__(base_url="http://fake")
+
+    async def stream_bytes(self, path, payload):
+        assert path == "/v1/responses"
+        events = [
+            (
+                "response.output_item.added",
+                {
+                    "item": {"id": "reasoning_live", "type": "reasoning", "status": "in_progress"},
+                    "output_index": 0,
+                    "sequence_number": 1,
+                    "type": "response.output_item.added",
+                },
+            ),
+            (
+                "response.output_item.done",
+                {
+                    "item": {"id": "reasoning_live", "type": "reasoning", "status": "completed"},
+                    "output_index": 0,
+                    "sequence_number": 2,
+                    "type": "response.output_item.done",
+                },
+            ),
+            (
+                "response.output_item.added",
+                {
+                    "item": {
+                        "id": "message_live",
+                        "content": [],
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "type": "message",
+                    },
+                    "output_index": 1,
+                    "sequence_number": 3,
+                    "type": "response.output_item.added",
+                },
+            ),
+            (
+                "response.content_part.added",
+                {
+                    "content_index": 0,
+                    "item_id": "message_live",
+                    "output_index": 1,
+                    "part": {"annotations": [], "text": "", "type": "output_text"},
+                    "sequence_number": 4,
+                    "type": "response.content_part.added",
+                },
+            ),
+            (
+                "response.output_text.delta",
+                {
+                    "content_index": 0,
+                    "delta": "Hel",
+                    "item_id": "message_live",
+                    "output_index": 1,
+                    "sequence_number": 5,
+                    "type": "response.output_text.delta",
+                },
+            ),
+            (
+                "response.output_text.delta",
+                {
+                    "content_index": 0,
+                    "delta": "lo",
+                    "item_id": "message_live",
+                    "output_index": 1,
+                    "sequence_number": 6,
+                    "type": "response.output_text.delta",
+                },
+            ),
+            (
+                "response.completed",
+                {
+                    "response": {
+                        "id": "resp_nested_complete",
+                        "object": "response",
+                        "status": "completed",
+                        "output": [
+                            {"id": "reasoning_final", "type": "reasoning", "status": None},
+                            {
+                                "id": "message_final",
+                                "content": [{"annotations": [], "text": "Hello", "type": "output_text"}],
+                                "role": "assistant",
+                                "status": "completed",
+                                "type": "message",
+                            },
+                        ],
+                        "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+                    },
+                    "sequence_number": 7,
+                    "type": "response.completed",
+                },
+            ),
+        ]
+        raw = b"".join(
+            f"event: {event_type}\ndata: {json.dumps(event_payload)}\n\n".encode()
+            for event_type, event_payload in events
+        )
+        for start, end in ((0, 37), (37, 211), (211, 509), (509, len(raw))):
+            yield raw[start:end]
+
+
+class ResponsesCompleteMessageDoneStreamingFakeClient(ResponsesIncompleteMessageDoneStreamingFakeClient):
+    async def stream_bytes(self, path, payload):
+        assert path == "/v1/responses"
+        events = [
+            (
+                "response.output_item.added",
+                {
+                    "item": {
+                        "id": "message_live",
+                        "content": [],
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "type": "message",
+                    },
+                    "output_index": 0,
+                    "sequence_number": 1,
+                    "type": "response.output_item.added",
+                },
+            ),
+            (
+                "response.content_part.added",
+                {
+                    "content_index": 0,
+                    "item_id": "message_live",
+                    "output_index": 0,
+                    "part": {"annotations": [], "text": "", "type": "output_text"},
+                    "sequence_number": 2,
+                    "type": "response.content_part.added",
+                },
+            ),
+            (
+                "response.output_text.delta",
+                {
+                    "content_index": 0,
+                    "delta": "Hello",
+                    "item_id": "message_live",
+                    "output_index": 0,
+                    "sequence_number": 3,
+                    "type": "response.output_text.delta",
+                },
+            ),
+            (
+                "response.output_text.done",
+                {
+                    "content_index": 0,
+                    "item_id": "message_live",
+                    "output_index": 0,
+                    "sequence_number": 4,
+                    "text": "Hello",
+                    "type": "response.output_text.done",
+                },
+            ),
+            (
+                "response.content_part.done",
+                {
+                    "content_index": 0,
+                    "item_id": "message_live",
+                    "output_index": 0,
+                    "part": {"annotations": [], "text": "Hello", "type": "output_text"},
+                    "sequence_number": 5,
+                    "type": "response.content_part.done",
+                },
+            ),
+            (
+                "response.output_item.done",
+                {
+                    "item": {
+                        "id": "message_live",
+                        "content": [{"annotations": [], "text": "Hello", "type": "output_text"}],
+                        "role": "assistant",
+                        "status": "completed",
+                        "type": "message",
+                    },
+                    "output_index": 0,
+                    "sequence_number": 6,
+                    "type": "response.output_item.done",
+                },
+            ),
+            (
+                "response.completed",
+                {
+                    "response": {
+                        "id": "resp_already_complete",
+                        "status": "completed",
+                        "output": [],
+                        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                    },
+                    "sequence_number": 7,
+                    "type": "response.completed",
+                },
+            ),
+        ]
+        for event_type, event_payload in events:
+            yield f"event: {event_type}\ndata: {json.dumps(event_payload)}\n\n".encode()
+
+
+def _parse_sse_body(body: str) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    for frame in body.split("\n\n"):
+        if not frame.strip():
+            continue
+        event_type = None
+        data_lines: list[str] = []
+        for line in frame.splitlines():
+            if line.startswith("event: "):
+                event_type = line[7:]
+            elif line.startswith("data: "):
+                data_lines.append(line[6:])
+        if event_type and data_lines:
+            events.append((event_type, json.loads("\n".join(data_lines))))
+    return events
+
+
 def _responses_messages_route(auth_ref: str = "ANTHROPIC_RESPONSES_KEY") -> ModelRoute:
     class ResponsesMessagesRoute(ModelRoute):
         def runtime_capabilities(self) -> dict[str, object]:
@@ -634,6 +852,146 @@ def test_responses_stream_emits_event_style_sse():
                 assert "event: response.completed" in body
                 assert '"delta":"Hel"' in body
                 assert '"delta":"lo"' in body
+
+    asyncio.run(run())
+
+
+def test_native_responses_stream_synthesizes_missing_message_done_events():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = ResponsesIncompleteMessageDoneStreamingFakeClient()
+        secret = seed_inference_key(app, "sk-responses-missing-message-done")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            async with client.stream(
+                "POST",
+                "/v1/responses",
+                headers={"Authorization": f"Bearer {secret}"},
+                json={"model": TEST_MODEL, "input": "stream please", "stream": True},
+            ) as resp:
+                assert resp.status_code == 200
+                body = "".join([chunk async for chunk in resp.aiter_text()])
+
+        events = _parse_sse_body(body)
+        event_names = [event_type for event_type, _ in events]
+        assert event_names.count("response.output_text.done") == 1
+        assert event_names.count("response.content_part.done") == 1
+        assert event_names.count("response.output_item.done") == 2
+        assert event_names[-4:] == [
+            "response.output_text.done",
+            "response.content_part.done",
+            "response.output_item.done",
+            "response.completed",
+        ]
+
+        output_text_done = next(payload for event_type, payload in events if event_type == "response.output_text.done")
+        assert output_text_done["item_id"] == "message_live"
+        assert output_text_done["output_index"] == 1
+        assert output_text_done["text"] == "Hello"
+        assert output_text_done["sequence_number"] == 7
+
+        message_item_done = [
+            event_payload
+            for event_type, event_payload in events
+            if event_type == "response.output_item.done" and event_payload["output_index"] == 1
+        ][0]
+        assert message_item_done["item"]["id"] == "message_live"
+        assert message_item_done["item"]["status"] == "completed"
+        assert message_item_done["item"]["content"][0]["text"] == "Hello"
+        assert events[-1][1]["sequence_number"] == 10
+
+        state = app.state.db.execute(
+            "SELECT output_json, output_items_json FROM response_states WHERE response_id = ?",
+            ("resp_nested_complete",),
+        ).fetchone()
+        assert state is not None
+        assert json.loads(state[0])["id"] == "resp_nested_complete"
+        assert json.loads(state[1])[1]["id"] == "message_final"
+
+        metric = app.state.db.execute(
+            "SELECT prompt_tokens, completion_tokens, total_tokens FROM request_metrics WHERE model_name = ? ORDER BY created_at DESC LIMIT 1",
+            (TEST_MODEL,),
+        ).fetchone()
+        assert metric == (3, 5, 8)
+
+    asyncio.run(run())
+
+
+def test_native_responses_stream_does_not_duplicate_existing_done_events():
+    async def run():
+        app = create_app()
+        app.state.ctx.backend_client = ResponsesCompleteMessageDoneStreamingFakeClient()
+        secret = seed_inference_key(app, "sk-responses-existing-message-done")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            async with client.stream(
+                "POST",
+                "/v1/responses",
+                headers={"Authorization": f"Bearer {secret}"},
+                json={"model": TEST_MODEL, "input": "stream please", "stream": True},
+            ) as resp:
+                assert resp.status_code == 200
+                body = "".join([chunk async for chunk in resp.aiter_text()])
+
+        events = _parse_sse_body(body)
+        event_names = [event_type for event_type, _ in events]
+        assert event_names.count("response.output_text.done") == 1
+        assert event_names.count("response.content_part.done") == 1
+        assert event_names.count("response.output_item.done") == 1
+        assert events[-1][0] == "response.completed"
+        assert events[-1][1]["sequence_number"] == 7
+
+    asyncio.run(run())
+
+
+def test_external_native_responses_stream_does_not_repair_missing_done_events():
+    async def run():
+        app = create_app()
+        app.state.ctx.models[TEST_MODEL] = ModelRoute(
+            name=TEST_MODEL,
+            display_name="External Responses",
+            backend_model=None,
+            backend_type=None,
+            enabled=True,
+            lifecycle_mode="external",
+            upstream_protocol="responses",
+            upstream_base_url="https://responses.example.com/v1",
+            upstream_model="external-model",
+            upstream_auth_kind="bearer",
+            upstream_auth_ref="EXTERNAL_RESPONSES_TOKEN",
+            capabilities=ModelCapabilities(
+                supports_responses=True,
+                supports_stream=True,
+                supports_previous_response_id_native=True,
+            ),
+        )
+
+        async def fake_stream_bytes_from(base_url, path, payload, headers=None):
+            fake_client = ResponsesIncompleteMessageDoneStreamingFakeClient()
+            async for chunk in fake_client.stream_bytes(path, payload):
+                yield chunk
+
+        app.state.stream_bytes_from = fake_stream_bytes_from
+        secret = seed_inference_key(app, "sk-external-missing-message-done")
+        transport = httpx.ASGITransport(app=app)
+        with patch.dict("os.environ", {"EXTERNAL_RESPONSES_TOKEN": "sk-upstream"}, clear=False):
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                async with client.stream(
+                    "POST",
+                    "/v1/responses",
+                    headers={"Authorization": f"Bearer {secret}"},
+                    json={"model": TEST_MODEL, "input": "stream please", "stream": True},
+                ) as resp:
+                    assert resp.status_code == 200
+                    body = "".join([chunk async for chunk in resp.aiter_text()])
+
+        events = _parse_sse_body(body)
+        event_names = [event_type for event_type, _ in events]
+        assert "response.output_text.done" not in event_names
+        assert "response.content_part.done" not in event_names
+        assert event_names.count("response.output_item.done") == 1
+        assert events[-1][0] == "response.completed"
+        assert events[-1][1]["sequence_number"] == 7
 
     asyncio.run(run())
 

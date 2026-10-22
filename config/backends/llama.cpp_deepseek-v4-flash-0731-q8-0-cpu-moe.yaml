@@ -1,0 +1,21 @@
+backend:
+  backend_type: llama.cpp
+  container_name: deepseek-v4-flash-0731-llamacpp-q8-0
+  image_name: ghcr.io/ggml-org/llama.cpp:server-cuda
+  model_dir: models/deepseek/unsloth/DeepSeek-V4-Flash-0731-GGUF/UD-Q8_K_XL
+  model_file: DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00001-of-00005.gguf
+  spec_draft_model_dir: models/deepseek/unsloth/DeepSeek-V4-Flash-0731-GGUF
+  spec_draft_model_file: dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf
+  spec_type: draft-dspark
+  spec_draft_n_max: 3
+  model_name: deepseek-v4-flash-0731-q8-0
+  display_name: DeepSeek V4 Flash 0731 Q8_0 DSpark CPU MoE
+  enabled: true
+  host_port: 15673
+  shm_size: 16g
+  n_gpu_layers: 16
+  n_cpu_moe: 999
+  flash_attention: true
+  jinja: true
+  ctx_size: 65536
+  n_parallel: 1

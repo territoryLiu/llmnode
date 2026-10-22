@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from llmnode.control import RuntimeConfig, _create_admin_key, _ensure_web_console_api_key, _ensure_web_console_static_dist, _web_console_has_expected_proxy_env
+from llmnode.security import write_secret_file
 from llmnode.storage.db import init_db
 
 
@@ -49,6 +50,7 @@ def test_ensure_web_console_api_key_reads_admin_key_from_db(tmp_path: Path):
     db = init_db(data_dir / "gateway.db")
     row, secret = _create_admin_key(db)
     assert row["name"] == "admin"
+    write_secret_file(data_dir / "admin.key", secret)
 
     config = RuntimeConfig(
         project_dir=tmp_path,

@@ -70,7 +70,42 @@ def test_managed_local_vllm_route_derives_native_protocols():
     assert runtime["native_protocols"] == ["chat", "responses", "messages"]
     assert runtime["adapter_policies"] == []
     assert runtime["tool_policies"]["anthropic_function_tools"] is True
+    assert runtime["tool_policies"]["builtin_tools"] is True
+
+
+def test_managed_local_llamacpp_route_derives_anthropic_messages_protocol():
+    route = ModelRoute(
+        name="deepseek-v4-flash-0731-q8-0",
+        display_name="DeepSeek V4 Flash",
+        backend_model="deepseek-v4-flash-0731-q8-0",
+        backend_type="llama.cpp",
+        lifecycle_mode="managed_local",
+    )
+
+    runtime = route.runtime_capabilities()
+
+    assert runtime["native_protocols"] == ["chat", "messages"]
+    assert runtime["adapter_policies"] == []
+    assert runtime["tool_policies"]["anthropic_function_tools"] is True
     assert runtime["tool_policies"]["builtin_tools"] is False
+
+
+def test_managed_local_sglang_route_derives_anthropic_messages_protocol():
+    route = ModelRoute(
+        name="qwen38-27b-sglang-awq-int4-dflash2",
+        display_name="Qwen3.8 27B AWQ INT4 + DFlash2",
+        backend_model="qwen38-27b-sglang-awq-int4-dflash2",
+        backend_type="sglang",
+        lifecycle_mode="managed_local",
+    )
+
+    runtime = route.runtime_capabilities()
+
+    assert runtime["native_protocols"] == ["chat", "messages"]
+    assert runtime["adapter_policies"] == []
+    assert runtime["tool_policies"]["anthropic_function_tools"] is True
+    assert runtime["tool_policies"]["builtin_tools"] is False
+    assert runtime["protocol_features"]["count_tokens"] is True
 
 
 def test_chat_native_route_selects_responses_to_chat_adapter():
@@ -78,6 +113,7 @@ def test_chat_native_route_selects_responses_to_chat_adapter():
         name="qwen36-27b-fp8",
         display_name="Qwen",
         backend_model="qwen36-27b-fp8",
+        lifecycle_mode="external",
         upstream_protocol="chat",
         capabilities=ModelCapabilities(
             supports_responses=False,
@@ -131,6 +167,7 @@ def test_chat_native_route_rejects_builtin_tools():
         name="qwen36-27b-fp8",
         display_name="Qwen",
         backend_model="qwen36-27b-fp8",
+        lifecycle_mode="external",
         upstream_protocol="chat",
         capabilities=ModelCapabilities(
             supports_builtin_tools=False,
@@ -138,7 +175,7 @@ def test_chat_native_route_rejects_builtin_tools():
         ),
     )
     req = NormalizedRequest(
-        client_protocol="responses",
+        client_protocol="chat",
         model="qwen36-27b-fp8",
         messages=[],
         tools=[{"type": "web_search"}],

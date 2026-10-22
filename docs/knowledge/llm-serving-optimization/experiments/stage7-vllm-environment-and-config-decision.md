@@ -5,6 +5,8 @@
 > 更新时间：2026-06-10。
 > 当前结论状态：宿主机环境、Docker 镜像、GPU 状态和 `AWQ-INT4` baseline 启动证据已核验完成；仓库默认激活 profile 仍然指向 `NVFP4`，与当前主线决策不一致。
 
+> 备注：本文件解决的是 `V0 / V1`，文末“下一步”只代表第七阶段写作时点的建议。当前全局下一步应以后续 [stage8-launch-gap-and-queue-analysis.md](./stage8-launch-gap-and-queue-analysis.md)、[stage9-optimization-actions-and-deployment-boundaries.md](./stage9-optimization-actions-and-deployment-boundaries.md) 和 [experiment-master-plan.md](./experiment-master-plan.md) 为准。
+
 相关专题：
 
 - 总方案见 [experiment-master-plan.md](./experiment-master-plan.md)。

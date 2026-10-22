@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max output tokens per request (default: 512).",
     )
     parser.add_argument(
+        "--force-output-tokens",
+        action="store_true",
+        help="Force generation to max-tokens with min_tokens and ignore_eos.",
+    )
+    parser.add_argument(
         "--sample-interval",
         type=float,
         default=1.0,
@@ -63,6 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="Number of measurement runs (default: 3).",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Concurrent requests per measured batch (default: 1).",
+    )
     return parser
 
 
@@ -71,11 +82,13 @@ def main() -> int:
     path = run_streaming_benchmark(
         targets=args.targets,
         max_tokens=args.max_tokens,
+        force_output_tokens=args.force_output_tokens,
         sample_interval=args.sample_interval,
         output_dir=args.output_dir,
         profile=args.profile,
         warmup_runs=args.warmup_runs,
         measure_runs=args.measure_runs,
+        concurrency=max(args.concurrency, 1),
     )
     print(f"\nResults saved to {path}")
     return 0

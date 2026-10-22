@@ -93,6 +93,7 @@
   - `env`
   - `doctor`
   - `logs`
+  - `migrate`
   - `create-inference-key`
   - `rotate-inference-key`
   - `inference-key-status`
@@ -173,13 +174,18 @@
   - `config/backends/vllm_qwen36-35b-a3b.yaml`
   - `config/backends/llama.cpp_qwen36-35b-a3b-q4km.yaml`
   - `config/backends/llama.cpp_qwen36-35b-a3b-f16.yaml`
+  - `config/backends/llama.cpp_deepseek-v4-flash-0731-ud-q8-k-xl.yaml`
   - `config/backends/sglang_qwen36-35b-a3b-fp8.yaml`
   - `config/backends/vllm_qwen36-27b.yaml`
+  - `config/backends/vllm_qwen38-27b-awq-int4.yaml`
+  - `config/backends/sglang_qwen38-27b-awq-int4-dflash2.yaml`
 - 三后端均已完成线上联调验证（2026-05-12）：
   - `vLLM`：正常推理，`reasoning_content` / `content` 干净分离
-  - `llama.cpp`：须使用 `full-cuda` 镜像，约 68 token/s，显存占用约 26GB，`reasoning_content` 正常
+  - `llama.cpp`：须使用 CUDA 镜像；当时以 `full-cuda` 验证，约 68 token/s，显存占用约 26GB，`reasoning_content` 正常
   - `SGLang`：需 `--reasoning-parser qwen3` 参数（`distro` 模块补丁已合入），`reasoning_content` 正常分离
 - 三后端统一由 Python 控制面通过 Docker 编排，`control.py` 已完整感知三后端
+- 当前激活的 SGLang Qwen3.8 27B AWQ INT4 profile 使用官方 DFlash2 专用镜像，把 `Qwen3.8-27B-DFlash2` 只读挂载为草稿模型，并以 `DFLASH / num-draft-tokens=8` 启动。该部署尚未完成线上验证；此前 2026-08-19 的结论仍适用于对应 vLLM MTP 配置，不能外推到 DFlash2。
+- 本地后端容器端口只发布到 loopback（当前 vLLM 为 `127.0.0.1:15673`）；局域网客户端必须通过带鉴权的 gateway `:4000` 访问，不能绕过网关直接调用后端。
 - `web-console` 当前主要承担状态查看和日常配置入口，正式默认入口为 `http://127.0.0.1:4000/console/`
 - 控制面诊断能力已增强（2026-05-12）：
   - `doctor` 命令支持三后端特定检查、GPU 信息、模型格式检测、智能建议
@@ -200,6 +206,7 @@
   - `llmnode.perf` 新增 `run_streaming_benchmark()`，支持 streaming SSE 请求的 TTFT / prefill / decode / TPOT 拆分
   - CLI 入口：`scripts/benchmark_streaming.py`，与 `scripts/benchmark_backend.py` 对称
   - 数据模型 `BenchmarkAttemptResult` / `BenchmarkStepResult` 已扩展 streaming 指标字段（avg/p50/min/max）
+  - 2026-08-19 修正固定输出 benchmark 口径：`--force-output-tokens` 会同时设置 `min_tokens` 与 `ignore_eos`，并以流式 usage 中的 `completion_tokens` 计算 decode tok/s；旧版把 SSE chunk 数当 token、且未强制生成指定长度的结果不再作为性能结论依据
 - API Key 管理台能力已补齐（2026-05-14）：
   - 后端 API key 列表和创建接口返回 `masked_key` 脱敏字段
   - key 列表接口附带 `usage_summary`（总请求数、总 Token 数）
@@ -208,6 +215,8 @@
   - 历史 key 列表中展示 masked_key 和用量统计
 - 正式 usage ledger 已落地（2026-05-15）：
   - `request_metrics` 表支持 `backend_type`、`api_key_id`、cache token 字段
+  - SQLite 分表保留期已配置：`request_logs=30d`、`request_metrics=90d`、`agent_events=30d`、`response_states=7d`
+  - `python -m llmnode.control cleanup-retention` 默认 dry-run，显式 `--execute` 才删除；response state 按 `updated_at` 清理
   - 聚合查询支持按模型 / 后端 / API Key / 日月年维度输出 summary / trend / breakdown
   - 管理面新增 `/admin/overview/usage` 与 `/admin/keys/{id}/usage` 视图端点
   - 管理台总览与请求记录页已接入总 Token、缓存 Token、趋势图和后端分布
@@ -231,6 +240,8 @@
   - 控制面新增 `create-admin-key / rotate-admin-key / admin-key-status` 作为正式 admin key 管理路径
   - 通用 `create-api-key` 当前只承担 inference-only 推理 key 创建，不再用于创建 admin key
   - 管理台改为通过右上角“管理员”入口录入或更新本地保存的 admin key
+  - 2026-08-19 已完成 hash-only 迁移：`api_keys.plain_secret` 已删除，inference key 只保留 hash；admin 明文仅存于 `runtime/data/admin.key`（`0600`），`gateway.db` 为 `0600`、`runtime/data` 为 `0700`
+  - 控制面新增幂等 `python -m llmnode.control migrate`，用于迁移并检查列状态、文件 hash 同步和运行目录权限
 - 多协议路由管理面已打通（2026-05-15）：
   - `/admin/models` 与管理台模型页已支持编辑 `lifecycle_mode / upstream_protocol / upstream_base_url / upstream_model / upstream_auth_kind / upstream_auth_ref / capabilities_json`
   - 本地受控 route 与外部上游 route 已有明确校验边界：
@@ -255,15 +266,17 @@
 - Claude Code 本地兼容边界已补齐协议透传（2026-05-18）：
   - `/v1/messages` 的 `managed_local + chat` facade 现已保留 Anthropic / Claude Code 风格的 function tool 定义（`name + description + input_schema`）并透传到本地后端
   - `/v1/messages/count_tokens` 已提供最小兼容实现，避免 Claude Code 在工程模式探测时直接 404
+  - Claude Code 压缩上下文产生的中途 `system` message 会在 managed-local vLLM 路径提升到顶层 `system`；该兼容归一化会记录明确的 mutation reason，external messages route 不受影响
   - 默认附带的 builtin tool 元数据（如 `bash_* / web_search_* / text_editor_*`）仍会被过滤；真正未开放的仍是 builtin tools，而不是 Anthropic function tools
   - 启动 seed 的 route reconcile 结果现已接入 `/admin/events`，至少可观察到 `route_marked_stale` 与 `route_manual_preserved`
 - gateway 原生透传治理模型已切换到 phase 1（2026-05-18）：
   - 正式原则已改为 `native pass-through first`，只要 route 原生支持客户端协议，gateway 默认不改业务 payload 语义
   - `adapter opt-in only` 已生效；协议转换不再默认兜底，只允许 route 显式开启的 adapter 生效
   - 当前兼容边界按 `client_protocol + route 能力声明` 判定，而不是按 `Claude Code / Codex / Cherry Studio` 这类客户端品牌做专门 payload 魔改
+  - managed local vLLM 的 Responses native stream 会在上游缺失时补齐 message 的 `output_text.done / content_part.done / output_item.done`，保证严格 SSE 消费端能在 `response.completed` 前完成最终文本定稿；上游已完整时不重复注入
   - `managed_local + vLLM` 当前按 `chat / responses / messages` 三协议原生支持处理
   - route 运行时语义已拆成 `native_protocols / adapter_policies / tool_policies / protocol_features`
-  - 工具治理已拆成 `OpenAI function / Anthropic function / builtin tools` 三类，默认仍拒绝 builtin tools
+  - 工具治理已拆成 `OpenAI function / Anthropic function / builtin tools` 三类；`managed_local + vLLM` route 默认开放 builtin tools，external route 则按 `capabilities.supports_builtin_tools` 判定
   - `request_logs` 已开始记录 `execution_mode / adapter_selected / request_mutation` 等结构化元数据，供管理面排查协议路径
 - route runtime 语义推荐默认与管理闭环已收口到统一真相源（2026-05-19）：
   - `ModelRoute.recommended_runtime_semantics()` 已成为推荐 runtime 默认的正式派生入口
@@ -292,7 +305,8 @@
 - 没有独立于配置之外的“默认模型”概念
 - 当前激活哪个 backend profile，就以该 profile 所声明的模型目录、模型名和后端参数作为运行真相
 - 现有若干 Qwen / GGUF / SGLang profile 属于可选运行路径，不应再在正式文档里写成固定默认模型
-- `DeepSeek-V4-Flash`、`gemma-4-31B-it` 当前仍未进入正式 profile 路径
+- `DeepSeek-V4-Flash-0731 UD-Q8_K_XL` 已进入 `llama.cpp` profile 路径，当前按单卡 A800 80GB + 主存混合部署：使用需支持 `deepseek4` 的新版官方 `server-cuda` 镜像，首轮配置为 `n_gpu_layers=16 / ctx_size=16384 / n_parallel=1`；该模型的在线启动与推理结果仍待验证
+- `gemma-4-31B-it` 当前仍未进入正式 profile 路径
 
 与模型能力相关的长期参考仍分开放置：
 

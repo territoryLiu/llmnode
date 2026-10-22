@@ -54,6 +54,12 @@ def test_settings_loads_repo_active_profile_defaults():
     assert settings.vllm.backend_type == backend["backend_type"]
     assert settings.vllm.model_dir.endswith(backend["model_dir"])
     assert settings.vllm.model_name == backend["model_name"]
+    assert settings.sqlite_retention.as_dict() == {
+        "request_logs": 30,
+        "request_metrics": 90,
+        "agent_events": 30,
+        "response_states": 7,
+    }
 
 
 def test_settings_missing_defaults_file_falls_back_to_repo_active_profile(tmp_path: Path):
@@ -67,10 +73,13 @@ def test_settings_missing_defaults_file_falls_back_to_repo_active_profile(tmp_pa
     assert settings.vllm.host_port == backend["host_port"]
 
 
-def test_settings_default_gpu_memory_utilization_matches_active_profile():
+def test_settings_default_resource_setting_matches_active_profile():
     _, backend = _repo_active_profile_payload()
     settings = load_settings()
-    assert settings.vllm.gpu_memory_utilization == backend["gpu_memory_utilization"]
+    if backend["backend_type"] == "llama.cpp":
+        assert settings.vllm.n_gpu_layers == backend["n_gpu_layers"]
+    else:
+        assert settings.vllm.gpu_memory_utilization == backend["gpu_memory_utilization"]
 
 
 def test_settings_load_active_profile_from_local_backends_directory(tmp_path: Path):
@@ -179,6 +188,71 @@ def test_settings_load_repo_awq_int4_profile(tmp_path: Path):
     assert profile_settings.gateway.backend_model == "qwen36-27b-awq-int4"
 
 
+def test_settings_loads_current_repo_active_profile():
+    settings = load_settings()
+
+    active_profile, backend = _repo_active_profile_payload()
+    assert settings.active_backend_profile == active_profile
+    assert settings.vllm.backend_type == backend["backend_type"]
+    assert settings.vllm.model_name == backend["model_name"]
+
+
+def test_settings_load_qwen38_dflash_profile_with_draft_mount(tmp_path: Path):
+    defaults = tmp_path / "defaults.yaml"
+    defaults.write_text(
+        "active_backend_profile: vllm_qwen38-27b-awq-int4-dflash2\n",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(defaults)
+
+    assert settings.vllm.speculative_model_dir.endswith("models/Qwen/Qwen3.8-27B-DFlash2")
+    assert settings.vllm.speculative_config == (
+        '{"method":"dflash","model":"/draft-model","num_speculative_tokens":7}'
+    )
+
+
+def test_settings_load_qwen38_nvfp4_mtp_profiles(tmp_path: Path):
+    for tokens in (3, 7):
+        defaults = tmp_path / f"defaults-{tokens}.yaml"
+        defaults.write_text(
+            f"active_backend_profile: vllm_qwen38-27b-nvfp4-mtp{tokens}\n",
+            encoding="utf-8",
+        )
+
+        settings = load_settings(defaults)
+
+        assert settings.vllm.model_dir.endswith("models/Qwen/Qwen3.8-27B-NVFP4")
+        assert settings.vllm.speculative_config == (
+            f'{{"method":"mtp","num_speculative_tokens":{tokens}}}'
+        )
+        assert settings.vllm.disabled_kernels == "HummingFP8ScaledMMLinearKernel"
+
+
+def test_settings_load_repo_deepseek_v4_q8_llamacpp_profile(tmp_path: Path):
+    defaults = tmp_path / "defaults.yaml"
+    defaults.write_text(
+        "active_backend_profile: llama.cpp_deepseek-v4-flash-0731-ud-q8-k-xl\n",
+        encoding="utf-8",
+    )
+
+    profile_settings = load_settings(defaults)
+
+    assert profile_settings.vllm.backend_type == "llama.cpp"
+    assert profile_settings.vllm.image_name == "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    assert profile_settings.vllm.model_dir.endswith(
+        "models/deepseek/unsloth/DeepSeek-V4-Flash-0731-GGUF/UD-Q8_K_XL"
+    )
+    assert profile_settings.vllm.model_file == (
+        "DeepSeek-V4-Flash-0731-UD-Q8_K_XL-00001-of-00005.gguf"
+    )
+    assert profile_settings.vllm.model_name == "deepseek-v4-flash-0731-ud-q8-k-xl"
+    assert profile_settings.vllm.n_gpu_layers == 16
+    assert profile_settings.vllm.ctx_size == 16384
+    assert profile_settings.vllm.n_parallel == 1
+    assert profile_settings.gateway.backend_model == "deepseek-v4-flash-0731-ud-q8-k-xl"
+
+
 def test_settings_load_repo_awq_int4_profiler_profile(tmp_path: Path):
     defaults = tmp_path / "defaults.yaml"
     defaults.write_text("active_backend_profile: vllm_qwen36-27b-awq-int4-profiler\n", encoding="utf-8")
@@ -227,6 +301,6 @@ def test_settings_load_repo_nvfp4_profile(tmp_path: Path, monkeypatch):
     assert profile_settings.vllm.model_name == "qwen36-27b-nvfp4"
     assert profile_settings.vllm.display_name == "Qwen3.6 27B NVFP4"
     assert profile_settings.vllm.max_model_len == 262144
-    assert profile_settings.vllm.gpu_memory_utilization == 0.55
+    assert profile_settings.vllm.gpu_memory_utilization == 0.6
     assert profile_settings.vllm.kv_cache_dtype == ""
     assert profile_settings.gateway.backend_model == "qwen36-27b-nvfp4"

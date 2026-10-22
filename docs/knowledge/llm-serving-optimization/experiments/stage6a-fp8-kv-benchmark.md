@@ -268,3 +268,4 @@ FP8 KV 精度损失
    - 加大 `max_tokens` 复测，确认退化是 token 预算问题还是精度直接导致答案错误
    - 对比同一 prompt 下 AWQ 和 FP8 KV 的 thinking token 数量
    - 关闭 thinking 模式重测
+

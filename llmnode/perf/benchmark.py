@@ -444,6 +444,27 @@ def _summarize_streaming_attempts(attempts: list[dict[str, Any]]) -> dict[str, A
     prompt_values = [item.get("prompt_tokens") for item in measured if item.get("prompt_tokens") is not None]
     summary["completion_tokens"] = round(statistics.mean(completion_values)) if completion_values else None
     summary["prompt_tokens"] = prompt_values[-1] if prompt_values else None
+    batches: dict[int, dict[str, Any]] = {}
+    for item in measured:
+        batch_index = item.get("batch_index")
+        if isinstance(batch_index, int) and batch_index not in batches:
+            batches[batch_index] = item
+    batch_latencies = [
+        float(item["batch_latency_ms"])
+        for item in batches.values()
+        if item.get("batch_latency_ms") is not None
+    ]
+    aggregate_speeds = [
+        float(item["batch_output_tokens_per_second"])
+        for item in batches.values()
+        if item.get("batch_output_tokens_per_second") is not None
+    ]
+    summary["batch_latency_ms_avg"] = statistics.mean(batch_latencies) if batch_latencies else None
+    summary["batch_latency_ms_p50"] = statistics.median(batch_latencies) if batch_latencies else None
+    summary["aggregate_output_tokens_per_second_avg"] = statistics.mean(aggregate_speeds) if aggregate_speeds else None
+    summary["aggregate_output_tokens_per_second_p50"] = statistics.median(aggregate_speeds) if aggregate_speeds else None
+    summary["aggregate_output_tokens_per_second_min"] = min(aggregate_speeds) if aggregate_speeds else None
+    summary["aggregate_output_tokens_per_second_max"] = max(aggregate_speeds) if aggregate_speeds else None
     return summary
 
 
@@ -454,14 +475,21 @@ def _execute_streaming_attempt(
     base_url: str,
     timeout_s: float,
     max_tokens: int,
+    force_output_tokens: bool,
     kind: str,
     samples: list[SamplePoint],
     active_label: str,
     backend_type: str,
     container_name: str,
     sample_interval: float,
+    concurrency_index: int = 1,
+    sample_metrics: bool = True,
 ) -> dict[str, Any]:
-    attempt: dict[str, Any] = {"kind": kind, "result": "unknown"}
+    attempt: dict[str, Any] = {
+        "kind": kind,
+        "result": "unknown",
+        "concurrency_index": concurrency_index,
+    }
 
     def do_stream() -> dict[str, Any]:
         t_start = time.perf_counter()
@@ -469,16 +497,22 @@ def _execute_streaming_attempt(
         token_times: list[float] = []
         content_chunks: list[str] = []
         usage: dict[str, Any] = {}
+        finish_reason: str | None = None
+        request_payload: dict[str, Any] = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if force_output_tokens:
+            request_payload.update({"min_tokens": max_tokens, "ignore_eos": True})
         with httpx.Client(base_url=base_url, timeout=timeout_s) as client:
             with client.stream(
                 "POST",
                 "/v1/chat/completions",
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": max_tokens,
-                    "stream": True,
-                },
+                json=request_payload,
             ) as resp:
                 resp.raise_for_status()
                 for line in resp.iter_lines():
@@ -491,7 +525,10 @@ def _execute_streaming_attempt(
                         obj = json.loads(data)
                     except json.JSONDecodeError:
                         continue
-                    delta = obj.get("choices", [{}])[0].get("delta", {})
+                    choices = obj.get("choices") or []
+                    delta = choices[0].get("delta", {}) if choices else {}
+                    if choices and choices[0].get("finish_reason") is not None:
+                        finish_reason = choices[0]["finish_reason"]
                     content = delta.get("content", "") or delta.get("reasoning", "")
                     if content:
                         now = time.perf_counter()
@@ -505,10 +542,18 @@ def _execute_streaming_attempt(
         t_end = time.perf_counter()
         e2e_ms = (t_end - t_start) * 1000
         ttft_ms = (first_token_time - t_start) * 1000 if first_token_time else None
-        n_tokens = len(token_times)
-        decode_ms = (token_times[-1] - first_token_time) * 1000 if n_tokens > 1 else 0.0
-        tpot_ms = decode_ms / (n_tokens - 1) if n_tokens > 1 else None
-        decode_tok_s = (n_tokens - 1) / (decode_ms / 1000) if decode_ms > 0 else None
+        completion_tokens = usage.get("completion_tokens")
+        if not isinstance(completion_tokens, int):
+            completion_tokens = None
+        last_token_time = token_times[-1] if token_times else None
+        decode_ms = (
+            (last_token_time - first_token_time) * 1000
+            if first_token_time is not None and last_token_time is not None
+            else 0.0
+        )
+        decoded_intervals = completion_tokens - 1 if completion_tokens and completion_tokens > 1 else 0
+        tpot_ms = decode_ms / decoded_intervals if decoded_intervals else None
+        decode_tok_s = decoded_intervals / (decode_ms / 1000) if decode_ms > 0 and decoded_intervals else None
         return {
             "ttft_ms": round(ttft_ms, 2) if ttft_ms else None,
             "prefill_ms": round(ttft_ms, 2) if ttft_ms else None,
@@ -516,13 +561,21 @@ def _execute_streaming_attempt(
             "tpot_ms": round(tpot_ms, 2) if tpot_ms else None,
             "decode_tokens_per_second": round(decode_tok_s, 2) if decode_tok_s else None,
             "latency_ms": round(e2e_ms, 2),
-            "completion_tokens": n_tokens,
+            "completion_tokens": completion_tokens,
             "prompt_tokens": usage.get("prompt_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+            "http_status": resp.status_code,
+            "finish_reason": finish_reason,
+            "prompt_token_mismatch": None,
         }
 
     try:
-        result = _run_with_sampling(
-            samples, active_label, backend_type, container_name, sample_interval, do_stream,
+        result = (
+            _run_with_sampling(
+                samples, active_label, backend_type, container_name, sample_interval, do_stream,
+            )
+            if sample_metrics
+            else do_stream()
         )
         attempt.update(result)
         attempt["result"] = "success"
@@ -539,11 +592,13 @@ def run_streaming_benchmark(
     *,
     targets: list[int],
     max_tokens: int = 512,
+    force_output_tokens: bool = False,
     sample_interval: float = 1.0,
     output_dir: str = "",
     profile: str = "",
     warmup_runs: int = 1,
     measure_runs: int = 3,
+    concurrency: int = 1,
 ) -> Path:
     if profile:
         os.environ["VLLM_CLAUDE_ACTIVE_BACKEND_PROFILE"] = profile
@@ -561,7 +616,8 @@ def run_streaming_benchmark(
         model_dir=settings.vllm.model_dir,
         container_name=settings.vllm.container_name,
         max_tokens=max_tokens,
-        concurrency=1,
+        force_output_tokens=force_output_tokens,
+        concurrency=concurrency,
         started_at=_iso_now(),
     )
 
@@ -586,22 +642,86 @@ def run_streaming_benchmark(
             backend_metrics=backend_metrics,
         )
         attempts: list[dict[str, Any]] = []
-        for kind, count in [("warmup", warmup_runs), ("measure", measure_runs)]:
-            for index in range(count):
-                active_label = f"{label}-{kind}-{index + 1}"
-                attempts.append(_execute_streaming_attempt(
-                    prompt=prompt,
-                    model_name=model_name,
-                    base_url=base_url,
-                    timeout_s=timeout_s,
-                    max_tokens=max_tokens,
-                    kind=kind,
-                    samples=samples,
-                    active_label=active_label,
-                    backend_type=settings.vllm.backend_type,
-                    container_name=settings.vllm.container_name,
-                    sample_interval=sample_interval,
-                ))
+        for index in range(warmup_runs):
+            active_label = f"{label}-warmup-{index + 1}"
+            attempts.append(_execute_streaming_attempt(
+                prompt=prompt,
+                model_name=model_name,
+                base_url=base_url,
+                timeout_s=timeout_s,
+                max_tokens=max_tokens,
+                force_output_tokens=force_output_tokens,
+                kind="warmup",
+                samples=samples,
+                active_label=active_label,
+                backend_type=settings.vllm.backend_type,
+                container_name=settings.vllm.container_name,
+                sample_interval=sample_interval,
+            ))
+        for batch_index in range(1, measure_runs + 1):
+            active_label = f"{label}-measure-batch-{batch_index}-c{concurrency}"
+
+            def execute_batch() -> list[dict[str, Any]]:
+                if concurrency == 1:
+                    return [_execute_streaming_attempt(
+                        prompt=prompt,
+                        model_name=model_name,
+                        base_url=base_url,
+                        timeout_s=timeout_s,
+                        max_tokens=max_tokens,
+                        force_output_tokens=force_output_tokens,
+                        kind="measure",
+                        samples=samples,
+                        active_label=active_label,
+                        backend_type=settings.vllm.backend_type,
+                        container_name=settings.vllm.container_name,
+                        sample_interval=sample_interval,
+                        concurrency_index=1,
+                        sample_metrics=False,
+                    )]
+                with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                    futures = [pool.submit(
+                        _execute_streaming_attempt,
+                        prompt=prompt,
+                        model_name=model_name,
+                        base_url=base_url,
+                        timeout_s=timeout_s,
+                        max_tokens=max_tokens,
+                        force_output_tokens=force_output_tokens,
+                        kind="measure",
+                        samples=samples,
+                        active_label=active_label,
+                        backend_type=settings.vllm.backend_type,
+                        container_name=settings.vllm.container_name,
+                        sample_interval=sample_interval,
+                        concurrency_index=concurrency_index,
+                        sample_metrics=False,
+                    ) for concurrency_index in range(1, concurrency + 1)]
+                    return [future.result() for future in futures]
+
+            batch_started = time.perf_counter()
+            batch_attempts = _run_with_sampling(
+                samples,
+                active_label,
+                settings.vllm.backend_type,
+                settings.vllm.container_name,
+                sample_interval,
+                execute_batch,
+            )
+            batch_latency_ms = (time.perf_counter() - batch_started) * 1000
+            completion_tokens = sum(
+                int(item.get("completion_tokens") or 0)
+                for item in batch_attempts
+                if item.get("result") == "success"
+            )
+            aggregate_speed = completion_tokens / (batch_latency_ms / 1000) if batch_latency_ms > 0 else None
+            for item in batch_attempts:
+                item.update({
+                    "batch_index": batch_index,
+                    "batch_latency_ms": round(batch_latency_ms, 2),
+                    "batch_output_tokens_per_second": round(aggregate_speed, 2) if aggregate_speed else None,
+                })
+            attempts.extend(batch_attempts)
         summary = _summarize_streaming_attempts(attempts)
         step.attempts = [BenchmarkAttemptResult(**{k: v for k, v in a.items() if k in BenchmarkAttemptResult.__dataclass_fields__}) for a in attempts]
         step.warmup_runs = summary["warmup_runs"]
@@ -631,8 +751,17 @@ def run_streaming_benchmark(
         step.decode_tokens_per_second_p50 = summary["decode_tokens_per_second_p50"]
         step.decode_tokens_per_second_min = summary["decode_tokens_per_second_min"]
         step.decode_tokens_per_second_max = summary["decode_tokens_per_second_max"]
+        step.batch_latency_ms_avg = summary["batch_latency_ms_avg"]
+        step.batch_latency_ms_p50 = summary["batch_latency_ms_p50"]
+        step.aggregate_output_tokens_per_second_avg = summary["aggregate_output_tokens_per_second_avg"]
+        step.aggregate_output_tokens_per_second_p50 = summary["aggregate_output_tokens_per_second_p50"]
+        step.aggregate_output_tokens_per_second_min = summary["aggregate_output_tokens_per_second_min"]
+        step.aggregate_output_tokens_per_second_max = summary["aggregate_output_tokens_per_second_max"]
         steps.append(step)
 
-    run.status = "completed" if not run.errors else "completed_with_errors"
+    if any(step.result != "success" for step in steps):
+        run.status = "completed_with_errors"
+    else:
+        run.status = "completed"
     run.finished_at = _iso_now()
     return write_benchmark_outputs(benchmark_root, run, steps, samples)

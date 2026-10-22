@@ -47,6 +47,7 @@ python -m llmnode.control create-admin-key
 python -m llmnode.control create-inference-key --name worker
 python -m llmnode.control rotate-admin-key
 python -m llmnode.control admin-key-status
+python -m llmnode.control migrate
 python -m llmnode.control rotate-inference-key --name worker
 python -m llmnode.control inference-key-status --name worker
 python -m llmnode.control status
@@ -235,8 +236,28 @@ python -m llmnode.control create-admin-key
 - 推荐使用 `create-inference-key / rotate-inference-key / inference-key-status` 管理推理 key
 - 旧 `create-api-key` 仅作为兼容入口保留，且只允许 `--scope inference`
 - `web-console` 产品态通过浏览器本地保存的 `vllm-console-api-key` 向管理接口发送 `x-api-key`
+- 数据库只保存 key hash；admin 明文只保存于 `runtime/data/admin.key`（`0600`），普通 inference key 只在创建或轮换当次显示
+- 旧库升级后运行 `python -m llmnode.control migrate` 检查 `plain_secret` 列、文件同步与权限状态；迁移前应先做可恢复备份
 
-## 9. 性能实验室
+## 9. SQLite 数据保留
+
+默认策略：
+
+- `request_logs`: 30 天
+- `request_metrics`: 90 天
+- `agent_events`: 30 天
+- `response_states`: 7 天，按 `updated_at` 判断
+
+先预演，再执行：
+
+```bash
+python -m llmnode.control cleanup-retention
+python -m llmnode.control cleanup-retention --execute
+```
+
+也可以用可重复的 `--table` 只处理指定表。建议由 systemd timer 或 cron 每日调用一次 `--execute`；自动化前先人工检查一次 dry-run 输出。命令不做 `VACUUM`，避免在线重写整库；若确需回收物理磁盘空间，应先备份数据库并在停机维护窗口执行。
+
+## 10. 性能实验室
 
 性能实验室用于在当前单机节点上自动执行模型上下文长度与显存参数矩阵测试。
 

@@ -233,6 +233,13 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
             ctx_size=settings.vllm.ctx_size,
             n_parallel=settings.vllm.n_parallel,
             shm_size=settings.vllm.shm_size,
+            n_cpu_moe=settings.vllm.n_cpu_moe,
+            spec_draft_model_dir=settings.vllm.spec_draft_model_dir,
+            spec_draft_model_file=settings.vllm.spec_draft_model_file,
+            spec_type=settings.vllm.spec_type,
+            spec_draft_n_max=settings.vllm.spec_draft_n_max,
+            flash_attention=settings.vllm.flash_attention,
+            jinja=settings.vllm.jinja,
         )
         app.state.backend_driver = LlamaCppBackendDriver(spec=spec)
     elif bt == "sglang":
@@ -247,6 +254,9 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
             max_running_requests=settings.vllm.max_running_requests,
             shm_size=settings.vllm.shm_size,
             reasoning_parser=settings.vllm.reasoning_parser,
+            speculative_algorithm=settings.vllm.sglang_speculative_algorithm,
+            speculative_draft_model_dir=settings.vllm.speculative_model_dir,
+            extra_args=settings.vllm.sglang_extra_args,
         )
         app.state.backend_driver = SGLangBackendDriver(spec=spec)
     else:
@@ -264,7 +274,11 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
             enable_auto_tool_choice=settings.vllm.enable_auto_tool_choice,
             reasoning_parser=settings.vllm.reasoning_parser,
             tool_call_parser=settings.vllm.tool_call_parser,
+            enable_prefix_caching=settings.vllm.enable_prefix_caching,
             kv_cache_dtype=settings.vllm.kv_cache_dtype,
+            speculative_config=settings.vllm.speculative_config,
+            speculative_model_dir=settings.vllm.speculative_model_dir,
+            disabled_kernels=settings.vllm.disabled_kernels,
             profiler_config=settings.vllm.profiler_config,
             profiler_host_dir=settings.vllm.profiler_host_dir,
         )
@@ -477,6 +491,10 @@ def create_agent_app(enable_monitor: bool = True) -> FastAPI:
                 "tensor_parallel_size": settings.vllm.tensor_parallel_size,
                 "max_model_len": settings.vllm.max_model_len,
                 "max_num_seqs": settings.vllm.max_num_seqs,
+                "enable_prefix_caching": settings.vllm.enable_prefix_caching,
+                "speculative_config": settings.vllm.speculative_config,
+                "speculative_model_dir": settings.vllm.speculative_model_dir,
+                "disabled_kernels": settings.vllm.disabled_kernels,
                 "reasoning_parser": settings.vllm.reasoning_parser,
                 "tool_call_parser": settings.vllm.tool_call_parser,
             }

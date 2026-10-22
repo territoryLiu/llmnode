@@ -18,4 +18,5 @@ thirty/
 console/
 .worktrees/
 runtime/
+.tmp/
 .qoder/
